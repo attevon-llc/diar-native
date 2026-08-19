@@ -71,19 +71,23 @@ The orchestrating session CAN spawn subagents with different models/efforts:
 
 ## Session sequence (recommended order + model per DETAILED_SPECS matrix)
 
-| session | goal | model/effort |
-|---|---|---|
-| 1 | T1 flip + E2E baseline (needs user go post-PR) | Opus 5 / high |
-| 2 | T5a priority fix + T6 telemetry + T8 VAD sweep (batchable trio) | Sonnet 5 / medium-high |
-| 3 | T2 overlap (S-T2) | Sonnet 5 / high |
-| 4 | T3 progressive presentation | Sonnet 5 / high |
-| 5 | T4 finalize split (S-T4) | Opus 5 / high |
-| 6 | T5b gender-in-sidecar (S-T5b) | Sonnet 5 / high |
-| 7 | T9a shared sessions, then T9b constraints (S-T9a/b) | Opus 5 / high |
-| 8 | T11 TRT EP (S-T11) | Opus 5 / high (escalate per spec) |
-| 9 | T10 upstream PRs (UPSTREAM_PRS.md gameplan) | Opus 5 / high |
-| 10 | T12 corpus clustering — FIRST locate user's prior research, then spec (Fable), then build | Fable 5 spec / Opus build |
-| — | T13 text ladder | Sonnet 5 / medium, after baseline profiling |
+| session | goal | model/effort | subagents? |
+|---|---|---|---|
+| 1 | T1 flip + E2E baseline (needs user go post-PR) | Opus 5 / high | YES: bench-runner for the 3-config baseline legs (run timed legs SEQUENTIALLY — §4.11); doc-scribe for RESULTS; verifier for gates |
+| 2 | T5a priority fix + T6 telemetry + T8 VAD sweep | Sonnet 5 / medium-high | YES: ideal parallel trio (independent files) + one verifier pass |
+| 3 | T2 overlap (S-T2) | Sonnet 5 / high | NO for the edit (single file surgery); bench-runner for the gate measurements |
+| 4 | T3 progressive presentation | Sonnet 5 / high | OPTIONAL: backend-event + frontend-fetch as two subagents (disjoint files), orchestrator integrates |
+| 5 | T4 finalize split (S-T4) | Opus 5 / high | NO (stages/pipelines topology change — one mind); verifier after |
+| 6 | T5b gender-in-sidecar (S-T5b) | Sonnet 5 / high | YES sequential: export+parity (python) → Rust endpoint → app rewire; verifier between hops |
+| 7 | T9a shared sessions, T9b constraints (S-T9a/b) | Opus 5 / high | NO (vendored-crate surgery, single rust-surgeon); verifier runs full test suite + Phase-B subset |
+| 8 | T11 TRT EP (S-T11) | Opus 5 / high | NO for config; bench-runner for warm timings; escalate via fable spawn per spec |
+| 9 | T10 upstream PRs | Opus 5 / high | YES: per-branch isolated validation as PARALLEL subagents with `isolation: worktree` (each branch validated on a clean tree); orchestrator submits |
+| 10 | T12 corpus clustering | Fable 5 spec / Opus build | YES: research-locator + profiler subagents (parallel, read-only) feed the design |
+| — | T13 text ladder | Sonnet 5 / medium | YES: per-model profiling/conversion legs parallel; verifier for parity fixtures |
+
+Standing rule: timed benchmark legs are NEVER run in parallel with each other or with other
+compute (RESULTS §4.11) — parallel subagents are for edits/research/scoring, sequential for
+timing.
 
 Sessions 2-6 are independent enough to reorder; 3+5 both touch stages.py/pipelines.py — do not
 run them concurrently in separate sessions.
