@@ -399,6 +399,25 @@ T1 ship gate CLEARED. `results/speakrs_ami_optimized_der.json`.
   worker + explicit empty_cache) — same pressure applies to the T1 sidecar, so this list is
   scheduled work, not trivia.
 
+### 4.26 C-M1 GATE PASSED — diar-core wrapper + diar-cli + diar-server land
+
+The Phase-C workspace (crates/diar-{core,cli,server}) is built and validated:
+- **AMI-16 via diar-cli: 13.101% aggregate — identical; 16/16 RTTMs content-identical** to the
+  recorded optimized run (URI field differs by design; timestamps+speakers exact).
+- **Karpathy via diar-cli: content-identical, deterministic ×3, 141-148× RT** (27-28 s —
+  faster than per-file xtask runs because ONE engine load serves all files: the sidecar
+  amortization win, previewed).
+- Centroids: 2×256 un-normalized (norm≠1 verified) row-aligned to speakers; exclusive
+  segments emitted (692 full / 660 exclusive on Karpathy); embed_window implemented.
+- Binaries: **~31 MB each** (diar-cli, diar-server) + ~33 MB models vs the 9 GB torch image.
+- Build lessons: **ort must be pinned `--precise 2.0.0-rc.12`** (cargo resolved rc.13 whose
+  static core mismatches the 1.24.2 provider libs → "vector::reserve" at session load) —
+  risk-register item materialized, mitigated in Cargo.lock; `MaskedEmbeddingInput` needed a
+  vendor re-export (upstream PR trivia); container-written result dirs are root-owned (chown
+  before host-side renames); CLI needs a first-dot label mode (TODO).
+Remaining M1 scope (next session): speaker-count constraints port, Arc-shared sessions,
+lazy session loading (VRAM), supervisor hardening in diar-server.
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;
@@ -417,9 +436,13 @@ in §4.4 are the honest serving baseline.
 
 ## 5. Bugs/quirks found (upstream-reportable)
 
-1. **speakrs teardown crash:** `corrupted double-linked list` (glibc) at process exit in `cuda`
-   mode AFTER results are flushed — ORT CUDA EP unload vs mimalloc interplay. Workaround:
-   don't trust exit codes; validate RTTM output content (run_speakrs.sh does).
+1. **speakrs teardown crash:** `corrupted double-linked list` (glibc) at process EXIT in `cuda`
+   mode, after results flush — reproduced with both mimalloc (xtask) and glibc malloc (diar-cli),
+   so it's the ORT-CUDA teardown path, not the allocator. (A suspected mid-run occurrence during
+   C-M1f was traced to a shell-quoting bug in the benchmark harness invocation, NOT the crash —
+   de-escalated after verification; multi-file single-process runs are stable.) diar-server
+   still gets a supervisor/auto-restart as standard hardening. Workaround: validate output
+   content, not exit codes.
 2. **speakrs xtask build without BLAS:** `cargo build -p xtask --features cuda` fails
    (`speakrs requires a BLAS backend`) because xtask pins `default-features = false`.
    Fix: `--features cuda,speakrs/openblas-system` (Dockerfile.bench does this).
