@@ -349,6 +349,28 @@ threads over disjoint condensed ranges; (3) ndarray `matrixmultiply-threading`. 
 speakrs' own Python-parity fixture tests (AHC scipy label order; VBx gamma/pi vs pyannote at
 1e-4/1e-5) must pass — matmul reassociation is within tolerance by construction (f64).
 
+### 4.23 C-M1b RESULT — clustering optimization clears the ship gate at 2× margin
+
+Vectorized VBx + threaded blocked pdist (quiet A6000, 4.7h file, same conditions as §4.19):
+
+| | pre-opt | post-opt | fork |
+|---|---|---|---|
+| 4.7h wall | 474 s | **171.6 s (~99× RT)** | 349 s |
+| pdist | 64.5 s | 1.2 s (53×) | — |
+| VB-EM | 305.1 s | 36.7 s (8.3×) | — |
+| clustering total | 348 s | 43.6 s (8×) | ~145 s (scipy) |
+
+**RTTM bit-identical to the pre-optimization run** — zero boundary drift. All 16 speakrs
+clustering tests pass incl. Python-parity fixtures (AHC==scipy label order; VBx gamma/pi vs
+pyannote @1e-4/1e-5; PLDA fixture) — fixtures need `fixtures/` + `fixtures/models/` (plda_*.npy)
+mounted, and `RUST_MIN_STACK` for the 2 MB test-thread stack (test-harness artifact only).
+
+**G4 final: CLEAN SWEEP — speakrs 1.2× (Karpathy), 1.26× (2.2h), 2.03× (4.7h) faster than the
+production fork.** The T1 ship gate (≥1.0× on 4.7h) is cleared 2×. speakrs' Rust clustering now
+also beats scipy (43.6 vs ~145 s). Patch set: `patches/0001-cuda-performance-patch-set.patch`
+(217 insertions, 8 files: fbank pool + threads, multimask-b64, VBx vectorization, pdist blocks,
+ndarray threading). AMI-16 revalidation with this build → §4.24.
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;
