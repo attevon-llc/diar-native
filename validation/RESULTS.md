@@ -299,6 +299,27 @@ reading that directory** → 3.2h runs 1-2 and all 4.7h runs crashed (empty RTTM
 on 3.2h is this, not nondeterminism). Re-run launched from the fixed dir. RULE: never mutate a
 model/data dir that a live benchmark mounts; stage changes in a new dir.
 
+### 4.19 QUIET-MACHINE TIMING PASS (the definitive G4 numbers) — 2026-08-19
+
+Same A6000 (GPU 0), sequential, zero other load, 2 runs each. Fork via production code path;
+speakrs = patched build (models_folded, SPEAKRS_FBANK_POOL=8), wall incl. ~2-4 s container start.
+
+| file | fork | speakrs patched | ratio |
+|---|---|---|---|
+| 2.2h_7998s (3 spk) | 106.4 / 105.8 s (75× RT) | **83.2 / 85.0 s (95× RT)** | **speakrs 1.26× FASTER** |
+| 4.7h_17044s (8 spk) | 346.7 / 352.2 s (49× RT) | 503.9 / 466.5 s (35× RT) | speakrs 1.39× slower |
+
+**G4 verdict: SPLIT.** Typical content → speakrs wins (and AMI corpus at 89× RT on the 3080 Ti
+corroborates at scale). The extreme 4.7h/8-speaker file — where clustering N is largest
+(~50k embeddings) — flips it; suspected AHC linkage scaling (kodama vs scipy's C linkage) or
+fbank at 17k chunks; trace-instrumented run in progress for attribution (§4.20). Fork peak VRAM
+886 MB both files; speakrs VRAM not gated (earlier obs ~2-4 GB).
+
+**Decision impact (per PLAN decision rule):** accuracy gates all pass (§4.16d arbiter) → GO on
+the adoption track, with "≥1.0× fork on the 4.7h file" retained as the T1 SHIP gate — the
+long-file clustering gap becomes a named Milestone-1 optimization item (likely upstream-PR-able,
+same as the fbank pool).
+
 ### 4.18 fp16 engines — deferred (TRT 11 strongly-typed)
 
 TRT 11 (26.06 image) removed `--fp16`: networks are **strongly typed by default** — engine
