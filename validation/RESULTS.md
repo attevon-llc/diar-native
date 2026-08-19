@@ -982,3 +982,56 @@ The shared-memory theme the user raised applies twice over: gender detection re-
 over presigned URLs that diarization already had in memory, and preprocess writes a WAV that
 exists only so a second process can read it back. Both disappear if the sidecar owns decode and
 holds the PCM for the tasks that need windows of it.
+
+### 7.16 Gender detection moved into the sidecar (T5b) — and two things it taught
+
+Motivation from §7.15: `detect_speaker_attributes` was the second-largest task in the pipeline
+at **87-90 s** on one CPU core, re-fetching clips over presigned URLs that diarization had
+already decoded. It now rides the `/diarize` call behind a `gender` flag, classifying windows of
+the PCM already in hand.
+
+| | before (app, CPU) | after (sidecar, GPU) |
+|---|---|---|
+| wall time | 87-90 s | **~1.5 s** |
+| audio fetch | presigned URL + ffmpeg per clip | slice of the existing buffer |
+| when it runs | after user-visible completion | inside transcription's window (free) |
+
+**Parity gate: PASSED.** ONNX vs PyTorch across 20 clips of varying length: max |logit diff|
+**5.96e-06** (bar 1e-4), **zero** label mismatches.
+
+**Window length was a self-inflicted VRAM bug.** Speaker turns run to a minute, and wav2vec2
+activations scale with input length, so passing whole turns meant 60 s clips and **6 340 MiB**
+of VRAM for no accuracy gain. Windows are now centre-cropped (the middle of a turn is the
+cleanest voice). Cap swept on the reference clip:
+
+| cap | VRAM (container) | wall, 10-min clip | verdicts |
+|---|---|---|---|
+| 3 s | 4 804 MiB | 5.88 s | female 0.796 / male 0.999 |
+| **5 s (default)** | **4 804 MiB** | 5.96 s | female 0.797 / male 0.999 |
+| 10 s | 5 316 MiB | 6.16 s | female 0.789 / male 0.999 |
+| (uncapped, 60 s) | 6 340 MiB | — | same decisions |
+
+**Identical decisions at every cap**, so the choice is pure cost: 5 s costs the same memory as
+3 s and sees more voice. Marginal VRAM over diarization alone is **~670 MiB**, tunable with
+`DIAR_GENDER_MAX_SECONDS` for the laptop tier. The app never hit this because CPU inference on
+an oversized clip is merely slow, not fatal.
+
+### 7.17 Whisper batch size — no win available, and why (INVALID SWEEP RETRACTED)
+
+A sweep of `BATCH_SIZE` ∈ {8,16,24,32} produced 55-61 s across all four settings. **It was
+invalid**: the compose variable is `GPU_DEFAULT_BATCH_SIZE` (mapped to `BATCH_SIZE` inside the
+container), so setting `BATCH_SIZE` was overwritten with `auto` and every run was batch=8. The
+spread was run-to-run noise. Retracted rather than reported.
+
+The answer was already in the codebase, and it matches the user's instinct that the largest
+batch is not the most efficient — `hardware_detection.py:118`, from the Phase B VRAM sweep
+(raw data `transcribe-app/docs/whisper-vram-profile/`):
+
+> Plateau points (RTF stops improving above these): **large-v3-turbo: batch=8** (RTF 0.009 from
+> bs=8 onward)
+
+So batch=8 is correct on speed grounds and raising it only spends VRAM. Two notes for later:
+the 3080 Ti reports 11 902 MB usable, landing *just* under the rule's `>= 12 GB → 24` threshold;
+and that rule's budget still assumes "CUDA context + PyAnnote diarization models pre-loaded in
+the celery worker", which the flip made obsolete — roughly 2 GB more headroom than the rule
+believes. Neither changes the conclusion, because the plateau binds before VRAM does.
