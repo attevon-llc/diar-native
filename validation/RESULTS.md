@@ -841,8 +841,9 @@ A6000s (49 GB each) are **completely idle**: 15 MiB apiece.
 Three things follow, and they change how parallel throughput should be approached:
 
 1. **Diarization is now the largest GPU consumer — 2× the ASR model** — but it is a *fixed*
-   cost, not a per-job one. Whisper is the only thing that scales with concurrency. Marginal
-   VRAM per additional concurrent job is therefore ~2 GB, not ~6 GB.
+   cost, not a per-job one. **Marginal cost per concurrent job is ~490 MiB** (measured §7.14),
+   not the ~2 GB first estimated here: `celery-worker` runs `--pool=threads`, so all 8 threads
+   share one ModelManager and one copy of the whisper weights — only activations scale.
 2. **The advertised concurrency does not match the memory.** `celery-worker` runs
    `--pool=threads --concurrency=8` with `GPU_CONCURRENT_REQUESTS=8`, but 4.3 GB of headroom
    only funds ~2 more concurrent whispers (`GPU_DEFAULT_CONCURRENCY=2` is the honest number).
@@ -897,3 +898,41 @@ run that had stalled behind §7.11's wedge resumed when the CPU worker was resta
 concurrently with its own replacement, so two timed legs overlapped. The numbers above are from
 a clean re-run. `run_e2e_baseline.sh` now takes an `flock`, so a leg refuses to start while
 another holds the lock.
+
+### 7.14 Concurrency + VRAM behaviour under load (answering "will we run out?")
+
+Measured on GPU 1 by sampling `nvidia-smi` **during** three concurrent reprocess jobs (a first
+attempt sampled after the jobs had already finished and was discarded as meaningless):
+
+| state | GPU 1 used |
+|---|---|
+| idle floor | 7 575 MiB |
+| peak, 3 concurrent jobs | 9 047 MiB |
+| **marginal per concurrent job** | **~490 MiB** |
+| settled afterwards | 7 575 MiB — **exactly** the idle floor |
+
+**Not a leak.** It returns to the same figure after every run, so VRAM does not creep upward
+over time. What is held is a floor, and headroom above it is genuinely reusable: 4 328 MiB free
+÷ ~490 MiB ≈ **8 concurrent jobs**, which is consistent with `GPU_CONCURRENT_REQUESTS=8`.
+
+**Correction to §7.12:** the marginal cost is ~490 MiB, not the ~2 GB stated there. The GPU
+worker runs `--pool=threads --concurrency=8`, so all eight threads share one ModelManager and
+one copy of the whisper weights — only per-request activations scale with concurrency.
+
+**Why the floor is 7.5 GB in the first place** — three deliberate warm-start decisions, and one
+of them is earned rather than allocated:
+
+| moment | GPU 1 total | change |
+|---|---|---|
+| app only, no sidecar | 2 838 MiB | whisper preloaded and pinned at worker startup |
+| sidecar started | 3 385 MiB | +547 MiB — ONNX **weights only** |
+| after a 30 s clip | 4 069 MiB | arena begins growing |
+| after a 10 min clip | 6 979 MiB | arena sized to batch-32 activations |
+| steady since | 7 575 MiB | high-water mark, never returned |
+
+So the sidecar's 4 136 MiB is ~547 MiB of weights plus ~3.6 GB of ORT BFC arena and cuDNN conv
+workspace, acquired on first real inference and kept. `arena_extend_strategy` is **already**
+`SameAsRequested` (the lean setting), so the remaining levers are `with_conv_max_workspace(false)`
+with a cheaper `ConvAlgorithmSearch`, ORT's per-run `memory.enable_memory_arena_shrinkage` (the
+closest analogue to `torch.cuda.empty_cache()`), and a shared cross-session allocator (§4.25).
+Each trades against speed and must be benchmarked, not assumed.
