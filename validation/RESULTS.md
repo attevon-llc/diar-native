@@ -790,3 +790,110 @@ Fix, in three parts so it holds on any machine:
    `0:0 755 → 1000:1000 755` on both volumes; worker write probe passes on both.
 3. `audio_loader.write_wav_to_shared_volume` now catches `PermissionError` separately and names
    the repair script instead of logging a bare EACCES.
+
+### 7.11 PRODUCTION BUG FOUND — gender detection can wedge the whole CPU worker pool
+
+Surfaced while running the T2 E2E leg. The pipeline stalled indefinitely: the GPU task for
+`warpdrive_358s` succeeded, but the file never left `processing` and the next iteration's
+`transcription.preprocess` was never scheduled.
+
+`celery inspect active` on `celery-cpu-worker` (`--concurrency=8`): **all 8 slots held by
+`detect_speaker_attributes`**, oldest ~2.5 h old, `priority: 2`, `acknowledged: True`. With
+every slot taken, `preprocess` — which shares the `cpu` queue — can never run. This is a
+**liveness bug**, not the priority competition L5a describes: gender detection can deadlock the
+entire ingest pipeline.
+
+Established: 2 `ForkPoolWorker` children exited with `signal 9 (SIGKILL)`; the container is not
+`OOMKilled` and the host had 445 GB available, so host memory pressure is ruled out. **Not**
+established: whether the remaining slots are dead-but-leaked bookkeeping or live-and-stuck
+children — the `/proc` probe was inconclusive and is not claimed either way.
+
+Prime suspect (`speaker_attribute_task.py:125-134`): `fut.result(timeout=30)` bounds only the
+*wait*, not the work, and `with ThreadPoolExecutor(...)` calls `shutdown(wait=True)` on exit —
+so a segment fetch that never returns makes the task hang forever regardless of the timeout.
+Every reprocess enqueues another of these, which is why a benchmark loop reproduced it quickly
+where normal usage would take much longer to accumulate 8.
+
+Bearing on the plan: this raises T5a from a latency tweak to a correctness fix, and strengthens
+T5b (moving gender into the sidecar deletes the presigned-URL fetch pool that is the suspected
+hang). Any fix must also cap how many CPU slots this task can occupy, so it can never take the
+whole pool again.
+
+Benchmark hygiene: `speaker_attribute.detection_enabled=false` was set in `system_settings` to
+keep the wedge from recurring mid-measurement. **It must be set back to true** once the T2 legs
+are recorded — the setting is a benchmark accommodation, not a product decision.
+
+### 7.12 VRAM BASELINE for the post-flip workflow (and what it means for parallelism)
+
+Steady-state, all models warm, GPU 1 (RTX 3080 Ti, 12 288 MiB), measured by
+`nvidia-smi --query-compute-apps` with PIDs mapped back to containers:
+
+| consumer | VRAM | share | per-job or fixed? |
+|---|---|---|---|
+| **diar-native sidecar** (fast set) | **4 136 MiB** | 34% | **fixed** — one copy serves every job |
+| celery-worker (whisper large-v3-turbo, int8_float16, batch 8) | 2 038 MiB | 17% | **per worker process** |
+| celery-redaction (toxic-bert / xlm-roberta) | 1 346 MiB | 11% | fixed, resident even when idle |
+| free | 4 328 MiB | 35% | |
+
+Gender detection (wav2vec2) runs **on CPU** — 0 VRAM, ~380 MB RAM, 87-90 s per file. The two
+A6000s (49 GB each) are **completely idle**: 15 MiB apiece.
+
+Three things follow, and they change how parallel throughput should be approached:
+
+1. **Diarization is now the largest GPU consumer — 2× the ASR model** — but it is a *fixed*
+   cost, not a per-job one. Whisper is the only thing that scales with concurrency. Marginal
+   VRAM per additional concurrent job is therefore ~2 GB, not ~6 GB.
+2. **The advertised concurrency does not match the memory.** `celery-worker` runs
+   `--pool=threads --concurrency=8` with `GPU_CONCURRENT_REQUESTS=8`, but 4.3 GB of headroom
+   only funds ~2 more concurrent whispers (`GPU_DEFAULT_CONCURRENCY=2` is the honest number).
+   `DIAR_MAX_INFLIGHT=2` is likewise notional while diar-server serializes on
+   `Mutex<DiarEngine>` (T9a).
+3. **The cheapest capacity wins are placement, not shrinking models.** Moving the redaction
+   worker off GPU 1 (`REDACTION_GPU_DEVICE_ID`, config-only) returns 1.3 GB; moving the sidecar
+   to an idle A6000 (`DIAR_NATIVE_GPU`, config-only) returns 4.1 GB. Doing both leaves GPU 1
+   almost entirely to whisper — roughly 5 concurrent jobs instead of 2 — with **zero** model
+   or code changes. The small model set is the wrong lever here: it saves 2.6 GB but costs
+   3.6× diarization speed (§7.5).
+
+What still gates real parallel throughput is T9a: even with VRAM freed, one diar-server
+serializes requests, so N concurrent app jobs queue at the sidecar. Arc-shared sessions turn
+that fixed 4.1 GB into a genuinely shared engine (`1 engine + N × scratch`).
+
+Caveat: these are steady-state resident figures. The VRAM profiler recorded no meaningful
+per-step growth during the T2 legs (device_used held at ~7.9 GB across pipeline_start →
+after_diarization), so resident ≈ peak for this workload — but that was measured at
+concurrency 1, and peaks under genuine multi-job load are unmeasured.
+
+### 7.13 T2 GATE PASSED — transcribe ∥ diarize overlap
+
+Change: `_AsyncDiarization` starts diarization as soon as the audio is in memory and collects it
+after transcription, in both `_GpuRawStage` (the production path) and `_GpuStage`. Gated on
+`DIARIZER_ENGINE=native`; `DIAR_OVERLAP=0` restores the sequential order; a failed overlapped
+attempt falls back to a plain inline run.
+
+**Output identity — the gate.** Both stages read the same numpy buffer, so identity was proved,
+not assumed. Same clip, overlap ON vs OFF: `diarize_records` (766), `overlap_info`, speaker
+embeddings and whisper `raw_segments` all **byte-identical**. Nothing mutates the shared audio.
+
+**Max-not-sum.** 66.5-min clip: transcription 50.3 s with 37.5 s of diarization running inside
+it; the join cost **0.005 s**. Sequential the same work is 87.8 s.
+
+**E2E, 5 files × 3 runs, sequential legs, quiet machine** (median upload→presented):
+
+| file | audio | python | native | native+overlap | total speedup | RT before → after |
+|---|---|---|---|---|---|---|
+| test_ai_video | 24 s | 5.7 s | 5.2 s | **4.2 s** | 1.36× | 4× → 6× |
+| pyramids | 239 s | 11.9 s | 9.1 s | **7.2 s** | 1.65× | 20× → 33× |
+| warp drive | 358 s | 15.0 s | 11.8 s | **8.6 s** | 1.74× | 24× → 42× |
+| Karpathy | 3989 s | 108.4 s | 80.5 s | **54.4 s** | **1.99×** | 37× → **73×** |
+| seed file | 7558 s | 206.7 s | 147.2 s | **120.3 s** | 1.72× | 37× → 63× |
+
+Cumulative effect of the flip plus overlap: **upload→presented is 1.7-2.0× faster** on media
+over a minute, and the short-file floor (~4 s of fixed per-job overhead) is now what limits the
+small end.
+
+**Measurement incident (logged per §4.11).** A first attempt at this leg was **discarded**: the
+run that had stalled behind §7.11's wedge resumed when the CPU worker was restarted and ran
+concurrently with its own replacement, so two timed legs overlapped. The numbers above are from
+a clean re-run. `run_e2e_baseline.sh` now takes an `flock`, so a leg refuses to start while
+another holds the lock.

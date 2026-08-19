@@ -7,6 +7,15 @@
 set -euo pipefail
 
 LABEL="${1:?usage: run_e2e_baseline.sh <label>}"
+
+# Timed legs must never run concurrently (RESULTS §4.11). A stalled leg that resumes while
+# its replacement is running silently contaminates both — which is how one T2 measurement was
+# lost. Refuse to start rather than produce numbers nobody can trust.
+exec 9>/tmp/diar_e2e_baseline.lock
+if ! flock -n 9; then
+  echo "another E2E leg is already running (/tmp/diar_e2e_baseline.lock) — refusing to start" >&2
+  exit 1
+fi
 APP=/mnt/nvm/repos/transcribe-app
 PY=/mnt/nvm/repos/diar-native/venv/bin/python
 OUT=/mnt/nvm/repos/diar-native/results/e2e_baseline/$LABEL
