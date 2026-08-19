@@ -49,6 +49,26 @@ effort; still failing → hand that one task to Fable 5 with the failure transcr
 alternative: Sonnet 5 / high (accepts more retries on T9/T11). Fable 5 reserved for: T12 design
 (after the user's clustering research is located) and escalations only.
 
+## Delegation pattern (orchestrator + mixed-model subagents)
+
+The orchestrating session CAN spawn subagents with different models/efforts:
+- Agent tool: per-spawn `model` override (sonnet/opus/haiku/fable). Effort comes from custom
+  agent definitions (`.claude/agents/*.md` frontmatter: model + reasoning effort). Suggested
+  definitions to create once: `bench-runner` (sonnet, medium — runs benchmark/scoring legs),
+  `doc-scribe` (sonnet, low — RESULTS/PLAN updates), `rust-surgeon` (opus xhigh — vendored-crate
+  changes), `verifier` (opus high — runs gates INDEPENDENTLY of whoever did the work).
+- Workflow tool: per-agent `model:` AND `effort:` overrides for deterministic fan-outs
+  (requires explicit user opt-in per its rules).
+- Rules: (1) subagents start with NO context — every delegation prompt must include the
+  doc-reading preamble from the MASTER PROMPT; (2) the agent that does work never grades its
+  own gate — orchestrator or `verifier` runs gates; (3) parallel subagents must not co-schedule
+  timed benchmarks (RESULTS §4.11) or touch the same files (3+5 conflict note below);
+  (4) escalation can be a `model: fable` subagent spawn with the failure transcript — no
+  session switch needed.
+- Economy shape: Opus orchestrator holds the plan + judgment; Sonnet subagents burn the
+  mechanical tokens; Fable appears only in escalation spawns. This is the cheapest correct
+  configuration for the full plan.
+
 ## Session sequence (recommended order + model per DETAILED_SPECS matrix)
 
 | session | goal | model/effort |
