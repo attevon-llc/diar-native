@@ -118,7 +118,7 @@ impl DiarEngine {
     pub fn diarize(&mut self, audio: &[f32], file_id: &str) -> Result<DiarizeOutput> {
         let mut pipeline = DiarizationPipeline::new(&mut self.seg, &mut self.emb, &self.models_dir)
             .map_err(|e| anyhow::anyhow!("pipeline init: {e}"))?;
-        let mut result = pipeline
+        let result = pipeline
             .run_with_file_id(audio, file_id)
             .map_err(|e| anyhow::anyhow!("diarization: {e}"))?;
 
@@ -132,14 +132,9 @@ impl DiarEngine {
             .collect();
         let num_speakers = centroids.len();
 
-        // Exclusive variant: highest-scoring speaker per frame, re-segmented.
-        result.discrete_diarization.make_exclusive();
-        let exclusive_segments = result
-            .discrete_diarization
-            .to_segments()
-            .iter()
-            .map(to_segment_out)
-            .collect();
+        // Exclusive variant: the engine resolves overlaps by activation score and applies the
+        // same duration filter and gap merging the full segments get.
+        let exclusive_segments = result.exclusive_segments.iter().map(to_segment_out).collect();
 
         Ok(DiarizeOutput {
             segments,
