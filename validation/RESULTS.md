@@ -330,6 +330,25 @@ gate): faster linkage at N>10k (nn-chain port, stronger filter_embeddings pre-re
 sub-sampled seeding) — upstream-PR candidate alongside the fbank pool. Secondary: fbank pool
 scaling for 17k-chunk files (74 s at pool=8; raise pool for long files).
 
+### 4.22 C-M1a: 4.7h clustering sub-stage attribution (instrumented vendored build)
+
+At N=21,418 filtered embeddings, **K=1,902 AHC seed clusters**, D=256/128:
+
+| sub-stage | time | cause |
+|---|---|---|
+| AHC pdist | 64.5 s | naive per-pair scalar loop (O(N²·D) scalar f32) |
+| AHC kodama linkage | 5.1 s | fine — NOT the problem |
+| PLDA transform | 0.24 s | fine |
+| **VBx VB-EM** | **305.1 s** | scalar O(N·K·D) loops ×20 iters incl. per-sample recompute of a per-speaker penalty |
+| centroids+assign | ~0.4 s | fine |
+
+Fixes implemented (vendored; upstream-PR candidates): (1) VBx vectorization — M-step as
+`gammaᵀ·rho` matmul, E-step as `rho·alphaᵀ` matmul + penalty vector computed once, fused
+logsumexp/gamma row pass; (2) pdist as blocked Gram matmul (`d²=|a|²+|b|²−2ab`) with scoped
+threads over disjoint condensed ranges; (3) ndarray `matrixmultiply-threading`. Numerics guard:
+speakrs' own Python-parity fixture tests (AHC scipy label order; VBx gamma/pi vs pyannote at
+1e-4/1e-5) must pass — matmul reassociation is within tolerance by construction (f64).
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;
