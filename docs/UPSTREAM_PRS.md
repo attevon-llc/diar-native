@@ -149,15 +149,20 @@ diff vs unpatched; (c) record isolated speedup. Attach per-PR numbers — mainta
 isolated effects over combined ones. Known isolated numbers so far: folded seg −7%;
 batching+pool 3.1× (ES2004a); VBx/pdist 2.76× (4.7h) — re-confirm on upstream tip.
 
-**Step 3 — submission order & dependencies:**
-1. **PR-1 first** (one-line bug fix + crash repro) — cheap review, builds trust.
-2. **PR-6 second** (flagship; independent of PR-1) — lead with the evidence table + "output
-   bit-identical, your own fixtures pass". Offer to split ndarray-threading into its own commit.
-3. **PR-2 third** (depends conceptually on PR-1 landing; be ready to rework env vars into
-   `RuntimeConfig` if asked — say so proactively in the description).
-4. **PR-3 last** (export script; lowest risk, no runtime code).
-5. File the **issues** (teardown crash, batched-fbank numeric deviation, chunk-emb-workers
-   no-op, shared-sessions design proposal) as issues alongside, referencing the PRs.
+**Step 3 — submission shape (DECIDED 2026-08-19: consolidated to TWO PRs — a burst of 4+ PRs
+overwhelms a single-maintainer project):**
+1. **PR-A: the one-line multimask batching bug fix** (+ crash repro). Kept separate because a
+   trivial merge should never be held hostage by discussion of the perf series — and it builds
+   trust for PR-B.
+2. **PR-B: "CUDA pipeline performance series"** — ONE PR, THREE clean commits reviewable
+   independently: (i) VBx vectorization + threaded blocked pdist (the 8× clustering win,
+   output-bit-identical), (ii) fbank session pool + thread override (note in the description:
+   happy to rework env vars into `RuntimeConfig`), (iii) folded-segmentation export.
+   Commit-per-change lets the maintainer drop/rework one piece without stalling the rest.
+   Cover letter = the consolidated E2E story table above.
+3. Bug **reports** (teardown crash, batched-fbank numeric deviation, chunk-emb-workers no-op)
+   and the shared-sessions design proposal go as ordinary issues on their own schedule — issues
+   are not review burden the way PRs are.
 
 **Step 4 — PR body template** (each PR): problem → root cause → change summary → isolated
 benchmark table (hardware named: RTX A6000 / 3080 Ti, quiet-machine protocol) → accuracy proof
