@@ -4,6 +4,7 @@
 begun as a tail-end change (see "Why this is a dedicated task").
 **Repos:** `diar-native` (this repo) — vendored crate at `vendor/speakrs`, wrapper at
 `crates/diar-core`, server at `crates/diar-server`. `transcribe-app` is *not* touched by this task.
+**Corpora, file paths and every baseline number:** `docs/TEST_CORPORA_AND_BASELINES.md`.
 **Read first:** `validation/RESULTS.md` §7.24 (the measurement), §4.11 (benchmark hygiene),
 §4.26 (build traps), `docs/DETAILED_SPECS.md` S-T9a, `PLAN.md` decision #4.
 

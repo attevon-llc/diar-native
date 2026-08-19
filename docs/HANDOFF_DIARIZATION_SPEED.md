@@ -4,6 +4,7 @@ Companion to `HANDOFF_T9A_SHARED_SESSIONS.md`. That one is about **concurrency**
 once); this one is about **single-job speed** and the work that feeds it. Both target
 `diar-native`; neither touches `transcribe-app`.
 
+**Corpora, file paths and every baseline number:** `docs/TEST_CORPORA_AND_BASELINES.md`.
 **Read first:** `validation/RESULTS.md` §7.5, §7.13-7.15 (where the time actually goes), §4.16
 (the fbank ladder), §4.4-4.6 (TensorRT evidence), `docs/BENCHMARK_PROTOCOL.md` (how to measure
 anything here without producing numbers nobody can trust).

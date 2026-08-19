@@ -119,6 +119,7 @@ diar-native/
 │   ├── ort_cuda_microbench.py ← ORT CUDA EP folded-vs-unfolded-vs-eager microbench
 │   └── triton_bench.py        ← Triton gRPC latency/throughput bench
 ├── docs/
+│   ├── TEST_CORPORA_AND_BASELINES.md   ← where the audio/refs live + every number to beat
 │   ├── HANDOFF_T9A_SHARED_SESSIONS.md  ← shared sessions so diarization stops serialising
 │   ├── HANDOFF_DIARIZATION_SPEED.md    ← the remaining single-job speed levers, ranked
 │   ├── VRAM_AND_TIERS.md      ← what holds GPU memory, why, and what fits on 4/8/12 GB
