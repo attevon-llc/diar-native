@@ -39,6 +39,10 @@ COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
 # ORT resolves provider libs relative to the executable dir AND cwd — cover both.
 RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ && \
     mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/
+# Audio handoff volume. A named volume inherits this directory's mode at creation, and the
+# calling worker is non-root (appuser) in every deployment we target — without 1777 here the
+# volume lands root-owned 0755 and every /diarize write fails with EACCES.
+RUN mkdir -p /tmp/diar-native && chmod 1777 /tmp/diar-native
 WORKDIR /srv
 EXPOSE 8701
 ENTRYPOINT ["/usr/local/bin/diar-server"]
