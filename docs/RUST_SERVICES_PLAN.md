@@ -110,3 +110,19 @@ Phase P3 (only if profiling justifies): standalone `prep-server` producing decod
   (INSTALL_NATIVE hook variant); in-flight jobs retried by Celery.
 - Multi-user fairness → Celery priorities/rate limits (existing app machinery — decision #3:
   orchestration stays in Celery, never in the sidecar).
+
+## 6. Cross-file speaker clustering (large-corpus speaker identification) — user-flagged lever
+
+Distinct from within-file VBx (solved, 8×): resolving speakers ACROSS the library
+(speaker_matching_service + OpenSearch kNN, thresholds 0.5/0.75; batch re-resolution jobs).
+User has prior research on large-corpus embedding clustering methods (CPU/GPU) — locate and
+cite it (GH issues/docs) before design; do not re-derive.
+
+Rust shape:
+- **Warm ANN index in-process** (usearch or hnsw_rs): sub-ms nearest-centroid queries;
+  OpenSearch stays the durable store, index = rebuildable cache. Fits micro-batching.
+- **Batch global re-resolution**: incremental centroid clustering reusing the vectorized
+  distance machinery from the VBx/pdist work; CPU to ~1e5 vectors, GPU (cuVS-class) only past
+  that per the >2× placement rule (§3a2).
+- Gate: decision-parity vs the current matching service on a fixture library BEFORE speed
+  claims (same discipline as diarization).
