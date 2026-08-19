@@ -57,7 +57,7 @@ multi-user/AWS scale?**
 | G2 | Karpathy DER ≤ +0.1pp, 2 speakers | ✅ +0.025pp, exact, deterministic |
 | G3 | duration-curve A/B ≤0.5% median, ≤2% max, speaker-exact ×5 | ✗ as-written on synthetic files (3.2h 6.05%, 4.7h 2.27%, +1 cluster) — **formally adjudicated as synthetic-content edge case by the VoxConverse arbiter** (below); ground-truth gates govern |
 | G3-arbiter | VoxConverse dev-216 ground truth | ✅ **speakrs 4.847% BEATS fork 5.099%**; speaker counts equal on 211/216; per-file DER wins 95-38 (83 ties); ground-truth-count matches 138 vs 136 |
-| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ◐ **SPLIT (quiet-machine, RESULTS §4.19)**: 2.2h **1.26× faster** (84 vs 106 s), Karpathy **1.2× faster** (40 vs 48 s), AMI corpus 89× RT on a lesser GPU; 4.7h extreme file 1.39× slower — attributed to AHC linkage at N≈50k (74% of wall, §4.20). Ship gate retained: ≥1.0× on 4.7h before default flip. |
+| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ✅ **CLEAN SWEEP after clustering optimization (RESULTS §4.22-4.24)**: 2.2h 1.26×, Karpathy 1.2×, **4.7h 2.03× faster** (171.6 vs 349 s), AMI corpus 105× RT on the A6000. VBx vectorized 8.3×, pdist 53×; RTTMs bit-identical; parity fixtures green. **T1 ship gate CLEARED at 2× margin.** |
 | G5 | bit-determinism ×3 | ✅ everywhere (the two "differing" runs were a self-inflicted mid-run model-dir mutation, documented) |
 
 **FINAL VERDICT: GO on speakrs adoption** per PLAN.md Phase C — T1 shared-weights sidecar as the

@@ -371,6 +371,13 @@ also beats scipy (43.6 vs ~145 s). Patch set: `patches/0001-cuda-performance-pat
 (217 insertions, 8 files: fbank pool + threads, multimask-b64, VBx vectorization, pdist blocks,
 ndarray threading). AMI-16 revalidation with this build → §4.24.
 
+### 4.24 C-M1c — optimized build revalidation: CLOSED
+
+AMI test-16 with the clustering-optimized build: **13.101% aggregate (identical), all 16 RTTMs
+bit-identical to the previous patched run, corpus at 105× RT on the A6000** (fork 80×).
+The optimization is proven accuracy-transparent at corpus scale. C-M1a/b/c complete;
+T1 ship gate CLEARED. `results/speakrs_ami_optimized_der.json`.
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;

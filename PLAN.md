@@ -54,10 +54,11 @@ crates/diar-ffi/     # C-ABI cdylib → T2 Triton custom backend (Triton backend
 ```
 
 Milestones:
-- **M1 diar-core** + upstream PRs (list below) + **T1 SHIP-GATE optimization: AHC linkage at
-  N>10k** (the 4.7h regression, RESULTS §4.20 — nn-chain port / pre-reduction / sub-sampled
-  seeding; ship gate = ≥1.0× fork on the 4.7h file). Gate: re-run full Phase-B suite vs our own
-  RTTMs — DER ≤ 0.3%, determinism, constraint-path fixture tests.
+- **M1 diar-core** + upstream PRs (list below). **T1 SHIP-GATE: CLEARED 2026-08-19** —
+  clustering optimization (VBx vectorization + threaded pdist) makes speakrs 2.03× faster than
+  the fork on the 4.7h file (RESULTS §4.22-4.24); G4 = clean sweep on all files. Remaining M1
+  gate: re-run full Phase-B suite after diar-core wrapper lands — DER ≤ 0.3%, determinism,
+  constraint-path fixture tests.
 - **M2 diar-server + OpenTranscribe integration**: compose service; `diarizer_native.py`
   implementing the `SpeakerDiarizer` contract (`DiarizeResult`, 256-d L2-normalized
   `native_embeddings` via existing `build_native_embeddings`, `overlap_info`), selected by
@@ -79,8 +80,9 @@ Milestones:
    `vendor/speakrs`, gated by `SPEAKRS_FBANK_POOL`/`SPEAKRS_FBANK_THREADS`).
 3. **Folded segmentation graph** in export script (bit-exact, −7% E2E, 2× on ORT-CUDA serving).
 4. **Arc-shared sessions / concurrent pipeline** (decision #4) — after M1 design settles.
-4b. **AHC linkage performance at large N** (RESULTS §4.20: 348 s of a 474 s file, ~2.4× slower
-   than scipy at N≈50k) — likely paired with the fbank-pool PR.
+4b. **VBx vectorization + threaded blocked pdist** — DONE in the local patch set (8× clustering,
+   4.7h 474→171.6 s, RTTMs bit-identical, parity fixtures green; RESULTS §4.22-4.24). This is
+   now the flagship perf PR alongside the fbank pool.
 5. Bug report: ORT-CUDA teardown crash (`corrupted double-linked list`); batched-fbank-graph
    numeric deviation vs single-chunk graph.
 

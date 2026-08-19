@@ -1,1 +1,16 @@
 {"label":"IS1009a","run":0,"mode":"cuda","elapsed_s":11.94,"rttm_lines":220}
+{"label":"IS1009b","run":0,"mode":"cuda","elapsed_s":21.37,"rttm_lines":437}
+{"label":"IS1009c","run":0,"mode":"cuda","elapsed_s":18.08,"rttm_lines":369}
+{"label":"IS1009d","run":0,"mode":"cuda","elapsed_s":19.41,"rttm_lines":518}
+{"label":"ES2004a","run":0,"mode":"cuda","elapsed_s":12.41,"rttm_lines":254}
+{"label":"ES2004b","run":0,"mode":"cuda","elapsed_s":22.76,"rttm_lines":442}
+{"label":"ES2004c","run":0,"mode":"cuda","elapsed_s":22.41,"rttm_lines":478}
+{"label":"ES2004d","run":0,"mode":"cuda","elapsed_s":20.74,"rttm_lines":607}
+{"label":"TS3003a","run":0,"mode":"cuda","elapsed_s":15.81,"rttm_lines":322}
+{"label":"TS3003b","run":0,"mode":"cuda","elapsed_s":20.50,"rttm_lines":391}
+{"label":"TS3003c","run":0,"mode":"cuda","elapsed_s":23.86,"rttm_lines":421}
+{"label":"TS3003d","run":0,"mode":"cuda","elapsed_s":23.57,"rttm_lines":804}
+{"label":"EN2002a","run":0,"mode":"cuda","elapsed_s":21.13,"rttm_lines":869}
+{"label":"EN2002b","run":0,"mode":"cuda","elapsed_s":17.59,"rttm_lines":576}
+{"label":"EN2002c","run":0,"mode":"cuda","elapsed_s":26.51,"rttm_lines":924}
+{"label":"EN2002d","run":0,"mode":"cuda","elapsed_s":21.10,"rttm_lines":876}
