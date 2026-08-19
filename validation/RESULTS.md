@@ -1153,3 +1153,26 @@ corpus does not contain — judging the knob needs such a file, not this one.
 Gap found while testing: `VAD_MIN_SILENCE_MS` was read by the engine but passed by **no**
 compose file, so the documented knob could not be set on any deployment. Now plumbed through
 the three GPU worker services.
+
+### 7.23 VRAM floor — conv workspace is not the lever, and 12 GB does not need it
+
+Tested the two cuDNN knobs suggested in §7.12 by adding a `SPEAKRS_CONV_LEAN` switch
+(`ConvAlgorithmSearch::Heuristic` + `with_conv_max_workspace(false)` instead of Exhaustive +
+max) and running both against the reference clip:
+
+| conv setting | VRAM | wall | RTTM |
+|---|---|---|---|
+| default (exhaustive, max workspace) | 4 526 MiB | 6.02 s | md5 99964a720ed5 |
+| lean (heuristic, no max workspace) | **4 526 MiB** | 5.92 s | **md5 99964a720ed5** (identical) |
+
+**No effect.** Same memory to the megabyte, same output, wall-clock within noise. So the ~3.6 GB
+gap between 251 MB of weights and 4.1 GB resident is the ORT BFC arena sized to peak
+activations, not cuDNN conv workspace. The change was reverted rather than kept: a vendored
+diff that buys nothing only complicates the upstream patch set (T10).
+
+**And the floor does not need shrinking for the shipping target.** On 12 GB: 7 575 MiB floor,
+4 328 MiB free, ~490 MiB marginal per concurrent job (§7.14) — roughly eight concurrent jobs
+fit. VRAM is not a constraint on this hardware; it constrains only the 4 GB laptop tier, where
+the remaining levers are arena shrinkage on RunOptions and a shared cross-session allocator,
+both untested. Relocating models to a second GPU was considered and rejected: real deployments
+have one GPU, so moving a model elsewhere hides the problem rather than solving it.
