@@ -226,6 +226,19 @@ index 100b53a..1933960 100644
          }
  
          // update pi
+diff --git a/src/inference.rs b/src/inference.rs
+index 90d4908..591744e 100644
+--- a/src/inference.rs
++++ b/src/inference.rs
+@@ -10,7 +10,7 @@ use std::path::PathBuf;
+ #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
+ use std::sync::OnceLock;
+ 
+-pub use embedding::EmbeddingModel;
++pub use embedding::{EmbeddingModel, MaskedEmbeddingInput};
+ pub use segmentation::{SegmentationError, SegmentationModel};
+ 
+ #[cfg(feature = "coreml")]
 diff --git a/src/inference/embedding.rs b/src/inference/embedding.rs
 index 2fd9512..ba5dd87 100644
 --- a/src/inference/embedding.rs
@@ -387,12 +400,38 @@ index 751dd24..c38f29d 100644
          let builder = Session::builder()?
              .with_independent_thread_pool()?
              .with_intra_threads(threads)?
+diff --git a/src/pipeline/chunk_embedding.rs b/src/pipeline/chunk_embedding.rs
+index 17a8555..c430f2e 100644
+--- a/src/pipeline/chunk_embedding.rs
++++ b/src/pipeline/chunk_embedding.rs
+@@ -408,6 +408,7 @@ pub(super) fn try_batch_chunk_embedding(
+                     hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
+                     discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
+                     segments: Vec::new(),
++                    centroids: Array2::zeros((0, 256)),
+                 })
+             })
+             .collect())
 diff --git a/src/pipeline/clustering.rs b/src/pipeline/clustering.rs
-index 3c941e6..d036edb 100644
+index 3c941e6..f09b33f 100644
 --- a/src/pipeline/clustering.rs
 +++ b/src/pipeline/clustering.rs
-@@ -70,7 +70,9 @@ impl TrainingEmbeddings {
-             return ChunkSpeakerClusters(clusters);
+@@ -62,15 +62,21 @@ impl TrainingEmbeddings {
+         embeddings: &ChunkEmbeddings,
+         plda: &PldaTransform,
+         config: &PipelineConfig,
+-    ) -> ChunkSpeakerClusters {
++    ) -> (ChunkSpeakerClusters, Array2<f32>) {
+         if self.0.nrows() < 2 {
+             let mut clusters =
+                 Array2::<i32>::zeros((segmentations.0.shape()[0], segmentations.0.shape()[2]));
+             mark_inactive_speakers(&segmentations.0, &mut clusters);
+-            return ChunkSpeakerClusters(clusters);
++            let embedding_dim = self.0.shape().get(1).copied().unwrap_or(256);
++            return (
++                ChunkSpeakerClusters(clusters),
++                Array2::<f32>::zeros((0, embedding_dim)),
++            );
          }
  
 +        let stage_t0 = std::time::Instant::now();
@@ -401,7 +440,7 @@ index 3c941e6..d036edb 100644
          debug!(
              rows = self.0.nrows(),
              cols = self.0.ncols(),
-@@ -85,14 +87,18 @@ impl TrainingEmbeddings {
+@@ -85,14 +91,18 @@ impl TrainingEmbeddings {
              }
          }
  
@@ -420,7 +459,7 @@ index 3c941e6..d036edb 100644
  
          debug!(?pi, "VBx speaker priors");
  
-@@ -123,8 +129,16 @@ impl TrainingEmbeddings {
+@@ -123,15 +133,26 @@ impl TrainingEmbeddings {
              debug!(cluster = cluster_idx, norm, "centroid");
          }
  
@@ -437,3 +476,55 @@ index 3c941e6..d036edb 100644
          debug!(
              rows = clusters.nrows(),
              cols = clusters.ncols(),
+             "hard_clusters shape"
+         );
+ 
+-        ChunkSpeakerClusters(clusters)
++        // diar-native patch: return the gamma-weighted (un-normalized) centroids —
++        // row index == cluster id used in hard_clusters — for speaker-identification
++        // consumers (e.g. cross-file speaker matching via vector search).
++        (ChunkSpeakerClusters(clusters), centroids)
+     }
+ }
+ 
+diff --git a/src/pipeline/post_inference.rs b/src/pipeline/post_inference.rs
+index b869ea5..6972cec 100644
+--- a/src/pipeline/post_inference.rs
++++ b/src/pipeline/post_inference.rs
+@@ -36,11 +36,13 @@ pub fn post_inference(
+             hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
+             discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
+             segments: Vec::new(),
++            centroids: Array2::zeros((0, 256)),
+         });
+     }
+ 
+     let training_embeddings = embeddings.training_set(&segmentations);
+-    let hard_clusters = training_embeddings.cluster(&segmentations, &embeddings, plda, config);
++    let (hard_clusters, centroids) =
++        training_embeddings.cluster(&segmentations, &embeddings, plda, config);
+ 
+     let reconstructor =
+         Reconstructor::with_clusters(&segmentations, &hard_clusters, &layout.start_frames, 0);
+@@ -75,5 +77,6 @@ pub fn post_inference(
+         hard_clusters,
+         discrete_diarization,
+         segments,
++        centroids,
+     })
+ }
+diff --git a/src/pipeline/types/data.rs b/src/pipeline/types/data.rs
+index 6ca4c04..dbbd9e5 100644
+--- a/src/pipeline/types/data.rs
++++ b/src/pipeline/types/data.rs
+@@ -172,6 +172,10 @@ pub struct DiarizationResult {
+     pub discrete_diarization: DiscreteDiarization,
+     /// Merged speaker segments (time-stamped speaker turns)
+     pub segments: Vec<crate::segment::Segment>,
++    /// Gamma-weighted (un-normalized) speaker centroids from VBx clustering.
++    /// Row index == cluster id used in `hard_clusters` / segment speaker ids.
++    /// Empty (0 rows) when clustering was skipped (no speech / <2 embeddings).
++    pub centroids: Array2<f32>,
+ }
+ 
+ impl DiarizationResult {
