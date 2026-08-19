@@ -9,15 +9,19 @@ decisions below.
 ## North star (stated 2026-08-19)
 
 **Minimize upload→presented latency at maximum accuracy, on whatever machine the app is
-installed on.** Every optimization is judged against the per-tier E2E job timeline. Current
-bottleneck ordering post-diarization-flip (1 h file, GPU box): (1) **transcription** (~2-3 min —
-now the clear #1; levers: int8_float16, batch re-tune with freed VRAM, VAD gating, Parakeet
-tier), (2) NLP/aux stages (profile → optimum-ORT → text-native), (3) preprocessing/handoff
-(tmpfs → symphonia), (4) diarization (SOLVED: ~13 s at 277× RT warm). Transcribe∥diarize
-overlap makes E2E ≈ transcription + tail. Also on the list: **progressive presentation**
-(transcript shown at ASR-complete, speaker labels attach after) — the biggest perceived-latency
-lever costs no model speed at all. The post-PR E2E protocol (SPEEDUP_ROADMAP) measures this
-timeline per tier.
+installed on.** Every optimization is judged against the per-tier E2E job timeline.
+
+**MEASURED at the flip (RESULTS §7.5, 3080 Ti, 5 files × 3 runs, controls held):** upload→presented
+is **1.40× faster on a 2.1 h file** (206.7 s → 147.2 s, 37× → 51× RT) and 1.35× on 66.5 min;
+the diarization stage itself is **2.01× faster** (116.6 s → 58.0 s) at unchanged transcription.
+Bottleneck ordering has flipped exactly as predicted: on the 2.1 h file diarization was 62% of
+the GPU stage and is now 45%, so (1) **transcription** is the clear #1 (levers: batch re-tune with
+freed VRAM, VAD gating, Parakeet tier — int8_float16 is already on), (2) NLP/aux stages,
+(3) preprocessing/handoff, (4) diarization (SOLVED). The stages still run **sequentially**, so
+L2 transcribe∥diarize overlap is worth a further ~45% of the GPU stage on its own — the largest
+remaining lever, now quantified. Also on the list: **progressive presentation** (transcript shown
+at ASR-complete, speaker labels attach after) — the biggest perceived-latency lever costs no
+model speed at all.
 
 ## Product decisions (locked)
 
@@ -75,7 +79,13 @@ Milestones:
   the fork on the 4.7h file (RESULTS §4.22-4.24); G4 = clean sweep on all files. Remaining M1
   gate: re-run full Phase-B suite after diar-core wrapper lands — DER ≤ 0.3%, determinism,
   constraint-path fixture tests.
-- **M2 diar-server + OpenTranscribe integration**: compose service; `diarizer_native.py`
+- **M2 diar-server + OpenTranscribe integration: DONE 2026-08-19 (T1)** — flipped on the live
+  stack, app-level outputs verified (transcript, speakers, OpenSearch embeddings, profile
+  auto-match), kill-sidecar drill passes in both directions, E2E baseline measured (RESULTS
+  §7.1-7.7). Three defects found and fixed: root-owned handoff volume, one-way fallback, and
+  speakrs' exclusive-diarization overlap resolution (§7.7 — the accuracy gate paid for itself).
+  Accuracy at app level now within 0.03 pp WSER of the fork. Original M2 scope below:
+- **M2 (original scope)**: compose service; `diarizer_native.py`
   implementing the `SpeakerDiarizer` contract (`DiarizeResult`, 256-d L2-normalized
   `native_embeddings` via existing `build_native_embeddings`, `overlap_info`), selected by
   `DIARIZER_ENGINE=native|python` (default python). Gate: TRUE E2E — full compose stack, upload

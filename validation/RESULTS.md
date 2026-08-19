@@ -599,14 +599,6 @@ Scope: ~0.45% of words on a 2-speaker clip with little overlap; it grows with ov
 Note the corpus-level picture stayed favorable to speakrs throughout (VoxConverse 216-file
 arbiter: 4.847% vs fork 5.099%, §4.16d) — this was a representation defect, not a clustering one.
 
-### 7.5 E2E speed baseline — PENDING (blocked on the §7.4 decision)
-
-Protocol ready: 5 files (3 test_videos + Karpathy 66.5 min + one 2.1 h seed file) × 3 configs
-(python / native fast set / native small set) × 3 runs, strictly sequential per §4.11, driven by
-`scripts/benchmark_e2e.py` (reprocess → Redis markers → CSV), primary metric
-`user_perceived_duration_ms` (upload → user-visible), secondary `fully_indexed_duration_ms`.
-The §7.4 fix does not affect wall-clock, so these numbers remain valid whenever it lands.
-
 ### 7.6 Integration defects found by T1 (both fixed)
 
 1. **Handoff volume was root-owned** — the sidecar image had no `/tmp/diar-native`, so the named
@@ -691,3 +683,65 @@ method and remains a documentation defect to re-derive, not an engine one.
 
 Upstream value: this is a correctness bug in speakrs' `exclusive_speaker_diarization`
 equivalent, independent of our deployment — a PR candidate alongside the perf patches.
+
+### 7.5 E2E SPEED BASELINE — before/after upload→presented, per file (COMPLETE)
+
+Protocol: `validation/run_e2e_baseline.sh` per engine configuration, 5 files × 3 runs each,
+driven by `transcribe-app/scripts/benchmark_e2e.py` (reprocess → Redis markers → CSV). **Timed
+legs strictly sequential** (§4.11) — one configuration at a time, quiet machine, nothing else on
+the GPUs. Raw CSVs: `results/e2e_baseline/{python,native_fast,native_small}/`.
+
+Controls held constant across all three legs (the only variable is the diarization engine):
+ASR `large-v3-turbo`, `compute_type=int8_float16`, `batch_size=8`, `beam_size=5`, GPU 1 (RTX
+3080 Ti) for worker **and** sidecar, one file at a time, same 5 files, same app build. The
+python leg ran with the sidecar stopped (true pre-flip shape); native legs with it up.
+Configurations: `python` = PyAnnote community-1 in-process; `native_fast` = sidecar with
+`models_folded/`; `native_small` = sidecar with `models_small/`.
+
+**Headline — upload → presented (median of 3, `total_dispatch_to_postprocess`):**
+
+| file | audio | python (before) | native fast (after) | speedup | RT before → after |
+|---|---|---|---|---|---|
+| test_ai_video | 24 s | 5.7 s | **5.2 s** | 1.10× | 4× → 5× |
+| pyramids | 239 s | 11.9 s | **9.1 s** | 1.31× | 20× → 26× |
+| warp drive | 358 s | 15.0 s | **11.8 s** | 1.27× | 24× → 30× |
+| Karpathy | 3989 s | 108.4 s | **80.5 s** | 1.35× | 37× → 50× |
+| seed file | 7558 s | 206.7 s | **147.2 s** | **1.40×** | 37× → **51×** |
+
+`fully_indexed_duration` tracks it (2.1 h: 210.3 s → 152.9 s). The speedup grows with duration
+because the fixed per-job overhead (~4.5 s: dispatch, ffmpeg, model warm, postprocess) dominates
+short files — on the 24 s clip almost nothing is left to win.
+
+**Where the time went — GPU-stage split (last run of each leg):**
+
+| file | transcribe (py / fast) | diarize python | diarize native fast | diarize speedup |
+|---|---|---|---|---|
+| pyramids 239 s | 2.9 / 2.7 s | 3.6 s | **2.0 s** | 1.80× |
+| warp drive 358 s | 3.7 / 3.6 s | 5.2 s | **2.9 s** | 1.79× |
+| Karpathy 3989 s | 41.9 / 39.6 s | 59.1 s | **32.5 s** | 1.82× |
+| seed 7558 s | 70.3 / 71.7 s | 116.6 s | **58.0 s** | **2.01×** |
+
+Transcription is unchanged leg-to-leg (±2%), which is the control working: the entire E2E delta
+is the diarization stage. **The bottleneck ordering has flipped as PLAN predicted** — on the
+2.1 h file diarization was 116.6 s vs transcription 70.3 s (62% of GPU stage); it is now 58.0 s
+vs 71.7 s (45%). Transcription is the #1 stage from here on.
+
+**T2 headroom, quantified:** the two stages still run *sequentially* (130 s combined on the 2.1 h
+file). L2 overlap makes the GPU stage ≈ max(71.7, 58.0) ≈ 72 s — a further **~45% off the GPU
+stage** with no model change. That is now the single largest remaining lever.
+
+**Small set is not a speed/VRAM trade on this hardware — it is a VRAM floor.**
+
+| config | GPU 1 used (worker+sidecar) | 2.1 h diarize | 2.1 h upload→presented |
+|---|---|---|---|
+| python | 3809 MB | 116.6 s | 206.7 s |
+| native fast | 7847 MB | **58.0 s** | **147.2 s** |
+| native small | 5235 MB | 207.0 s | 295.5 s |
+
+The small set is **3.6× slower than the fast set and 1.8× slower than PyAnnote**, for 2.6 GB
+saved. It earns its place only where the fast set does not fit (laptop-class GPUs, MODELS_SETS.md
+tier); on any card with ~5 GB free for the sidecar, `models_folded/` is the correct choice.
+
+Baseline source (a) cross-check: the passive production rows in §7.1 put single-file 1-2 h media
+at ~100 s presented on the python engine, consistent with the 108.4 s measured here for a
+66.5-min file under controlled conditions.
