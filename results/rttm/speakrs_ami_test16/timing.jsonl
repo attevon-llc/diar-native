@@ -12,3 +12,5 @@
 {"label":"TS3003d","run":0,"mode":"cuda","elapsed_s":79.53,"rttm_lines":804}
 {"label":"EN2002a","run":0,"mode":"cuda","elapsed_s":66.68,"rttm_lines":870}
 {"label":"EN2002b","run":0,"mode":"cuda","elapsed_s":56.25,"rttm_lines":576}
+{"label":"EN2002c","run":0,"mode":"cuda","elapsed_s":92.72,"rttm_lines":924}
+{"label":"EN2002d","run":0,"mode":"cuda","elapsed_s":71.54,"rttm_lines":874}

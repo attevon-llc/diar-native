@@ -1,0 +1,10 @@
+name: "emb_trt"
+platform: "tensorrt_plan"
+max_batch_size: 64
+input [
+  { name: "fbank_features" data_type: TYPE_FP32 dims: [ 998, 80 ] },
+  { name: "weights" data_type: TYPE_FP32 dims: [ 998 ] }
+]
+output [ { name: "embeddings" data_type: TYPE_FP32 dims: [ 256 ] } ]
+instance_group [ { count: 1 kind: KIND_GPU gpus: [ 0 ] } ]
+dynamic_batching { preferred_batch_size: [ 32, 64 ] max_queue_delay_microseconds: 3000 }

@@ -1,0 +1,6 @@
+name: "seg_folded"
+platform: "onnxruntime_onnx"
+max_batch_size: 0
+input [ { name: "input" data_type: TYPE_FP32 dims: [ 32, 1, 160000 ] } ]
+output [ { name: "output" data_type: TYPE_FP32 dims: [ 32, 589, 7 ] } ]
+instance_group [ { count: 1 kind: KIND_GPU gpus: [ 0 ] } ]

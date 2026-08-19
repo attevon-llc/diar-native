@@ -106,6 +106,88 @@ Conclusions (3080 Ti; re-validate headline numbers on A6000 later):
 cuDNN 9.19). → **CUDA EP cannot load in the production image at all** (app code never uses it,
 so dormant). Any future in-app ORT-GPU work must pin an ORT cu12 build or add cu13 libs.
 
+### 4.4 TensorRT engines (trtexec in 26.06 image, TRT 11.0, RTX 3080 Ti = sm_86, same as A6000)
+
+Both engines built **successfully on the first attempt** from the dynamic-axis ONNX exports —
+including segmentation's 4-layer BiLSTM **with unfolded Sin/Cos/If** (TRT parses them natively).
+**The historical "TRT can't run pyannote" claim is dead**; the phase-6 failure was the ORT-TRT-EP
+shape-profile bug, not TensorRT. Profiles: seg min 1×1×160000 / opt+max 32×1×160000;
+emb (fbank-outside) min 1×998×80 / opt 32 / max 64. Engines: `triton/engines/*_fp32.plan`
+(seg 8.5 MB, emb 27 MB). NOTE: speed-representative exports (3.1-era weights, identical
+architecture); accuracy-correct community-1 engines to be rebuilt from fresh exports before adoption.
+
+Server-side `compute_infer`, batch-32, `tensorrt_plan` backend with dynamic batching enabled:
+
+| model | TRT fp32 | ORT-CUDA best | speedup vs ORT | torch eager ref |
+|---|---|---|---|---|
+| segmentation | **45.3 ms** | 96.6 ms (folded) | 2.1× (4.2× vs unfolded) | 15.6 ms (cuDNN LSTM) |
+| embedding (fbank-outside) | **49.5 ms** | 120.4 ms | 2.4× (**16.4×** vs fused-fbank 811.8 ms) | — |
+
+Reading: TRT is the right backend for BOTH models on Triton. Segmentation stays slower than
+eager torch (TRT LSTM ≠ cuDNN fused) but seg is ~3% of pipeline GPU time. Embedding at 49.5 ms/b32
+on a 3080 Ti is the serving-competitive number; A6000 re-run = M10. fp16 engines building (speed
+test only — fp16 adoption REQUIRES StatsPool-pinned mixed precision + DER re-validation, per the
+fork's 26-33% DER collapse finding, treated as a re-test hypothesis).
+
+### 4.5 Gate G1 — PASSED (speakrs AMI test-16 accuracy parity)
+
+| engine | aggregate DER | note |
+|---|---|---|
+| fork (A) | 13.093% | §2.2 |
+| speakrs (B) | **13.100%** | **+0.007 pp — 14× inside the +0.1 pp gate** |
+
+Per-file DERs track within ~0.5% everywhere; **per-file speaker counts are IDENTICAL between
+engines on all 16 files** — including the same 5-vs-4 overcounts on ES2004a/b/c + IS1009b.
+speakrs is algorithmically faithful to community-1. `results/speakrs_ami_test16_der.json`.
+speakrs AMI RTF ≈ 31-49× vs fork 80× (fused-fbank ORT-CUDA tax, §4.2) — speed verdict at G4.
+
+### 4.6 M10 — A6000 serving numbers (tritonserver 26.06, engines built ON the A6000, fp32)
+
+Server-side `compute_infer`, batch-32: **emb_trt 37.4 ms** | embedding_fbankout(ORT-CUDA) 102.2 ms |
+seg_trt 59.2 ms | seg_folded(ORT-CUDA) 100.4 ms. Cross-check vs fork eager E2E (embedding stage
+78 s / 2.2 h file ≈ 104 ms per batch-32-equiv incl. fbank): **TRT embedding ≈ 1.9× the eager
+stage** — independently reproduces the phase-6 "TRT EP 1.96×" microbench. Ops lesson: TRT wins
+conv/matmul (fusion); torch/cuDNN wins LSTM (fused sequence kernel; TRT/ORT run generic loops).
+NOTE: cp-while-writing race produced a 0-byte plan on first deploy (fixed); cross-SKU plan reuse
+(3080Ti→A6000) triggers a TRT warning — build per-device (both are sm_86 so it *loads*, but
+rebuild is correct practice).
+
+### 4.7 M11 (model-level) — concurrency + dynamic batching on the A6000
+
+emb_trt (max_batch 64, dynamic batching), clients sending batch-8 requests:
+
+| clients | throughput | p50 | p95 |
+|---|---|---|---|
+| 1 | 364 items/s | 20.6 ms | 27.7 ms |
+| 2 | 643 items/s | 23.1 ms | 34.6 ms |
+| 4 | 742 items/s | 41.1 ms | 53.3 ms |
+| 8 | **780 items/s (2.14×)** | 81.8 ms | 97.6 ms |
+
+Saturation ≈ 4 concurrent clients. Multi-request serving on one A6000 does >2× the embedding
+work of serial — the AWS concurrency thesis holds at the model level. Full-pipeline M11 pending.
+
+### 4.8 speakrs fused-vs-split embedding — the fix already exists upstream (PR opportunity)
+
+Source reading (`src/inference/embedding/{load,batch}.rs`, `load/sessions.rs`):
+- CUDA batch path uses the **fused** session (`primary_batched_session`, waveform input) — the
+  one measured at 812 ms/b32 on ORT-CUDA (§4.2).
+- A **split fbank+tail path fully exists** (sessions, buffers, exported models
+  `wespeaker-fbank.onnx` + `-tail*.onnx`) but is wired only for **CoreML** (fbank session built
+  on CPU, native tail on ANE/GPU).
+- **Proposed upstream PR: enable the split path for `ExecutionMode::Cuda`** (fbank CPU session +
+  tail on CUDA). Measured ceiling: ResNet-only = 6.7× faster on ORT-CUDA, 16× under TRT.
+  Projected: speakrs ~31× RT → fork-class ~80× or better (concurrency overlaps CPU fbank with
+  GPU tail). Evidence package for the PR: §4.2/§4.7 tables + §4.5 DER parity.
+
+### 4.9 fp16 engines — deferred (TRT 11 strongly-typed)
+
+TRT 11 (26.06 image) removed `--fp16`: networks are **strongly typed by default** — engine
+precision follows the ONNX graph's tensor types. fp16 therefore requires converting the ONNX
+graph itself (onnxconverter-common float16 pass) with the StatsPool variance/sqrt subgraph kept
+fp32 (the fork measured 26-33% DER collapse from fp16 there). That graph surgery + mandatory DER
+re-validation = Milestone-1 work if speakrs is adopted; NOT a spike. fp32(+TF32 default) numbers
+in §4.4 are the honest serving baseline.
+
 ## 5. Bugs/quirks found (upstream-reportable)
 
 1. **speakrs teardown crash:** `corrupted double-linked list` (glibc) at process exit in `cuda`
@@ -120,6 +202,14 @@ so dormant). Any future in-app ORT-GPU work must pin an ORT cu12 build or add cu
    (loads as empty → silent DER 100%). Staged fixed copy in `refs/karpathy/`.
 5. **VoxConverse zip on NAS was truncated/corrupt** (no EOCD). Re-downloading from official
    Oxford VGG URL (CC-BY-4.0). Corrupt file kept as `.corrupt`.
+6. **FORK BUG — CPU-only Linux crash:** `speaker_diarization.py:559` `_gpu_empty_cache()`:
+   when CUDA is unavailable it calls `torch.mps.empty_cache()` (guarded only by `hasattr`,
+   which is True on Linux torch builds) → `RuntimeError: Cannot execute emptyCache() without
+   MPS backend`. **Every pure-CPU Linux deployment (docker-compose.lite class) crashes.**
+   Production never sees it (GPU always present). Fix (for a future fork PR, NOT applied —
+   repo read-only): guard with `torch.backends.mps.is_available()`. Benchmark workaround:
+   run container with a GPU visible but `--device cpu`.
+7. **TRT 11 removed `--fp16`** (strongly-typed networks by default) — see §4.6.
 
 ## 6. Pending
 

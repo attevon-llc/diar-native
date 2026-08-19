@@ -1,0 +1,6 @@
+{"label":"0.5h_1899s","run":0,"mode":"cuda","elapsed_s":67.01,"rttm_lines":615}
+{"label":"0.5h_1899s","run":1,"mode":"cuda","elapsed_s":66.65,"rttm_lines":615}
+{"label":"0.5h_1899s","run":2,"mode":"cuda","elapsed_s":71.76,"rttm_lines":615}
+{"label":"1.0h_3758s","run":0,"mode":"cuda","elapsed_s":124.62,"rttm_lines":1087}
+{"label":"1.0h_3758s","run":1,"mode":"cuda","elapsed_s":124.76,"rttm_lines":1087}
+{"label":"1.0h_3758s","run":2,"mode":"cuda","elapsed_s":124.26,"rttm_lines":1087}

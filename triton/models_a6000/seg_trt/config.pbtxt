@@ -1,0 +1,7 @@
+name: "seg_trt"
+platform: "tensorrt_plan"
+max_batch_size: 32
+input [ { name: "input_values" data_type: TYPE_FP32 dims: [ 1, 160000 ] } ]
+output [ { name: "logits" data_type: TYPE_FP32 dims: [ 589, 7 ] } ]
+instance_group [ { count: 1 kind: KIND_GPU gpus: [ 0 ] } ]
+dynamic_batching { preferred_batch_size: [ 16, 32 ] max_queue_delay_microseconds: 2000 }
