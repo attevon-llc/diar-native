@@ -259,6 +259,23 @@ speaker into two clusters (sum 105.9 ≈ 104.6) — borderline AHC/VBx decision 
 AMI ×16, Karpathy, and equality on 1.0h/2.2h). Do not tune on this file (tuning-corpus rule);
 candidate later fix: expose speakrs' `speaker_keep_threshold`/VBx knobs in diar-core config.
 
+### 4.16c G3 long-file A/B — FAILS AS WRITTEN; consistent +1-cluster tendency on synthetic files
+
+| file | A/B DER vs fork | speakers fork→speakrs | note |
+|---|---|---|---|
+| 0.5h | 1.12% | 4→5 | minor split, sum-preserving (§4.16b) |
+| 1.0h | 1.12% | 5→5 ✓ | pass |
+| 2.2h | 0.18% | 3→3 ✓ | pass (excellent) |
+| 3.2h | **6.05%** | 3→4 | real 875 s extra cluster + mass shift — largest divergence |
+| 4.7h | 2.27% | 8→9 | just over the 2.0% gate max |
+
+Deterministic across runs (identical DER ×3 each). Pattern: **speakrs = fork+1 cluster on the
+synthetic curve files**, while on ground-truth corpora speaker counts matched the fork exactly
+(incl. the fork's own AMI over-counts). Curve files have NO ground truth — fork is the
+reference, not the truth. **Arbiter = VoxConverse dev-216 (running):** parity there → synthetic-
+content edge (document, expose clustering knobs in diar-core, gate on ground-truth corpora);
++1 tendency there too → systemic; per-stage dump bisection (AHC/VBx) before adoption call.
+
 ### 4.17 Benchmark-hygiene incident #2 (self-inflicted)
 
 The b64 addendum export wrote into `models/` at 05:12 **while the speakrs curve benchmark was
