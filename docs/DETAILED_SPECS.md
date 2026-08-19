@@ -146,3 +146,33 @@ finalizes.
 Escalation rule: any task whose gate fails twice on the assigned model → escalate one tier with
 the failure transcript. Never skip a gate to save tokens — a silent accuracy regression costs
 more than any model differential.
+
+---
+
+## S-T2 CORRECTION (measured 2026-08-19, during T1)
+
+Two premises in S-T2 above are wrong for the deployment we actually ship, and T2 must be
+re-scoped before it is written:
+
+1. **The default path is `_GpuStage`, not `_GpuRawStage`.** `Engine.process()` (engine.py:87-90)
+   runs the **fused** `_GpuStage`, and that is what the live compose profile uses.
+   `_GpuRawStage` (stages.py:333-493) is only reached through `run_preprocess` +
+   `run_gpu_stage`, i.e. the gpu-split profile and the `benchmark_boundary.py` harness. Editing
+   only `_GpuRawStage` would leave production untouched.
+2. **"Preprocess already wrote the 16 kHz WAV, so the handoff is free" does not hold there.**
+   Only `_PreprocessStage` writes the shared-volume WAV (stages.py:315); the fused `_GpuStage`
+   decodes `job.audio_path` itself and holds the audio in memory. In the default topology there
+   is no shared-volume WAV for the sidecar to read.
+
+   (Related: those shared volumes were root-owned in every deployment until RESULTS §7.10 — so
+   even on the split path the write had been failing silently.)
+
+**Correction to this correction (same day, after the volume was repaired).** Points 1 and 2
+above described a *broken* deployment, not the intended one. `_run_engine_pipeline` only takes
+the `_GpuRawStage` fast path when the shared-volume WAV exists (core.py:143-185) — and it never
+did, because the volume was root-owned (§7.10). Once ownership was fixed the fast path engaged
+and production moved to `_GpuRawStage` with the preprocess WAV present, exactly as S-T2
+originally assumed. **S-T2 was right; the deployment was broken.**
+
+T2 as implemented therefore covers both: `_GpuRawStage` (production) and `_GpuStage` (the fused
+fallback), sharing one `_AsyncDiarization` helper. Verified in RESULTS §7.13.
