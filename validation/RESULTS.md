@@ -1176,3 +1176,36 @@ fit. VRAM is not a constraint on this hardware; it constrains only the 4 GB lapt
 the remaining levers are arena shrinkage on RunOptions and a shared cross-session allocator,
 both untested. Relocating models to a second GPU was considered and rejected: real deployments
 have one GPU, so moving a model elsewhere hides the problem rather than solving it.
+
+### 7.24 T9a is justified — measured, not assumed (the sidecar mutex binds)
+
+`diar-server` holds `engine: Mutex<DiarEngine>`, so `DIAR_MAX_INFLIGHT` bounds queueing but not
+execution. Whether that matters was measured with the new `diarize_request_sent`/`diarize_joined`
+columns (§7.21), running the two largest files concurrently:
+
+| file | diarize span, solo | diarize span, 2 concurrent | GPU stage |
+|---|---|---|---|
+| Karpathy 66.5 min | 37.5 s | **76.1 s (2.0×)** | 52.9 s → 80.0 s |
+| seed 2.1 h | ~58 s | **113.8 s (2.0×)** | — → 119.4 s |
+
+Both spans **exactly doubled** — the signature of two jobs serialising on one lock, each waiting
+out the other's diarization. The pair still finished in 131 s against 174.7 s sequential, so
+concurrency helps overall, but roughly 11 s of that window is pure mutex wait, and the ceiling
+gets worse with more concurrent files: diarization is 37-58 s of work per large file, so at
+three or more the sidecar becomes the binding constraint rather than transcription.
+
+**Scope of the fix, measured before starting.** The spec's option 1 (mutex per session) does
+*not* deliver on this code shape: `DiarizationPipeline` borrows `&'a mut SegmentationModel` and
+`&'a mut EmbeddingModel` for its whole lifetime, so a per-model lock is still held for the whole
+job. Real concurrency needs the split decision #4 describes — immutable weights shared, mutable
+scratch per request — and the structures are:
+
+| | sessions (shareable) | mutable buffers (per-request) |
+|---|---|---|
+| `SegmentationModel` | 3 | 2 ndarray + 2 cached shapes |
+| `EmbeddingModel` (`OrtEmbeddingState` + `EmbeddingBuffers`) | 10 | 12+ ndarray |
+
+So ~13 ORT sessions to Arc-share and ~14 buffers to move into a per-request `Scratch`, threaded
+through every inference call site in speakrs, behind DER-parity and determinism gates. That is
+the "vendored-crate surgery" the plan reserved for a dedicated session, and it is the honest
+reason not to start it as a tail-end change.
