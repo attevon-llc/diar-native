@@ -88,6 +88,20 @@ Milestones:
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured
   here.
 
+## Post-flip optimization sequence (ACCEPTED 2026-08-19 — full detail: docs/E2E_PIPELINE_MAP.md)
+
+User-confirmed direction: progressive updates, async task loads, and downstream overlap
+wherever outputs allow. Execution order after the flip + baseline run:
+1. L2 true transcribe∥diarize overlap (sidecar makes it a small change; GPU stage → max not sum)
+2. L3 progressive presentation (transcript_ready at 0.78; labels late-attach via existing
+   handlers; redaction stays gating)
+3. L4 finalize off the GPU worker (stop holding the GPU slot for CPU work)
+4. L5 gender-detection demotion now, sidecar absorption later
+5. L9+L7 telemetry completeness + batched progress writes (baseline hygiene)
+6. L6 precompute_vad implementation; L8 VAD silence knob WSER-test; L10 ASR int8_float16
+Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is judged by
+`user_perceived_duration_ms` per tier.
+
 ## Upstream PR queue (speakrs, with our benchmark receipts)
 
 1. **Multimask batching fix** — exporter/loader b32-vs-b64 filename mismatch silently disables
