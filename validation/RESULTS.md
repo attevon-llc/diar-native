@@ -496,3 +496,126 @@ in §4.4 are the honest serving baseline.
 - [ ] VoxConverse dev (216 files) both engines — official comparison corpus for speakrs' claims
 - [ ] A6000 re-run of §4.2 headline numbers when a GPU frees
 - [ ] Gate evaluation G1–G5 + go/no-go report
+
+## 7. Phase C-T1 — the flip into OpenTranscribe (app-level)
+
+Deployment under test: live OpenTranscribe stack (`transcribe-app`, compose files
+`docker-compose.yml + override + gpu + nas`), worker and sidecar both on **GPU 1 (RTX 3080 Ti,
+12 GB)** — deliberately the same device the PyAnnote path used, so python-vs-native is an
+engine-only A/B. `ENABLE_BENCHMARK_TIMING=true`, `ENABLE_VRAM_PROFILING=true` were already live.
+App branch: `feat/native-diarization-flip` (3 commits, never pushed).
+
+Controls held constant for every comparison below: ASR `large-v3-turbo`, `compute_type=int8_float16`,
+`batch_size=8`, `beam_size=5`, VAD default, one file at a time, same audio, same reference.
+
+### 7.1 Historical production baseline (passive, python engine, pre-flip)
+
+`file_pipeline_timing` had 85 rows (71 with `user_perceived_duration_ms`) accumulated 2026-07-03
+→ 2026-08-19. Two regimes, and they must not be pooled:
+
+| date | n | avg audio | concurrency | avg upload→presented | avg × RT |
+|---|---|---|---|---|---|
+| 2026-07-03 (bulk load) | 25 | 9601 s | 9.7 files | 1473.0 s | 10.7× |
+| 2026-08-05 → 08-19 (single-file) | 46 | 358-3698 s | 1.0 | 14.7-99.1 s | 18.3-37.5× |
+
+Single-file medians by duration: <10 min → **15.3 s** presented (12.7 s GPU stage, 1.1 s
+preprocess, 1.3 s postprocess); 1-2 h → **100.6 s** (93.3 s GPU); >2 h (the loaded bulk regime)
+→ 1369.1 s. This is baseline source (a) — real media mix, no controlled repetition. Source (b)
+is the controlled corpus in §7.5.
+
+### 7.2 Flip verified end to end — PASSED
+
+`docker-compose.diar-native.yml` sidecar up on GPU 1 (fast set, `models_folded/`), `/healthz` ok
+from the worker, `DIARIZER_ENGINE=native` on `celery-worker`. Worker preload logs
+`diar-native sidecar ready` and loads **no PyAnnote pipeline at all**.
+
+A real upload through the API (`POST /api/files`, 4 min video, id 177598) produced: 22 segments,
+**4 speakers**, 256-d **L2-normalized** embeddings in OpenSearch `speakers_v4` (norm = 1.000000
+verified), and one speaker **auto-matched to an existing profile** — i.e. the native centroids
+flow correctly through the whole speaker-matching chain. Native diarization: **2.1 s** for
+238.8 s of audio (≈114× RT) with **Δ0 MB** of worker VRAM (it is the sidecar's memory now).
+Warm PyAnnote on the same file and GPU: 3.57 s.
+
+### 7.3 Fallback + recovery drill — PASSED (after fixing a one-way fallback)
+
+Three-phase drill on the same file, engine confirmed from worker logs each time:
+
+| phase | sidecar | engine that served | diarization |
+|---|---|---|---|
+| A | up | native | 3.0 s |
+| B | `docker stop` | PyAnnote fallback | 10.3 s |
+| C | restarted | native again | 2.9 s |
+
+Phase C only passes because of a bug found here: the fallback was **one-way**. A cached
+in-process engine is always "reachable", so a worker that ever fell back stayed on PyAnnote
+until it restarted (verified: post-restart job served by cached PyAnnote in 3.57 s). Fixed by
+probing the sidecar per task and rebuilding whenever the cached engine disagrees with what can
+actually serve, in both directions, unloading the released engine first so returning to the
+sidecar also frees the PyAnnote VRAM.
+
+### 7.4 ACCURACY GATE — FAILED AS WRITTEN; cause isolated to exclusive-segment extraction
+
+Harness: `backend/scripts/benchmark_boundary.py` on the full 66.5-min Karpathy acceptance clip
+(`benchmark/diarization-boundary/karpathy/`), reference = the maintainer's hand labels
+(`reference.rttm`, midpoint-mapped — ASR-model independent), both engines scored over an
+**identical 14 978-word inventory** (14 781 scored, 197 excluded), 2 speakers found by both.
+
+| engine | WSER smoothing OFF | WSER smoothing ON | word errors ON | islands ON |
+|---|---|---|---|---|
+| python (PyAnnote fork) | 1.231% | **0.859%** | 127 | 21 |
+| native (speakrs) | 1.942% | **1.312%** | 194 | 7 |
+
+Neither engine reaches the written `≤ 0.27% smoothed` bar under this reference method, so the
+absolute number in EXECUTION_TASKS/INSTALL_NATIVE is **not reproducible as stated** and must be
+re-derived (the committed 10-min fixture baseline is 0.62% ON, with a positional `words.json`
+reference and `large-v3`; the bar likely came from yet another configuration). The gate that
+does bind is native-vs-fork parity, and native fails it by **+0.45 pp WSER**.
+
+Attribution — four scorings against the same reference, same audio:
+
+| representation | segments | DER c0.25 | DER c0 |
+|---|---|---|---|
+| fork **full** | 697 | **8.194%** | 10.510% |
+| speakrs **full** | 692 | **8.219%** | 10.532% |
+| fork **exclusive** | 774 | **6.161%** | 8.159% |
+| speakrs **exclusive** | 660 | **6.545%** | 8.658% |
+
+Both full-diarization numbers **reproduce their recorded validation values exactly** (§2.3
+fork 8.194%, §4.21 speakrs 8.219%) — the engines remain at +0.025 pp parity, and the sidecar
+reproduces diar-cli's segment counts exactly (692 full / 660 exclusive, §4.26). The app
+integration is also faithful: the float32→int16 WAV round-trip in `diarizer_native.diarize`
+costs **0.001 pp** (app-path 6.546% vs sidecar-direct 6.545%).
+
+**The entire app-level accuracy gap is created by exclusive-segment extraction**, which is what
+the app consumes for word attribution. pyannote emits *more* exclusive segments than its full
+diarization (774 > 697) — it reassigns overlapped speech to a single speaker; speakrs emits
+*fewer* (660 < 692) — it discards those regions, and discarded speech scores as missed. A naive
+trim-the-overlaps reimplementation was tested and is **worse** (7.863% c0.25), so the fix is to
+port pyannote's exclusive assignment semantics, not to cut overlaps out.
+
+Scope of the defect: ~0.45% of words on a 2-speaker clip with little overlap; it grows with
+overlap density. Note the corpus-level picture stays favorable to speakrs (VoxConverse 216-file
+arbiter: 4.847% vs fork 5.099%, §4.16d) — this is a representation defect, not a clustering one.
+
+### 7.5 E2E speed baseline — PENDING (blocked on the §7.4 decision)
+
+Protocol ready: 5 files (3 test_videos + Karpathy 66.5 min + one 2.1 h seed file) × 3 configs
+(python / native fast set / native small set) × 3 runs, strictly sequential per §4.11, driven by
+`scripts/benchmark_e2e.py` (reprocess → Redis markers → CSV), primary metric
+`user_perceived_duration_ms` (upload → user-visible), secondary `fully_indexed_duration_ms`.
+The §7.4 fix does not affect wall-clock, so these numbers remain valid whenever it lands.
+
+### 7.6 Integration defects found by T1 (both fixed)
+
+1. **Handoff volume was root-owned** — the sidecar image had no `/tmp/diar-native`, so the named
+   volume was created `root:root 0755` while every worker in this deployment runs as `appuser`
+   (uid 1000). The first real job died with `PermissionError: /tmp/diar-native/diar_*.wav`.
+   Fixed durably in `docker/Dockerfile.server` (`mkdir -p /tmp/diar-native && chmod 1777`), so a
+   fresh named volume inherits the mode — verified on a throwaway volume.
+2. **One-way fallback** — see §7.3.
+
+Pre-existing deployment wart, noted not fixed: `/tmp/transcription` and `/scratch/opentranscribe`
+are root-owned 0755 in this stack, so `write_wav_to_shared_volume` silently warns and skips.
+**This matters for T2**: S-T2 assumes preprocess already wrote the 16 kHz WAV to the shared
+volume so the sidecar can read it with zero handoff cost — in this deployment that write is
+currently failing.

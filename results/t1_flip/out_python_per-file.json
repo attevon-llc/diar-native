@@ -1,0 +1,77 @@
+[
+  {
+    "file_id": "karpathy",
+    "model": "large-v3-turbo",
+    "tier": 1,
+    "filename": "/tmp/bench/audio.wav",
+    "reference_kind": "rttm",
+    "off": {
+      "wser": 0.012313104661389573,
+      "t_wser": 0.015117729743765795,
+      "n_scored": 14781,
+      "n_excluded": 197,
+      "n_word_errors": 182,
+      "perm": {
+        "SPEAKER_00": "Andrej",
+        "SPEAKER_01": "Sarah"
+      },
+      "islands": 81,
+      "island_hist": {
+        "1": 56,
+        "2": 14,
+        "3": 11,
+        "4+": 0
+      },
+      "cpwer": 0.036939313984168866,
+      "der_c025": 0.043449947541693144,
+      "der_c0": 0.05236054524965039,
+      "boundary_prf": {
+        "precision": 0.4441340782122905,
+        "recall": 0.3794749403341289,
+        "f1": 0.40926640926640934,
+        "ref_boundaries": 419
+      },
+      "speaker_count": {
+        "ref_speakers": 2,
+        "hyp_speakers": 2,
+        "match": true
+      },
+      "n_words": 14978,
+      "duration_s": 3991.24
+    },
+    "on": {
+      "wser": 0.008592111494486132,
+      "t_wser": 0.010313701359918381,
+      "n_scored": 14781,
+      "n_excluded": 197,
+      "n_word_errors": 127,
+      "perm": {
+        "SPEAKER_00": "Andrej",
+        "SPEAKER_01": "Sarah"
+      },
+      "islands": 21,
+      "island_hist": {
+        "1": 15,
+        "2": 1,
+        "3": 5,
+        "4+": 0
+      },
+      "cpwer": 0.028888437859414112,
+      "der_c025": 0.036644282601374395,
+      "der_c0": 0.04762807732316092,
+      "boundary_prf": {
+        "precision": 0.6161616161616161,
+        "recall": 0.2911694510739857,
+        "f1": 0.3954619124797406,
+        "ref_boundaries": 419
+      },
+      "speaker_count": {
+        "ref_speakers": 2,
+        "hyp_speakers": 2,
+        "match": true
+      },
+      "n_words": 14978,
+      "duration_s": 3991.24
+    }
+  }
+]
