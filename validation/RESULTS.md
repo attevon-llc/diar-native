@@ -237,7 +237,14 @@ With batching engaged, ES2004a trace: **fbank_ms=28182 (76% of ~37 s wall!), gpu
 | + folded seg | 36.7 s | RTTM identical |
 | + multimask b64(b32 graph) batching | 37.1 s | RTTM identical; GPU batched but fbank dominates |
 | + SPEAKRS_FBANK_THREADS=24 (patch 1) | 32.1 s | intra-op threads DON'T scale fbank (35.4→32.1) |
-| + split_fbank_pool fan-out (patch 2) | pending | pool of N CPU sessions, per-chunk parallel |
+| + split_fbank_pool fan-out (patch 2), SPEAKRS_FBANK_POOL=4 | 17.0 s | RTTM identical |
+| + split_fbank_pool fan-out, SPEAKRS_FBANK_POOL=8 | **12.9 s (3.1× vs stock)** | RTTM identical |
+
+**Headline: patched speakrs = 12.9 s for 36.4-min ES2004a ≈ 169× RT on the RTX 3080 Ti** —
+vs fork 80× RT on an A6000. The three-patch stack (folded seg + multimask-batching unlock +
+fbank session-pool) flips the G4 speed verdict from "2.5× slower" to "≈2× faster than the
+production fork", pending quiet-machine A6000 confirmation + full-corpus DER re-verification
+with the patched build (expected bit-identical — every step verified RTTM-identical so far).
 
 Patches live in `vendor/speakrs` (local; upstream-PR candidates): (1) `SPEAKRS_FBANK_THREADS`
 env override in `session.rs`; (2) `split_fbank_pool` in `load/sessions.rs` + parallel branch in
