@@ -936,3 +936,49 @@ workspace, acquired on first real inference and kept. `arena_extend_strategy` is
 with a cheaper `ConvAlgorithmSearch`, ORT's per-run `memory.enable_memory_arena_shrinkage` (the
 closest analogue to `torch.cuda.empty_cache()`), and a shared cross-session allocator (§4.25).
 Each trades against speed and must be benchmarked, not assumed.
+
+### 7.15 FULL TASK CENSUS — every task on one file, and where the remaining work is
+
+`validation/task_census.sh` reprocesses one file, waits for user-visible completion, lets the
+enrichment tail drain, then reads every Celery task's duration out of the worker logs plus the
+authoritative stage split from `file_pipeline_timing`. Reference file: Karpathy 66.5 min.
+
+**Harness note (a real trap):** the first version polled `celery inspect active` across six
+workers in a loop. Each call costs seconds per worker, so the harness dominated the number it
+was reporting — minutes of "measuring" a 54 s job, with CPU and GPU sitting idle waiting on the
+script. Rewritten to poll only the cheap file-status endpoint and read durations after the fact;
+census wall time went from ~7 min to 1 min 19 s for the same job.
+
+| task | time | device | share of task time |
+|---|---|---|---|
+| **transcription.gpu_transcribe** | **52.91 s** | GPU | **80.0%** |
+| redaction.detect | 5.75 s | **GPU** | 8.7% |
+| index_transcript_search | 2.46 s | CPU | 3.7% |
+| speaker.cluster_for_file | 1.60 s | CPU | 2.4% |
+| transcription.preprocess | 1.30 s | CPU (ffmpeg) | 2.0% |
+| transcription.postprocess | 0.53 s | CPU | 0.8% |
+| 10 further tasks | < 0.5 s each | mixed | ~2% |
+| **sum of task time** | **66.15 s** | 16 tasks | |
+| user-visible (stage table) | **54.8 s** | prep 1.3 + gpu 52.9 + post 0.5 | |
+
+Sum exceeds wall time because workers run in parallel. **`detect_speaker_attributes` does not
+appear**: its idempotency guard skips files that already carry attributes. On a *new* file it
+costs **87-90 s** (§7.11), which would make gender detection the **second-largest task in the
+entire pipeline** — larger than everything except transcription, and it runs on one CPU core.
+
+**Where the remaining throughput lives.** Transcription is 80% of task time and is already at
+int8_float16 on a batched pipeline, so the addressable remainder is the other 20% plus the
+gender tail:
+
+| target | cost today | opportunity | tracked as |
+|---|---|---|---|
+| gender detection | 87-90 s CPU, new files only | wav2vec2 → ONNX in the sidecar, reusing the PCM already held for diarization; deletes the presigned-URL fetch pool | T5b (#18) |
+| redaction.detect | 5.75 s GPU | toxic-bert/xlm-roberta → optimum-ORT; also holds 1 346 MiB resident for a task that runs seconds | T13 (#21) |
+| index_transcript_search | 2.46 s | embedding model → ONNX | T13 (#21) |
+| speaker.cluster_for_file | 1.60 s | ANN index in Rust | T12 (#21) |
+| preprocess ffmpeg decode | 1.30 s | symphonia decode inside diar-server; sidecar takes the original media path and no WAV is written at all | SPEEDUP_ROADMAP §Preprocessing |
+
+The shared-memory theme the user raised applies twice over: gender detection re-fetches audio
+over presigned URLs that diarization already had in memory, and preprocess writes a WAV that
+exists only so a second process can read it back. Both disappear if the sidecar owns decode and
+holds the PCM for the tasks that need windows of it.
