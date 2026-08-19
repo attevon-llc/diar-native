@@ -20,6 +20,21 @@ three routes, verified 2026-08.
    (word timestamps, VAD), instance-group concurrency but NO cross-request batching. Stepping
    stone only.
 
+## DECISION UPDATE (2026-08-19, after word-timestamp verification)
+
+**Hard constraint from the app:** WhisperX alignment was REMOVED from the pipeline (too slow);
+word-level timestamps come natively from faster-whisper's cross-attention DTW and are REQUIRED
+for speaker assignment. Verified: vLLM's word-level timestamps are an open gap (API param exists,
+DTW alignment unimplemented — vllm#25750, vllm#13400; only segment-level landed via PR #24209);
+TRT-LLM Whisper is segment-oriented too.
+
+**→ Re-ranked: faster-whisper/CTranslate2 REMAINS the ASR engine** (only route with production
+word timestamps + already fast; app also uses faster_CrisperWhisper — the accurate-word-timestamp
+model family). Serving evolution = the diarization-T1 shared-weights pattern applied to CT2
+(one model instance, N concurrent Celery jobs; optionally hosted as a Triton python-backend for
+ops consolidation — no cross-request batching, accepted). Routes 1/2 move to a watch-list keyed
+to vLLM #25750 (word-level DTW) — revisit only if that lands with quality parity.
+
 ## Watch-items
 
 - **Word-level timestamps** (speaker assignment + WSER depend on them): TRT-LLM/vLLM Whisper are
