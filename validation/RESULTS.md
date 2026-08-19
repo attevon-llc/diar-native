@@ -418,6 +418,32 @@ The Phase-C workspace (crates/diar-{core,cli,server}) is built and validated:
 Remaining M1 scope (next session): speaker-count constraints port, Arc-shared sessions,
 lazy session loading (VRAM), supervisor hardening in diar-server.
 
+### 4.27 M2 sidecar standalone verification + VRAM/speed configuration matrix
+
+diar-server:latest built (Dockerfile.server; tokio+std thread stacks raised to 16 MiB — worker
+threads overflowed the 2 MiB default, same root as the test-suite finding). Standalone smoke
+(no OpenTranscribe involvement): /healthz ✓, /diarize (clip30: 1 spk / karpathy_10m: 2 spk, 92
+segs) ✓, /embed_window samples_b64 → 256-d un-normalized ✓.
+
+**Warm-engine serving is the fastest configuration measured in the whole program:**
+ES2004a (36.4 min) in **7.9 s ≈ 277× RT (~3.4× the fork)** — per-process cold starts were
+masking the sidecar's true speed all along.
+
+Model-set configuration matrix (choose by GPU size — zero code, file presence only):
+| set | contents | VRAM | ES2004a warm | use |
+|---|---|---|---|---|
+| fast (default ≥6 GB) | b32 set + `wespeaker-multimask-tail-b64.onnx` (b32-shaped batch) | 4.2 GB | **7.9 s (277× RT)** | servers |
+| small (laptop tier) | b32-only, no multimask batch file | **1.6 GB (−62%)** | 37.2 s (59× RT) | small GPUs |
+
+Corrections logged: (a) `SPEAKRS_LAZY_SESSIONS` ≈ **no VRAM effect** (ORT arenas grow on RUN,
+not load — idle sessions cost only weights; gate kept for startup trim, reclassified);
+(b) the multimask batch session is worth **4.7× warm** (earlier "marginal" read was cold-start
+artifact); its arena IS the ~2.6 GB. `models_small/` staged alongside `models_folded/`.
+
+Future-work note (user idea, endorsed): Rust preprocessing — symphonia decode inside
+diar-server (accept original media path; kill the WAV handoff), tmpfs handoff volume now,
+shared-mmap PCM service only when multiple consumers provably re-decode.
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;

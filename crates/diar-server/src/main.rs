@@ -167,8 +167,20 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // speakrs pipeline threads + ORT need more than the 2 MiB default thread stack
+    // (measured: stack overflow in worker threads; same finding as the test suite).
+    if std::env::var("RUST_MIN_STACK").is_err() {
+        std::env::set_var("RUST_MIN_STACK", "16777216");
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let models_dir =
         std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
     let mode = match std::env::var("DIAR_MODE").as_deref() {
