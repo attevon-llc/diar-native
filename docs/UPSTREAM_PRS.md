@@ -122,9 +122,52 @@ GPU-optimized pyannote deployment while keeping its accuracy word-for-word — w
 number *better* than pyannote's. Every claim has a runnable reproduction in
 `validation/TESTPLAN.md` §4 and raw artifacts under `results/`.
 
-## Housekeeping before submitting
+## Submission gameplan (execute when ready — est. 1-2 days total)
 
-- Rebase patches onto upstream `main` (our pin: `b0756b1`, 2026-07-20).
-- Re-run the accuracy suite per patch in isolation (TESTPLAN §4 commands) and attach numbers.
-- Benchmarks quoted must come from the quiet-machine pass (see RESULTS §4.11) — never from
-  co-scheduled runs.
+**Step 0 — prep (once):**
+1. `gh repo fork avencera/speakrs --clone` into a work dir (NOT vendor/ — keep vendor pinned).
+2. Rebase check: `git log b0756b1..origin/main` — if upstream moved, re-run the 4.7h + ES2004a
+   A/B on the new tip BEFORE porting patches (their changes may overlap ours).
+3. Open a short intro issue first: "We validated speakrs against a production pyannote
+   deployment (AMI/VoxConverse/hand-labeled corpora) and have a patch series with benchmark
+   receipts — filing over the next days." Sets context, signals seriousness, surfaces
+   maintainer preferences early (env vars vs RuntimeConfig, rayon vs std threads).
+
+**Step 1 — split the monolithic patch into per-PR branches** (from
+`patches/0001-cuda-performance-patch-set.patch`; hunks map cleanly):
+| branch | files | PR |
+|---|---|---|
+| `fix/multimask-batch-size` | `load/sessions.rs` (1 line) or `export_models.py` | PR-1 |
+| `perf/vbx-vectorize-pdist-blocks` | `vbx.rs`, `ahc.rs`, `Cargo.toml` (ndarray threading) | PR-6 (flagship) |
+| `perf/fbank-session-pool` | `session.rs`, `load/sessions.rs`, `fbank.rs`, `embedding.rs` | PR-2 |
+| `feat/export-folded-segmentation` | `scripts/export_models.py` (+onnxsim dep) | PR-3 |
+
+**Step 2 — per-branch validation (the isolation matrix; each ~30 min on our hardware):**
+For each branch alone on upstream tip: (a) `cargo test --release` with fixtures mounted +
+`RUST_MIN_STACK` (document that both quirks are pre-existing); (b) ES2004a + 4.7h E2E, RTTM
+diff vs unpatched; (c) record isolated speedup. Attach per-PR numbers — maintainers trust
+isolated effects over combined ones. Known isolated numbers so far: folded seg −7%;
+batching+pool 3.1× (ES2004a); VBx/pdist 2.76× (4.7h) — re-confirm on upstream tip.
+
+**Step 3 — submission order & dependencies:**
+1. **PR-1 first** (one-line bug fix + crash repro) — cheap review, builds trust.
+2. **PR-6 second** (flagship; independent of PR-1) — lead with the evidence table + "output
+   bit-identical, your own fixtures pass". Offer to split ndarray-threading into its own commit.
+3. **PR-2 third** (depends conceptually on PR-1 landing; be ready to rework env vars into
+   `RuntimeConfig` if asked — say so proactively in the description).
+4. **PR-3 last** (export script; lowest risk, no runtime code).
+5. File the **issues** (teardown crash, batched-fbank numeric deviation, chunk-emb-workers
+   no-op, shared-sessions design proposal) as issues alongside, referencing the PRs.
+
+**Step 4 — PR body template** (each PR): problem → root cause → change summary → isolated
+benchmark table (hardware named: RTX A6000 / 3080 Ti, quiet-machine protocol) → accuracy proof
+(bit-identity / fixture tests / corpus DER) → reproduction commands. Link the intro issue.
+
+**Contingencies:** upstream unresponsive after ~2-3 weeks → we're unblocked regardless (vendored
+pin + patch file is our production path; PLAN decision #1). Maintainer wants different shape
+(rayon, config plumbing) → mechanical rework, numbers unchanged. Upstream tip diverged heavily →
+re-validate on tip; our harness makes each re-run ~30 min.
+
+**Non-negotiables:** quiet-machine numbers only (RESULTS §4.11); never attach gated-model
+artifacts (community-1 derivatives) to public PRs — fixtures/models stay local; benchmarks
+reference our corpora by name, raw RTTMs available on request.
