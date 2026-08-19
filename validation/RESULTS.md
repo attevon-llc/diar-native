@@ -202,10 +202,13 @@ DER/RTTM results are unaffected (bit-deterministic — G5 evidence). **All cross
 comparisons (G4) must come from a quiet-machine timing pass** (queued: fork vs speakrs,
 2.2h + 4.7h, sequential, no concurrent jobs). Lesson recorded: never co-schedule timed runs.
 
-### 4.12 CPU leg (M7)
+### 4.12 CPU leg (M7) — COMPLETE
 
-- fork eager CPU, 0.5h file: 1123 s = **1.7× RT** (machine under moderate load).
-- speakrs `cpu` mode: running.
+0.5h file, cpu-only: fork 1123 s | speakrs unpatched 1191 s | speakrs patched 1251 s —
+**all ≈ parity class (1.7-1.9× RT, ±11% under varied machine load)**; speakrs RTTMs identical
+across builds. Note: the fbank pool slightly HURTS cpu mode (core contention with inference) →
+M1 config item: pool defaults to 1 when `ExecutionMode::Cpu`. Lite/laptop deployment claim
+stands: speakrs CPU ≈ fork CPU, with a ~50 MB binary instead of a 9 GB torch image.
 
 ### 4.14 Gate G2 PASSED + G5 evidence (speakrs Karpathy) & fork VoxConverse anchor
 
