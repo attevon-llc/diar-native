@@ -2,8 +2,12 @@
 vendor/
 
 # exported model artifacts — derivatives of gated pyannote community-1 weights (CC-BY-4.0,
-# terms-gated); regenerate with vendor/speakrs/scripts/export_models.py — never commit
+# terms-gated); regenerate with vendor/speakrs/scripts/export_models.py — never commit.
+# The glob has to cover every set (models_folded/, models_small/, …): `models/` alone missed
+# models_folded/ when it was added, and 254 MB of gated weights went into history before a
+# filter-repo purge took them back out (RESULTS §7.8).
 models/
+models*/
 
 # local tooling
 venv/

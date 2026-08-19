@@ -565,11 +565,10 @@ Harness: `backend/scripts/benchmark_boundary.py` on the full 66.5-min Karpathy a
 | python (PyAnnote fork) | 1.231% | **0.859%** | 127 | 21 |
 | native (speakrs) | 1.942% | **1.312%** | 194 | 7 |
 
-Neither engine reaches the written `≤ 0.27% smoothed` bar under this reference method, so the
-absolute number in EXECUTION_TASKS/INSTALL_NATIVE is **not reproducible as stated** and must be
-re-derived (the committed 10-min fixture baseline is 0.62% ON, with a positional `words.json`
-reference and `large-v3`; the bar likely came from yet another configuration). The gate that
-does bind is native-vs-fork parity, and native fails it by **+0.45 pp WSER**.
+Neither engine reaches the written `≤ 0.27% smoothed` bar **on this clip**, because the bar was
+never about this clip — see §7.9, which traces it to the first **10 minutes** and reproduces it
+exactly on both engines. On the full 66.5-min clip the gate that binds is native-vs-fork parity,
+and native fails it here by **+0.45 pp WSER** (fixed in §7.7).
 
 Attribution — four scorings against the same reference, same audio:
 
@@ -745,3 +744,49 @@ tier); on any card with ~5 GB free for the sidecar, `models_folded/` is the corr
 Baseline source (a) cross-check: the passive production rows in §7.1 put single-file 1-2 h media
 at ~100 s presented on the python engine, consistent with the 108.4 s measured here for a
 66.5-min file under controlled conditions.
+
+### 7.9 WSER GATE RE-DERIVED — the 0.27% bar is real, and native meets it exactly
+
+The bar was traced to `transcribe-app/docs/diarization-boundary-results/cloud-comparison.md`:
+it is the **first 10 minutes** of the Karpathy clip (2 257 words), not the 66.5-min acceptance
+clip §7.4 measured (14 978 words). EXECUTION_TASKS/INSTALL_NATIVE inherited the number without
+those qualifiers, which is what made it look unreachable. Re-measured on the documented clip
+(`karpathy_10m.wav`, hand-labelled `reference.rttm` midpoint-mapped, large-v3-turbo, smoothing
+ON, `benchmark_boundary.py`):
+
+| engine | WSER off | WSER on | gate ≤ 0.27% |
+|---|---|---|---|
+| python (PyAnnote fork) | 1.15% | **0.27%** | PASS |
+| native (speakrs, §7.7 fix) | 1.15% | **0.27%** | **PASS** |
+
+Both reproduce the published 1.15% → 0.27% pair to the digit. The two engines are *not* running
+the same diarization — their `diarize_records` differ (verified: `native != python`, while two
+independent PyAnnote runs are byte-identical, confirming the fork is deterministic and the env
+override really switches engines) — they simply land on the same word-level labels once the
+boundary smoother has run on this clean 2-speaker clip.
+
+**Correction to §7.4:** the claim that the bar "is not reproducible as stated" was wrong. It is
+reproducible; it was under-specified. The gate now reads, in full: *Karpathy **10-minute** clip,
+hand-labelled reference, midpoint-mapped, smoothing ON → WSER ≤ 0.27%.* The 66.5-min clip is a
+harder, longer-context test and belongs in the plan as a **parity** gate (native within noise of
+the fork: 0.890% vs 0.859% after the §7.7 fix), not an absolute-threshold one.
+
+### 7.10 Deployment hardening — shared-volume ownership (permanent fix)
+
+`/scratch/opentranscribe` and `/tmp/transcription` are docker **named volumes** (not host binds;
+they surface under the NAS only because this host's docker data-root is `/mnt/nas/docker`, a
+local ext4 RAID). A named volume inherits its ownership from the image directory at creation —
+and neither backend image reserved those paths, so every volume was created `root:root 0755`
+while the workers run as `appuser` (uid 1000). Consequence: `write_wav_to_shared_volume` failed
+with EACCES on every job and silently degraded to a re-decode in stage 2 — **and S-T2's premise
+(the sidecar reads the WAV preprocess already wrote) was broken before T2 even started.**
+
+Fix, in three parts so it holds on any machine:
+1. `backend/Dockerfile.prod` + `Dockerfile.lite` reserve both paths owned by appuser, placed in a
+   **late layer** so the change does not invalidate the expensive build stages. Verified on the
+   rebuilt image: a freshly created named volume now reports `1000:999 755`.
+2. `scripts/fix-shared-volume-perms.sh` — idempotent repair for deployments whose volumes predate
+   the image change (an image fix cannot retro-repair an existing volume). Applied here:
+   `0:0 755 → 1000:1000 755` on both volumes; worker write probe passes on both.
+3. `audio_loader.write_wav_to_shared_volume` now catches `PermissionError` separately and names
+   the repair script instead of logging a bare EACCES.

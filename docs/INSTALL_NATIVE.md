@@ -58,7 +58,10 @@ DIARIZER_ENGINE=native docker compose ... up -d celery-worker
    + OpenSearch embedding ingestion.
 2. Kill-sidecar drill: `docker stop diar-native` mid-queue → jobs must complete via fallback
    (with the try/except variant of the hook).
-3. Karpathy WSER through the app pipeline ≤ 0.27% smoothed.
+3. Karpathy **10-minute** clip WSER through the app pipeline ≤ 0.27% smoothed — that is the clip
+   the 0.27% figure was measured on (`docs/diarization-boundary-results/cloud-comparison.md`);
+   scoring the full 66.5-min clip instead gives ~0.86-0.89% for *either* engine, so compare
+   against the fork there rather than against 0.27% (RESULTS §7.9).
 
 ## Known limitations at flip time (tracked in PLAN.md M1 remainder)
 

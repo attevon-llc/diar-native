@@ -15,8 +15,14 @@ up sidecar (compose overlay); `DIARIZER_ENGINE=native`; upload test_videos throu
 kill-sidecar fallback drill; then baseline: `ENABLE_BENCHMARK_TIMING=1`, run the
 SPEEDUP_ROADMAP corpus ×3 for python vs native (fast set) vs native (small set); pull
 `user_perceived_duration_ms` + per-stage columns via admin_timing API.
-**Gate:** app-level outputs verified (transcript, speakers, OpenSearch embeddings); Karpathy
-WSER ≤ 0.27% smoothed; fallback drill passes; baseline tables land in RESULTS §5.
+**Gate:** app-level outputs verified (transcript, speakers, OpenSearch embeddings); **Karpathy
+10-minute clip** (`karpathy_10m.wav`, hand-labelled `reference.rttm` midpoint-mapped, smoothing
+ON, `benchmark_boundary.py`) WSER ≤ 0.27% — state the ASR model with the number, since the bar
+was measured on that clip and not the 66.5-min one; on the full clip the gate is **parity with
+the fork** (within noise), not an absolute threshold. Fallback drill passes; baseline tables land
+in RESULTS §7.
+**STATUS: DONE 2026-08-19** — both engines 0.27% on the 10-min clip, native 0.890% vs fork
+0.859% on the full clip, E2E baseline 1.40× faster upload→presented on 2.1 h (RESULTS §7.1-7.10).
 **Model/effort: Opus 5 / high** (multi-service orchestration + judgment on anomalies; the
 procedure itself is fully written). Sonnet 5/high acceptable if runs go clean.
 

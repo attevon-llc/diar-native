@@ -90,7 +90,8 @@ Milestones:
   `native_embeddings` via existing `build_native_embeddings`, `overlap_info`), selected by
   `DIARIZER_ENGINE=native|python` (default python). Gate: TRUE E2E — full compose stack, upload
   `test_videos/` through API → Celery `gpu-diarize` → OpenSearch; kill-sidecar fallback drill;
-  Karpathy WSER ≤ 0.27% smoothed at app level.
+  Karpathy **10-min** clip WSER ≤ 0.27% smoothed at app level (that clip is where the number
+  comes from — RESULTS §7.9), and parity with the fork on the 66.5-min clip.
 - **M3 hardening**: shadow mode (both engines, log diffs) → default flip after a clean week;
   CUDA + CPU-only images; laptop-class validation.
 - **M4 (T2)**: Triton repo productionization — accuracy-correct community-1 TRT engines
