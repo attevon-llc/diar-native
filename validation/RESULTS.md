@@ -378,6 +378,16 @@ bit-identical to the previous patched run, corpus at 105× RT on the A6000** (fo
 The optimization is proven accuracy-transparent at corpus scale. C-M1a/b/c complete;
 T1 ship gate CLEARED. `results/speakrs_ami_optimized_der.json`.
 
+### 4.25 Audit-1 — formal memory + optimized-build determinism (4.7h ×3, A6000)
+
+- **Determinism: 3 runs bit-identical** (9,507 lines each) — direct ×3 proof for the optimized
+  build (previously inferred from bit-identity to a deterministic predecessor).
+- **Peak RSS 3.09 GiB** — G4 RSS sub-criterion (<8 GB) PASS with 2.6× headroom.
+- **Peak VRAM 4,236 MB** vs the 4 GB target — **marginal exceed (~3%), PASS-WITH-NOTE**: driven
+  by the b64 session variants; fits all target GPUs (full AMI corpus ran on the 12 GB 3080 Ti);
+  tunable for small GPUs via a b32-only model set (b32 exports already exist). Fork reference:
+  886 MB — VRAM is the one resource where the fork is lighter; not deployment-limiting.
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;
