@@ -99,6 +99,15 @@ Milestones:
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured
   here.
 
+## Benchmark anchor (do not re-measure — docs/BENCHMARK_PROTOCOL.md)
+
+Every lever from here is judged against the committed pre-flip PyAnnote numbers in
+`results/e2e_baseline/python/`. Primary reference file: **Karpathy 66.5 min** (`01a01aba-d9d2…`)
+— **108.4 s python anchor, 54.4 s now** — chosen because it carries both a speed baseline and
+hand-labelled ground truth, so speed and accuracy regress on the same file. Long-media reference:
+the 2.1 h seed file, 206.7 s → 120.3 s. Protocol, gates and the accuracy checks that must
+accompany any speed claim: `docs/BENCHMARK_PROTOCOL.md`.
+
 ## Post-flip optimization sequence (ACCEPTED 2026-08-19 — full detail: docs/E2E_PIPELINE_MAP.md)
 
 User-confirmed direction: progressive updates, async task loads, and downstream overlap
