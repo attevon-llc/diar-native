@@ -49,6 +49,23 @@ alongside CT2 when the ASR workstream opens — judge on (a) WER on our real cor
 accented audio vs large-v3-turbo), (b) word-timestamp quality THROUGH the app's WSER pipeline,
 (c) multilingual needs, (d) jobs/hour/GPU. Until something beats CT2 on (a)+(b), CT2 stays.
 
+## Measured spike (2026-08-19): word-timestamp accuracy vs hand labels
+
+Karpathy 10-min clip, 2282 hand-labeled words (`karpathy_10m.ref.words.json`), A6000, harness
+`validation/asr_timestamp_spike.py` (SequenceMatcher word alignment, |Δstart| on matches):
+
+| engine | match rate | Δstart median/mean/p95 (ms) | inference |
+|---|---|---|---|
+| faster-whisper large-v3-turbo (fp16, prod model) | **97.37%** | **40 / 69.8 / 240** | 24.9 s (incl. load) ≈ 24× RT |
+| parakeet-tdt-0.6b-v2 (NeMo, timestamps=True) | 95.88% | 110 / 142.1 / 390 | 5.5 s pure ≈ 109× RT (71.6 s incl. NeMo load+download) |
+
+→ Parakeet ≈ 4× faster inference, but word timings ≈ 2.75× worse (median) and match rate lower —
+confirms user's prior testing. **CT2/faster-whisper remains the engine.** Re-run protocol for
+bigger variants (tdt-1.1b, v3 multilingual, canary): swap the model name in `run_parakeet()`.
+NeMo installs cleanly on the backend image's torch 2.11 (`pip install -U nemo_toolkit[asr]`,
+per model card; NGC nemo container is the fallback). Raw outputs:
+`results/asr_spike_{faster_whisper,parakeet}.json`.
+
 ## Watch-items
 
 - **Word-level timestamps** (speaker assignment + WSER depend on them): TRT-LLM/vLLM Whisper are
