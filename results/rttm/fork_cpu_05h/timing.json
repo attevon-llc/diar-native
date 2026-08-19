@@ -1,0 +1,15 @@
+{
+  "device": "cpu",
+  "model": "pyannote/speaker-diarization-community-1",
+  "records": [
+    {
+      "label": "0.5h_1899s",
+      "run": 0,
+      "duration_s": 1899.0,
+      "elapsed_s": 1123.33,
+      "rtf_x": 1.7,
+      "num_speakers": 4,
+      "peak_vram_mb": 0
+    }
+  ]
+}

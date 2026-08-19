@@ -179,7 +179,34 @@ Source reading (`src/inference/embedding/{load,batch}.rs`, `load/sessions.rs`):
   Projected: speakrs ~31× RT → fork-class ~80× or better (concurrency overlaps CPU fbank with
   GPU tail). Evidence package for the PR: §4.2/§4.7 tables + §4.5 DER parity.
 
-### 4.9 fp16 engines — deferred (TRT 11 strongly-typed)
+### 4.10 CORRECTION to §4.8 + instrumented speakrs CUDA path (RUST_LOG=speakrs=trace)
+
+`embedding_path=MultiMask`: speakrs' CUDA E2E pipeline **already uses the split path** —
+CPU fbank once per chunk + multimask tail (fbank + 3 masks → 3 embeddings) on GPU. It does NOT
+run the fused 812 ms graph E2E (that graph is only the `embed_batch` API path). Measured on
+clip30 (22 chunks): `fbank_ms=661` (CPU, ~30 ms/chunk, single-threaded), `gpu_predict_ms=470`,
+`recv_wait_ms=547`. → Real optimization targets, in order:
+1. **Parallelize CPU fbank across chunks** (rayon) — clean upstream PR; `--chunk-emb-workers`
+   1→4 measured NO effect on CUDA (knob appears CoreML-oriented); RTTM identical across counts.
+2. **Folded segmentation graph drop-in** (zero code — speakrs loads by filename): `models_folded/`
+   with `-sim` graphs renamed. **E2E ES2004a: 39.4 → 36.7 s (-7%), RTTM bit-identical.** Free win.
+3. Segmentation via TRT/native later (Triton topology).
+
+### 4.11 Benchmark-hygiene note — speakrs A6000 wall-times CONTAMINATED
+
+The §3 speakrs AMI walls (31-49× RT) ran on GPU 2 while the fork's curve benchmark saturated
+17+ CPU cores on GPU 0 → speakrs' CPU stages (fbank!) were starved. Evidence: ES2004a takes
+**~40 s on the *weaker* 3080 Ti** on a lighter-loaded machine vs 75 s recorded on the A6000.
+DER/RTTM results are unaffected (bit-deterministic — G5 evidence). **All cross-engine timing
+comparisons (G4) must come from a quiet-machine timing pass** (queued: fork vs speakrs,
+2.2h + 4.7h, sequential, no concurrent jobs). Lesson recorded: never co-schedule timed runs.
+
+### 4.12 CPU leg (M7)
+
+- fork eager CPU, 0.5h file: 1123 s = **1.7× RT** (machine under moderate load).
+- speakrs `cpu` mode: running.
+
+### 4.13 fp16 engines — deferred (TRT 11 strongly-typed)
 
 TRT 11 (26.06 image) removed `--fp16`: networks are **strongly typed by default** — engine
 precision follows the ONNX graph's tensor types. fp16 therefore requires converting the ONNX
