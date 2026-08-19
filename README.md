@@ -118,6 +118,11 @@ diar-native/
 │   ├── score_der.py           ← DER scorer (UEM-aware, aggregate + per-file, JSON out)
 │   ├── ort_cuda_microbench.py ← ORT CUDA EP folded-vs-unfolded-vs-eager microbench
 │   └── triton_bench.py        ← Triton gRPC latency/throughput bench
+├── docs/
+│   ├── VRAM_AND_TIERS.md      ← what holds GPU memory, why, and what fits on 4/8/12 GB
+│   ├── INSTALL_NATIVE.md      ← the flip procedure into OpenTranscribe
+│   ├── E2E_PIPELINE_MAP.md    ← app pipeline anchors + ranked levers L1-L10
+│   └── UPSTREAM_PRS.md        ← the speakrs contribution queue (incl. PR-7 exclusive fix)
 ├── docker/Dockerfile.bench    ← self-contained speakrs CUDA build (xtask diarize CLI)
 ├── triton/models/             ← Triton spike model repo (config.pbtxt per model)
 ├── refs/                      ← staged references (AMI test RTTM+UEM, Karpathy fixed RTTM)
@@ -141,6 +146,17 @@ ad-hoc window embedding (boundary recheck) + min/max/num-speaker constraints.
 | **T2 — Triton (opt-in, larger home servers + AWS)** | multi-user / multi-job servers | tritonserver + TRT engines (fp32), dynamic batching across concurrent jobs (measured 2.14× throughput at 8 clients on one weight copy), `diar-ffi` custom backend or sidecar-calls-Triton topology. Higher RAM/system footprint — that's why it's opt-in, not default. |
 
 The Python fork path remains the universal fallback behind a config flag in both tiers.
+
+**VRAM budgets per tier, and what actually fits, are measured in
+[docs/VRAM_AND_TIERS.md](docs/VRAM_AND_TIERS.md).** The headline for planning: the warm stack
+holds a **7 575 MiB floor** on a 12 GB card (sidecar 4 136 + whisper 2 038 + redaction 1 346) and
+each concurrent job adds only ~490 MiB, because weights are shared and only activations scale.
+The floor is warm-start caching, not a leak — it returns to the same figure after every job.
+Note the sidecar's share is ~547 MiB of weights plus ~3.6 GB of ORT arena acquired on first
+inference and never released, so **T1's "laptops" claim above holds for 6-8 GB cards but not yet
+for 4 GB**: that needs redaction off the GPU, the small model set, and sidecar load/unload —
+which trades away the transcribe∥diarize overlap. Apple Silicon is future work, after Linux is
+stable.
 
 ## 7. Ground rules
 
