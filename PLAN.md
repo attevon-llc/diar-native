@@ -96,9 +96,14 @@ wherever outputs allow. Execution order after the flip + baseline run:
 2. L3 progressive presentation (transcript_ready at 0.78; labels late-attach via existing
    handlers; redaction stays gating)
 3. L4 finalize off the GPU worker (stop holding the GPU slot for CPU work)
-4. L5 gender-detection demotion now, sidecar absorption later
+4. L5a gender-task QUEUE-PRIORITY fix now (one line — stop competing with the critical path);
+   L5b **gender-in-sidecar promoted to early post-flip** (shares held PCM, kills presigned-URL
+   clip fetches, unblocks LLM speaker-ID sooner — visible enrichment latency)
 5. L9+L7 telemetry completeness + batched progress writes (baseline hygiene)
-6. L6 precompute_vad implementation; L8 VAD silence knob WSER-test; L10 ASR int8_float16
+6. L6 precompute_vad implementation; L8 VAD silence knob WSER-test
+7. Text-model Rust absorption stays PROFILE-GATED (ladder in RUST_SERVICES_PLAN §3)
+- **L10 ASR int8 quant: TESTED BY USER — REAL DEGRADATION OBSERVED → last-if-at-all**
+  (user's measurement overrides literature expectations, per evidence policy).
 Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is judged by
 `user_perceived_duration_ms` per tier.
 
