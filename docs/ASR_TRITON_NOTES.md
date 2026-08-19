@@ -95,6 +95,23 @@ throughput-tier contender for the bake-off.
 - Licensing: all three routes are OSS (Apache/BSD-class). NVIDIA Riva/NIM exists as a managed
   alternative but adds licensing.
 
+## Proper ASR investigation spec (for the OpenTranscribe GH issue — expands the spike)
+
+The 2026-08-19 spike was ONE clip + match-rate; the formal investigation must add:
+1. **True WER** (jiwer or meeteval, normalized text) — not SequenceMatcher match-rate — on a
+   multi-domain corpus: Karpathy (clean podcast), AMI meetings (far-field/overlap), Earnings-21
+   (telephone/finance jargon), 2-3 seed_t* files (noisy real-world). All already staged locally.
+2. **Timestamp scoring with calibration applied** (per-model constant from a held-out clip;
+   measured biases: FW +40 ms, parakeet-tdt-0.6b +110 ms) — report corrected median/p95.
+3. **Model sweep** via the existing harness (one-line swap): faster-whisper large-v3-turbo
+   (baseline) + distil variants; parakeet-tdt-0.6b-v2/v3 + tdt-1.1b; canary-1b; CrisperWhisper.
+4. **WSER through the actual app pipeline** (the metric that matters): plug each engine's words
+   into the speaker-assignment path on the Karpathy acceptance clip and score WSER vs the
+   0.27% production bar.
+5. **Throughput/cost leg**: jobs/hour/GPU at concurrency 1/4/8 (serving route per engine:
+   CT2 in-process vs NeMo vs Triton/TRT), × AWS g5/g6 hourly → $/audio-hour table.
+6. Quiet-machine rules (RESULTS §4.11) and per-engine determinism check ×3.
+
 ## Decision protocol (when picked up)
 
 One-day bake-off on the existing harness corpus (duration curve + seeds), same GPU:
