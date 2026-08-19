@@ -1035,3 +1035,42 @@ the 3080 Ti reports 11 902 MB usable, landing *just* under the rule's `>= 12 GB 
 and that rule's budget still assumes "CUDA context + PyAnnote diarization models pre-loaded in
 the celery worker", which the flip made obsolete — roughly 2 GB more headroom than the rule
 believes. Neither changes the conclusion, because the plateau binds before VRAM does.
+
+### 7.18 fp16 gender model — ADOPTED (67/67 verdicts identical on AMI-16)
+
+Converted with `onnxconverter_common.float16(keep_io_types=True)`, so the graph runs in fp16
+while still accepting and returning fp32 — the Rust caller is unchanged. Compared against fp32
+across **all 16 AMI meetings, 67 speaker verdicts**:
+
+| | fp32 | fp16 |
+|---|---|---|
+| labels | — | **67/67 identical** |
+| confidence | — | max Δ 0.0118, **mean Δ 0.00019** |
+| container VRAM (AMI run) | 5 396 MiB | **4 890 MiB** (−506) |
+| model on disk | 361 MB | **181 MB** (−50%) |
+| wall, 10-min clip | 6.02 s | 5.90 s (within noise) |
+
+Adopted as the shipped model. Speed is unchanged because gender is ~1.5 s of a 6 s call — the
+win is memory and footprint, which is what the laptop tier needs. Note this is the *opposite*
+outcome to RESULTS §4.18, where fp16 was rejected for the diarization graph: there the
+StatsPool variance/sqrt subgraph collapsed DER. Different graph, different verdict — which is
+why it was measured rather than assumed either way.
+
+### 7.19 VAD: already running, and already ONNX — the gap is sharing, not speed
+
+Checked because "precompute_vad is dead" reads as "no VAD is running". Both are true and they
+are different features:
+
+| | status | evidence |
+|---|---|---|
+| faster-whisper's internal Silero | **running on every job** | `vad_filter=True` hardcoded, unconditional, `transcriber.py:243`; `silero_vad_v6.onnx` ships in the faster-whisper assets |
+| the app's `precompute_vad` | **dead** | `vad_regions=None` hardcoded, `stages.py:429`; config defaults false |
+
+So transcription *is* skipping silence, via an ONNX Silero model, tuned by
+`vad_{threshold,min_silence_ms,min_speech_ms,speech_pad_ms}` — which is what T8's sweep tunes.
+
+**This reframes T7.** The opportunity is not to enable VAD, nor to port it to Rust: it is
+already an ONNX model, so a rewrite would have to beat it. The value is running it **once,
+upstream, and sharing it** — today whisper computes VAD for itself while diarization runs its
+own segmentation over the same audio, and neither sees the other's work. That is a
+shared-computation win, not a kernel-speed one, and it should be scoped that way.
