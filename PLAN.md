@@ -30,13 +30,13 @@ decisions below.
 
 - **Phase A — stock-fork baselines: DONE** (Gate 0 passed; AMI 13.093%, Karpathy 8.194%,
   VoxConverse dev 5.099%, duration curve, CPU leg — RESULTS §2).
-- **Phase B — speakrs validation: DONE (2026-08-19). FINAL VERDICT: GO** — see validation/REPORT.md gate table. G1 ✅ G2 ✅ G5 ✅ (bit-determinism);
-  G3 partial (2.2h 0.18% A/B ✓, 1.0h ✓, 0.5h phantom-5th-speaker flagged; 3.2h/4.7h scoring in
-  progress); G4 flipped to expected-pass by the patch set (3.1× E2E; 89× RT on 3080 Ti vs fork
-  80× on A6000) — final verdict from the **quiet-machine timing pass** (mandatory; see RESULTS
-  §4.11 contamination lesson). Outstanding: speakrs VoxConverse dev leg; 0.5h speaker diagnosis;
-  batched-fbank-graph numeric deviation quantification (RESULTS §4.16 area).
-- **Phase B5 — go/no-go report: pending** (assembled from RESULTS once the above land).
+- **Phase B — speakrs validation: DONE (2026-08-19). FINAL VERDICT: GO** (validation/REPORT.md).
+  G1 ✅ AMI 13.100 vs 13.093; G2 ✅ Karpathy 8.219 vs 8.194; G5 ✅ bit-determinism; G3 synthetic
+  miss adjudicated by the **VoxConverse arbiter: speakrs 4.847% BEATS fork 5.099%** (211/216
+  speaker-count agreement, 95-38 per-file DER wins); G4 quiet-machine: **1.26× faster (2.2h),
+  1.2× faster (Karpathy)**, 4.7h extreme file 1.39× slower — attributed to AHC linkage at
+  N≈50k (74% of wall). Patched build verified accuracy-preserving on every corpus.
+- **Phase B5 — go/no-go report: DONE** — REPORT.md carries the final gate table + verdict.
 
 ## Phase C — adoption (next; ~3-4 weeks part-time)
 
@@ -54,7 +54,9 @@ crates/diar-ffi/     # C-ABI cdylib → T2 Triton custom backend (Triton backend
 ```
 
 Milestones:
-- **M1 diar-core** + upstream PRs (list below). Gate: re-run full Phase-B suite vs our own
+- **M1 diar-core** + upstream PRs (list below) + **T1 SHIP-GATE optimization: AHC linkage at
+  N>10k** (the 4.7h regression, RESULTS §4.20 — nn-chain port / pre-reduction / sub-sampled
+  seeding; ship gate = ≥1.0× fork on the 4.7h file). Gate: re-run full Phase-B suite vs our own
   RTTMs — DER ≤ 0.3%, determinism, constraint-path fixture tests.
 - **M2 diar-server + OpenTranscribe integration**: compose service; `diarizer_native.py`
   implementing the `SpeakerDiarizer` contract (`DiarizeResult`, 256-d L2-normalized
@@ -77,6 +79,8 @@ Milestones:
    `vendor/speakrs`, gated by `SPEAKRS_FBANK_POOL`/`SPEAKRS_FBANK_THREADS`).
 3. **Folded segmentation graph** in export script (bit-exact, −7% E2E, 2× on ORT-CUDA serving).
 4. **Arc-shared sessions / concurrent pipeline** (decision #4) — after M1 design settles.
+4b. **AHC linkage performance at large N** (RESULTS §4.20: 348 s of a 474 s file, ~2.4× slower
+   than scipy at N≈50k) — likely paired with the fbank-pool PR.
 5. Bug report: ORT-CUDA teardown crash (`corrupted double-linked list`); batched-fbank-graph
    numeric deviation vs single-chunk graph.
 
