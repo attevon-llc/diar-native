@@ -1,0 +1,26 @@
+{
+  "aggregate_der_pct": 8.219,
+  "rows": [
+    {
+      "label": "karpathy",
+      "hyp": "karpathy_run0.rttm",
+      "der_pct": 8.219,
+      "ref_speakers": 2,
+      "hyp_speakers": 2
+    },
+    {
+      "label": "karpathy",
+      "hyp": "karpathy_run1.rttm",
+      "der_pct": 8.219,
+      "ref_speakers": 2,
+      "hyp_speakers": 2
+    },
+    {
+      "label": "karpathy",
+      "hyp": "karpathy_run2.rttm",
+      "der_pct": 8.219,
+      "ref_speakers": 2,
+      "hyp_speakers": 2
+    }
+  ]
+}

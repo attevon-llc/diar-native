@@ -320,6 +320,13 @@ the adoption track, with "≥1.0× fork on the 4.7h file" retained as the T1 SHI
 long-file clustering gap becomes a named Milestone-1 optimization item (likely upstream-PR-able,
 same as the fbank pool).
 
+### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
+
+**8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;
+40 s wall ≈ 100× RT vs fork 48 s (1.2× faster).** Patched build now verified
+accuracy-preserving on EVERY corpus: AMI (13.101%), VoxConverse (4.847%, beats fork), Karpathy
+(8.219%). `results/speakrs_karpathy_patched_der.json`.
+
 ### 4.18 fp16 engines — deferred (TRT 11 strongly-typed)
 
 TRT 11 (26.06 image) removed `--fp16`: networks are **strongly typed by default** — engine
