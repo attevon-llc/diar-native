@@ -50,6 +50,22 @@ request floods into GPU/CPU-efficient batches with bounded memory (queue caps + 
 when full). Implement as a generic `micro_batch<T>` worker in diar-core when the first text
 model is absorbed.
 
+## 3b. Service topology decision (2026-08-19): TWO sidecars
+
+- **diar-native** (audio, GPU): diarization + gender classifier (shares held PCM).
+- **text-native** (text, CPU-first): PII / re-ranker / toxicity / classifiers — SEPARATE service:
+  different resource shape (small models, high request rate, CPU replicas scale independently),
+  failure isolation (text crash must not cost the warm GPU engine), independent upgrade cadence.
+  Same cargo workspace → shared micro_batch/ORT/tokenizers code; two ~30-50 MB single-purpose
+  containers. Build order: flip → profile → optimum-ORT interim → text-native for proven-hot
+  models only.
+- **Torch-free backend endgame**: whisper=CT2 (torch-free), diarization=Rust, text=ORT →
+  remaining torch pins need the PLAN decision-#5 audit (alignment leftovers, VAD, transitive
+  imports); if clean, the backend image drops torch entirely.
+- **Task overlap**: with diarization off-worker, transcribe+diarize run concurrently without
+  stages.py VRAM gating → job latency approaches max(stage) not sum(stages); measured by the
+  post-PR E2E protocol. Output-identity gates every migration step, as throughout.
+
 ## 4. Rust preprocessing service (from SPEEDUP_ROADMAP, detailed)
 
 Phase P1: tmpfs opt-in flag for the existing handoff (config only, servers).
