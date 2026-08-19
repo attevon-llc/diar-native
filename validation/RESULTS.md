@@ -587,15 +587,17 @@ integration is also faithful: the float32→int16 WAV round-trip in `diarizer_na
 costs **0.001 pp** (app-path 6.546% vs sidecar-direct 6.545%).
 
 **The entire app-level accuracy gap is created by exclusive-segment extraction**, which is what
-the app consumes for word attribution. pyannote emits *more* exclusive segments than its full
-diarization (774 > 697) — it reassigns overlapped speech to a single speaker; speakrs emits
-*fewer* (660 < 692) — it discards those regions, and discarded speech scores as missed. A naive
-trim-the-overlaps reimplementation was tested and is **worse** (7.863% c0.25), so the fix is to
-port pyannote's exclusive assignment semantics, not to cut overlaps out.
+the app consumes for word attribution. Root cause and fix: §7.7.
 
-Scope of the defect: ~0.45% of words on a 2-speaker clip with little overlap; it grows with
-overlap density. Note the corpus-level picture stays favorable to speakrs (VoxConverse 216-file
-arbiter: 4.847% vs fork 5.099%, §4.16d) — this is a representation defect, not a clustering one.
+An early hypothesis here — "speakrs discards overlapped speech" — was **wrong, and is retracted**:
+the union of speech time is identical between speakrs' full and exclusive outputs (0.00% across
+all 16 AMI meetings, §7.7). A naive trim-the-overlaps reimplementation was also tested and is
+**worse** (7.863% c0.25). The defect is *which* speaker wins a contested frame, not whether the
+frame survives.
+
+Scope: ~0.45% of words on a 2-speaker clip with little overlap; it grows with overlap density.
+Note the corpus-level picture stayed favorable to speakrs throughout (VoxConverse 216-file
+arbiter: 4.847% vs fork 5.099%, §4.16d) — this was a representation defect, not a clustering one.
 
 ### 7.5 E2E speed baseline — PENDING (blocked on the §7.4 decision)
 
@@ -619,3 +621,73 @@ are root-owned 0755 in this stack, so `write_wav_to_shared_volume` silently warn
 **This matters for T2**: S-T2 assumes preprocess already wrote the 16 kHz WAV to the shared
 volume so the sidecar can read it with zero handoff cost — in this deployment that write is
 currently failing.
+
+### 7.7 ROOT CAUSE + FIX — exclusive overlap resolution was decided by cluster index
+
+**What exclusive means, and why its DER is higher than full for BOTH engines.** The app must
+give every word exactly one speaker, so it consumes a non-overlapping timeline. AMI is meeting
+audio and its hand labels mark both speakers during overlap, so any exclusive hypothesis is
+scored as missing the speaker it did not name. That is arithmetic, not a defect: `missed` rises
+7.78% → 14.39% for the fork and 7.77% → 14.38% for speakrs — **identically**. False alarm and
+confusion both fall, because an exclusive timeline stops asserting a second speaker.
+
+**Two measurements killed the "speakrs drops overlapped speech" hypothesis.** (1) The union of
+speech time is bit-identical between speakrs' full and exclusive outputs — 26073.1 s vs
+26073.1 s, 0.00% on every one of the 16 meetings. (2) The DER components show the fork/speakrs
+exclusive gap is *entirely* confusion (2.655% vs 1.808%), with missed detection identical to
+within 0.012 pp. Nothing is lost; the wrong speaker is named.
+
+**Root cause.** `vendor/speakrs/src/reconstruct.rs:170` `make_exclusive` documents itself as
+"zero out all but the highest-scoring speaker in each frame". But `Reconstructor::reconstruct*`
+writes **1.0** for every active speaker (reconstruct.rs:142/161), and `post_inference` may
+additionally `binarize()` — so by the time `make_exclusive` runs, every active speaker in a
+frame holds exactly 1.0. Every overlapped frame is an N-way tie, and Rust's `Iterator::max_by`
+returns the **last** maximum on ties, so the winner is the highest cluster index. Empirically
+confirmed: over **22 297 sampled overlap frames across AMI-16, the surviving speaker was the
+highest-indexed one 100.0% of the time.** Overlap ownership was decided by cluster numbering,
+never by acoustics. The continuous evidence exists — `Reconstructor::frame_activations` — and
+was being discarded one step before it was needed.
+
+**Fix** (vendored speakrs + diar-core wiring):
+1. `reconstruct.rs`: `reconstruct`/`reconstruct_smoothed` split into `*_with(activations, ...)`
+   variants so one activation pass feeds both reconstructions; new `exclusive_from(full,
+   activations)` keeps, per frame, the active speaker with the highest **activation score**.
+   Invariants by construction: a frame with ≥1 active speaker keeps exactly one, a frame with
+   none stays empty — speech is never invented or lost.
+2. `post_inference.rs`: builds `exclusive_diarization` alongside the full one and puts it
+   through the **same** `binarize` duration filter and `merge_segments(merge_gap)` the full path
+   uses (previously the exclusive path in diar-core skipped gap merging entirely).
+3. `DiarizationResult` gains `exclusive_segments`; `diar-core` consumes it instead of calling
+   `make_exclusive` on the binarized array.
+
+**Results — AMI test-16** (collar 0.25, UEM, overlap included):
+
+| variant | DER | missed | false alarm | confusion |
+|---|---|---|---|---|
+| fork full | **13.093%** | 7.780 | 2.351 | 2.962 |
+| speakrs full | 13.102% | 7.766 | 2.344 | 2.991 |
+| fork exclusive (target) | **17.828%** | 14.387 | 1.632 | **1.808** |
+| speakrs exclusive (before) | 18.654% | 14.375 | 1.625 | **2.655** |
+| **speakrs exclusive (fixed)** | **17.813%** | 14.375 | 1.624 | **1.814** |
+
+`fork full` reproduces the recorded §2.2 baseline (13.093%) exactly, and `speakrs full` the
+recorded §4.26 value (13.101%) — both engines are measured against their own known-good
+numbers. **The fixed exclusive beats the fork's (17.813% vs 17.828%) and collapses confusion
+2.655% → 1.814%.** The full diarization is **bit-identical on 16/16 files** after the change —
+the fix touches only the exclusive path.
+
+**Results — Karpathy 66.5 min, WSER through the app pipeline** (large-v3-turbo, identical
+14 978-word inventory):
+
+| engine | WSER off | WSER on | word errors on | DER c0 on |
+|---|---|---|---|---|
+| fork | 1.231% | **0.859%** | 127 | 0.047628 |
+| speakrs (before) | 1.942% | 1.312% | 194 | 0.050906 |
+| **speakrs (fixed)** | 1.270% | **0.890%** | 132 | 0.047986 |
+
+App-level parity: native was +0.45 pp worse than the fork, now **+0.031 pp** — 5 words out of
+14 781. The written `≤ 0.27%` bar is still not reachable by either engine under this reference
+method and remains a documentation defect to re-derive, not an engine one.
+
+Upstream value: this is a correctness bug in speakrs' `exclusive_speaker_diarization`
+equivalent, independent of our deployment — a PR candidate alongside the perf patches.

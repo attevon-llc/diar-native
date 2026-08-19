@@ -1,0 +1,615 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded yoke-derive v0.8.2
+  Downloaded adler2 v2.0.1
+  Downloaded thiserror-impl v2.0.18
+  Downloaded thread-tree v0.3.3
+  Downloaded writeable v0.6.3
+  Downloaded tar v0.4.46
+  Downloaded thiserror v2.0.18
+  Downloaded tracing-core v0.1.36
+  Downloaded anyhow v1.0.103
+  Downloaded utf8-zero v0.8.1
+  Downloaded thread_local v1.1.9
+  Downloaded unicode-width v0.2.2
+  Downloaded untrusted v0.9.0
+  Downloaded utf8_iter v1.0.4
+  Downloaded zerofrom v0.1.8
+  Downloaded zeroize v1.9.0
+  Downloaded zerovec-derive v0.11.3
+  Downloaded zmij v1.0.21
+  Downloaded ureq-proto v0.6.0
+  Downloaded zlib-rs v0.6.5
+  Downloaded zopfli v0.8.3
+  Downloaded form_urlencoded v1.2.2
+  Downloaded ucd-trie v0.1.7
+  Downloaded zerovec v0.11.6
+  Downloaded console v0.16.4
+  Downloaded der v0.8.0
+  Downloaded equivalent v1.0.2
+  Downloaded errno v0.3.14
+  Downloaded filetime v0.2.29
+  Downloaded foreign-types v0.3.2
+  Downloaded want v0.3.1
+  Downloaded tower-service v0.3.3
+  Downloaded flate2 v1.1.9
+  Downloaded futures-sink v0.3.32
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded sync_wrapper v1.0.2
+  Downloaded tower-layer v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded ureq v3.3.0
+  Downloaded url v2.5.8
+  Downloaded aho-corasick v1.1.4
+  Downloaded approx v0.5.1
+  Downloaded atomic-waker v1.1.2
+  Downloaded bumpalo v3.20.3
+  Downloaded cookie v0.18.1
+  Downloaded socks v0.3.4
+  Downloaded time-core v0.1.7
+  Downloaded version_check v0.9.5
+  Downloaded zerofrom-derive v0.1.7
+  Downloaded bitflags v2.13.0
+  Downloaded deranged v0.5.8
+  Downloaded fnv v1.0.7
+  Downloaded unicode-ident v1.0.24
+  Downloaded yoke v0.8.3
+  Downloaded base64ct v1.8.3
+  Downloaded cauchy v0.4.0
+  Downloaded cookie_store v0.22.0
+  Downloaded crossbeam-epoch v0.9.20
+  Downloaded futures-macro v0.3.32
+  Downloaded hmac-sha256 v1.1.14
+  Downloaded subtle v2.6.1
+  Downloaded time-macros v0.2.25
+  Downloaded synstructure v0.13.2
+  Downloaded tracing-attributes v0.1.31
+  Downloaded unit-prefix v0.5.2
+  Downloaded dirs v6.0.0
+  Downloaded displaydoc v0.2.6
+  Downloaded futures-core v0.3.32
+  Downloaded http-body-util v0.1.3
+  Downloaded pem-rfc7468 v1.0.0
+  Downloaded pest_derive v2.8.7
+  Downloaded slab v0.4.12
+  Downloaded tinystr v0.8.3
+  Downloaded document-features v0.2.12
+  Downloaded http-body v1.0.1
+  Downloaded katexit v0.1.5
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded hyper-rustls v0.27.9
+  Downloaded openblas-build v0.10.16
+  Downloaded openblas-src v0.10.16
+  Downloaded futures-util v0.3.32
+  Downloaded ipnet v2.12.0
+  Downloaded hf-hub v0.5.0
+  Downloaded num-conv v0.1.0
+  Downloaded zip v6.0.0
+  Downloaded zerotrie v0.2.4
+  Downloaded crossbeam-deque v0.8.7
+  Downloaded tower-http v0.6.11
+  Downloaded futures-io v0.3.32
+  Downloaded httparse v1.10.1
+  Downloaded itoa v1.0.18
+  Downloaded lazy_static v1.5.0
+  Downloaded matchers v0.2.0
+  Downloaded ndarray-linalg v0.18.1
+  Downloaded ndarray-npy v0.10.0
+  Downloaded once_cell v1.19.0
+  Downloaded openssl-macros v0.1.1
+  Downloaded tracing-log v0.2.0
+  Downloaded cblas-sys v0.1.4
+  Downloaded crc32fast v1.5.0
+  Downloaded either v1.16.0
+  Downloaded foreign-types-shared v0.1.1
+  Downloaded futures-channel v0.3.32
+  Downloaded http v1.4.2
+  Downloaded hyper-tls v0.6.0
+  Downloaded icu_collections v2.1.1
+  Downloaded icu_normalizer_data v2.1.1
+  Downloaded idna_adapter v1.2.1
+  Downloaded indexmap v2.14.0
+  Downloaded indicatif v0.18.6
+  Downloaded litrs v1.0.0
+  Downloaded matrixmultiply v0.3.10
+  Downloaded miniz_oxide v0.8.9
+  Downloaded tokio-native-tls v0.3.1
+  Downloaded tracing-subscriber v0.3.23
+  Downloaded webpki-roots v1.0.8
+  Downloaded xattr v1.6.1
+  Downloaded bytes v1.12.0
+  Downloaded futures-task v0.3.32
+  Downloaded icu_properties v2.1.2
+  Downloaded lax v0.18.1
+  Downloaded serde_urlencoded v0.7.1
+  Downloaded percent-encoding v2.3.2
+  Downloaded dirs-sys v0.5.0
+  Downloaded hyper-util v0.1.20
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded mime v0.3.17
+  Downloaded num_cpus v1.17.0
+  Downloaded sharded-slab v0.1.7
+  Downloaded vcpkg v0.2.15
+  Downloaded icu_provider v2.1.1
+  Downloaded log v0.4.33
+  Downloaded autocfg v1.5.1
+  Downloaded cfg-if v1.0.4
+  Downloaded num-traits v0.2.19
+  Downloaded option-ext v0.2.0
+  Downloaded tokio-rustls v0.26.4
+  Downloaded openssl-probe v0.2.1
+  Downloaded rand_chacha v0.3.1
+  Downloaded rawpointer v0.2.1
+  Downloaded powerfmt v0.2.0
+  Downloaded potential_utf v0.1.5
+  Downloaded simd-adler32 v0.3.9
+  Downloaded crossbeam-channel v0.5.16
+  Downloaded hyper v1.10.1
+  Downloaded byteorder v1.5.0
+  Downloaded memchr v2.8.2
+  Downloaded pkg-config v0.3.33
+  Downloaded native-tls v0.2.18
+  Downloaded num-integer v0.1.46
+  Downloaded crossbeam-utils v0.8.22
+  Downloaded pest_generator v2.8.7
+  Downloaded py_literal v0.4.0
+  Downloaded icu_properties_data v2.1.2
+  Downloaded pin-project-lite v0.2.17
+  Downloaded num-complex v0.4.6
+  Downloaded rand_core v0.9.5
+  Downloaded rand_chacha v0.9.0
+  Downloaded shlex v2.0.1
+  Downloaded serde_core v1.0.228
+  Downloaded getrandom v0.3.4
+  Downloaded quote v1.0.46
+  Downloaded litemap v0.8.2
+  Downloaded icu_normalizer v2.1.1
+  Downloaded base64 v0.22.1
+  Downloaded hashbrown v0.17.1
+  Downloaded rand_core v0.6.4
+  Downloaded pest_meta v2.8.7
+  Downloaded rustls-pki-types v1.15.0
+  Downloaded mio v1.2.1
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded icu_locale_core v2.1.1
+  Downloaded ort-sys v2.0.0-rc.12
+  Downloaded proc-macro2 v1.0.106
+  Downloaded openssl-sys v0.9.117
+  Downloaded rayon-core v1.13.0
+  Downloaded tower v0.5.3
+  Downloaded zerocopy v0.8.53
+  Downloaded cc v1.2.66
+  Downloaded serde_derive v1.0.228
+  Downloaded webpki-root-certs v1.0.8
+  Downloaded rand v0.8.6
+  Downloaded rustls-webpki v0.103.13
+  Downloaded rand v0.9.4
+  Downloaded socket2 v0.6.4
+  Downloaded num-bigint v0.4.8
+  Downloaded syn v2.0.118
+  Downloaded smallvec v1.15.2
+  Downloaded getrandom v0.2.17
+  Downloaded ryu v1.0.23
+  Downloaded serde v1.0.228
+  Downloaded ndarray v0.17.2
+  Downloaded tokio-util v0.7.18
+  Downloaded pest v2.8.7
+  Downloaded idna v1.1.0
+  Downloaded ort v2.0.0-rc.12
+  Downloaded reqwest v0.12.28
+  Downloaded serde_json v1.0.150
+  Downloaded rayon v1.12.0
+  Downloaded h2 v0.4.15
+  Downloaded portable-atomic v1.13.1
+  Downloaded time v0.3.45
+  Downloaded lzma-rust2 v0.15.8
+  Downloaded tracing v0.1.44
+  Downloaded openssl v0.10.81
+  Downloaded regex-syntax v0.8.11
+  Downloaded rustls v0.23.41
+  Downloaded rustix v1.1.4
+  Downloaded kodama v0.3.0
+  Downloaded regex-automata v0.4.14
+  Downloaded tokio v1.52.3
+  Downloaded libc v0.2.186
+  Downloaded encoding_rs v0.8.35
+  Downloaded ring v0.17.14
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded lapack-sys v0.15.0
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling cfg-if v1.0.4
+   Compiling pkg-config v0.3.33
+   Compiling vcpkg v0.2.15
+   Compiling openssl v0.10.81
+   Compiling rustls v0.23.41
+   Compiling once_cell v1.19.0
+   Compiling zeroize v1.9.0
+   Compiling autocfg v1.5.1
+   Compiling crc32fast v1.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling bitflags v2.13.0
+   Compiling serde_core v1.0.228
+   Compiling bytes v1.12.0
+   Compiling pin-project-lite v0.2.17
+   Compiling zerocopy v0.8.53
+   Compiling httparse v1.10.1
+   Compiling itoa v1.0.18
+   Compiling serde v1.0.228
+   Compiling untrusted v0.9.0
+   Compiling foreign-types-shared v0.1.1
+   Compiling log v0.4.33
+   Compiling futures-core v0.3.32
+   Compiling base64ct v1.8.3
+   Compiling crossbeam-utils v0.8.22
+   Compiling native-tls v0.2.18
+   Compiling subtle v2.6.1
+   Compiling base64 v0.22.1
+   Compiling smallvec v1.15.2
+   Compiling openssl-probe v0.2.1
+   Compiling byteorder v1.5.0
+   Compiling percent-encoding v2.3.2
+   Compiling thiserror v2.0.18
+   Compiling utf8-zero v0.8.1
+   Compiling litemap v0.8.2
+   Compiling rustix v1.1.4
+   Compiling writeable v0.6.3
+   Compiling cc v1.2.66
+   Compiling rustls-pki-types v1.15.0
+   Compiling foreign-types v0.3.2
+   Compiling tracing-core v0.1.36
+   Compiling icu_normalizer_data v2.1.1
+   Compiling equivalent v1.0.2
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling icu_properties_data v2.1.2
+   Compiling hashbrown v0.17.1
+   Compiling adler2 v2.0.1
+   Compiling anyhow v1.0.103
+   Compiling memchr v2.8.2
+   Compiling pem-rfc7468 v1.0.0
+   Compiling simd-adler32 v0.3.9
+   Compiling futures-sink v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling option-ext v0.2.0
+   Compiling try-lock v0.2.5
+   Compiling ucd-trie v0.1.7
+   Compiling zmij v1.0.21
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling atomic-waker v1.1.2
+   Compiling fnv v1.0.7
+   Compiling getrandom v0.3.4
+   Compiling der v0.8.0
+   Compiling miniz_oxide v0.8.9
+   Compiling futures-util v0.3.32
+   Compiling tower-service v0.3.3
+   Compiling want v0.3.1
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-channel v0.3.32
+   Compiling rawpointer v0.2.1
+   Compiling http v1.4.2
+   Compiling webpki-roots v1.0.8
+   Compiling webpki-root-certs v1.0.8
+   Compiling crossbeam-epoch v0.9.20
+   Compiling serde_json v1.0.150
+   Compiling utf8_iter v1.0.4
+   Compiling zlib-rs v0.6.5
+   Compiling sync_wrapper v1.0.2
+   Compiling crossbeam-deque v0.8.7
+   Compiling ipnet v2.12.0
+   Compiling portable-atomic v1.13.1
+   Compiling lzma-rust2 v0.15.8
+   Compiling hmac-sha256 v1.1.14
+   Compiling tower-layer v0.3.3
+   Compiling ryu v1.0.23
+   Compiling bumpalo v3.20.3
+   Compiling rayon-core v1.13.0
+   Compiling unicode-width v0.2.2
+   Compiling encoding_rs v0.8.35
+   Compiling regex-syntax v0.8.11
+   Compiling unit-prefix v0.5.2
+   Compiling mime v0.3.17
+   Compiling lazy_static v1.5.0
+   Compiling either v1.16.0
+   Compiling tracing-log v0.2.0
+   Compiling flate2 v1.1.9
+   Compiling crossbeam-channel v0.5.16
+   Compiling pest v2.8.7
+   Compiling sharded-slab v0.1.7
+   Compiling syn v2.0.118
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling zopfli v0.8.3
+   Compiling kodama v0.3.0
+   Compiling indexmap v2.14.0
+   Compiling openssl-sys v0.9.117
+   Compiling ring v0.17.14
+   Compiling ureq-proto v0.6.0
+   Compiling thread-tree v0.3.3
+   Compiling getrandom v0.2.17
+   Compiling socket2 v0.6.4
+   Compiling mio v1.2.1
+   Compiling num_cpus v1.17.0
+   Compiling cblas-sys v0.1.4
+   Compiling dirs-sys v0.5.0
+   Compiling lapack-sys v0.15.0
+   Compiling socks v0.3.4
+   Compiling console v0.16.4
+   Compiling filetime v0.2.29
+   Compiling rand_core v0.9.5
+   Compiling rand_core v0.6.4
+   Compiling num-integer v0.1.46
+   Compiling approx v0.5.1
+   Compiling dirs v6.0.0
+   Compiling http-body v1.0.1
+   Compiling tokio v1.52.3
+   Compiling http-body-util v0.1.3
+   Compiling indicatif v0.18.6
+   Compiling num-bigint v0.4.8
+   Compiling rayon v1.12.0
+   Compiling regex-automata v0.4.14
+   Compiling pest_meta v2.8.7
+   Compiling xattr v1.6.1
+   Compiling tar v0.4.46
+   Compiling zip v6.0.0
+   Compiling matchers v0.2.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling synstructure v0.13.2
+   Compiling pest_generator v2.8.7
+   Compiling rustls-webpki v0.103.13
+   Compiling rand_chacha v0.3.1
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.4
+   Compiling rand v0.8.6
+   Compiling openssl-macros v0.1.1
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.6
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling tracing-attributes v0.1.31
+   Compiling katexit v0.1.5
+   Compiling pest_derive v2.8.7
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling tracing v0.1.44
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling tracing-subscriber v0.3.23
+   Compiling h2 v0.4.15
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling icu_provider v2.1.1
+   Compiling icu_normalizer v2.1.1
+   Compiling icu_properties v2.1.2
+   Compiling num-complex v0.4.6
+   Compiling serde_urlencoded v0.7.1
+   Compiling ureq v3.3.0
+   Compiling ndarray v0.17.2
+   Compiling cauchy v0.4.0
+   Compiling py_literal v0.4.0
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling tokio-native-tls v0.3.1
+   Compiling url v2.5.8
+   Compiling hyper v1.10.1
+   Compiling openblas-build v0.10.16
+   Compiling tower-http v0.6.11
+   Compiling ort-sys v2.0.0-rc.12
+   Compiling openblas-src v0.10.16
+   Compiling lax v0.18.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling ndarray-linalg v0.18.1
+   Compiling ndarray-npy v0.10.0
+   Compiling ort v2.0.0-rc.12
+   Compiling hf-hub v0.5.0
+   Compiling speakrs v0.5.0 (/build/vendor/speakrs)
+warning: methods `reconstruct` and `reconstruct_smoothed` are never used
+   --> src/reconstruct.rs:137:12
+    |
+ 15 | impl<'a> Reconstructor<'a> {
+    | -------------------------- methods in this implementation
+...
+137 |     pub fn reconstruct(&self, speaker_count: &SpeakerCountTrack) -> DiscreteDiarization {
+    |            ^^^^^^^^^^^
+...
+157 |     pub fn reconstruct_smoothed(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a struct
+  --> src/inference/embedding.rs:51:1
+   |
+51 | pub struct MaskedEmbeddingInput<'a> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> src/lib.rs:1:9
+   |
+ 1 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/inference/embedding.rs:52:5
+   |
+52 |     pub audio: &'a [f32],
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/inference/embedding.rs:53:5
+   |
+53 |     pub mask: &'a [f32],
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/inference/embedding.rs:54:5
+   |
+54 |     pub clean_mask: Option<&'a [f32]>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `reconstruct_smoothed` is never used
+   --> src/reconstruct.rs:157:12
+    |
+ 15 | impl<'a> Reconstructor<'a> {
+    | -------------------------- method in this implementation
+...
+157 |     pub fn reconstruct_smoothed(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `speakrs` (lib) generated 5 warnings
+warning: `speakrs` (lib test) generated 5 warnings (4 duplicates)
+    Finished `release` profile [optimized] target(s) in 33.08s
+     Running unittests src/lib.rs (/tmp/target/release/deps/speakrs-22dce5ebab57bb8a)
+
+running 74 tests
+test binarize::tests::all_off ... ok
+test binarize::tests::chattering_prevention ... ok
+test binarize::tests::all_on ... ok
+test binarize::tests::default_config_works ... ok
+test binarize::tests::min_duration_off_fill ... ok
+test binarize::tests::min_duration_on_removal ... ok
+test binarize::tests::multi_speaker_independence ... ok
+test binarize::tests::pad_onset_offset ... ok
+test binarize::tests::state_holding ... ok
+test clustering::ahc::tests::flat_clusters_follow_scipy_leader_order ... ok
+test clustering::ahc::tests::cluster_matches_python_fixture ... ok
+test clustering::vbx::tests::gamma_init_is_smoothed_one_hot ... ok
+test inference::embedding::tensor::tests::first_output_reports_missing_tensor ... ok
+test inference::embedding::tests::prepare_weights_clears_tail_when_mask_is_shorter_than_buffer ... ok
+test clustering::vbx::tests::cluster_vbx_matches_python_fixture ... ok
+test inference::embedding::tests::select_mask_falls_back_to_full_mask_when_clean_mask_is_too_short ... ok
+test inference::embedding::tests::select_mask_prefers_clean_mask_when_it_is_long_enough ... ok
+test inference::segmentation::tensor::tests::first_output_reports_missing_tensor ... ok
+test inference::segmentation::tensor::tests::output_shape3_reports_low_rank_tensor ... ok
+test clustering::ahc::tests::cluster_matches_scipy_label_order_on_toy_example ... ok
+test clustering::ahc::tests::separates_two_clusters ... ok
+test clustering::vbx::tests::two_clusters_with_vbx ... ok
+test inference::tests::coreml_modes_require_feature ... ok
+test inference::tests::cuda_modes_require_feature ... ok
+test inference::tests::migraphx_mode_requires_feature ... ok
+test models::tests::coreml_required_files_include_chunk_fast_path_assets ... ok
+test models::tests::coreml_fast_required_files_include_fast_assets ... ok
+test models::tests::migraphx_required_files_include_accelerated_onnx_assets ... ok
+test pipeline::clustering::tests::inactive_speaker_below_threshold ... ok
+test pipeline::clustering::tests::overlapping_speakers_uses_clean_mask ... ok
+test pipeline::clustering::tests::realistic_three_speaker_scenario ... ok
+test pipeline::clustering::tests::zero_audio_len ... ok
+test pipeline::clustering::tests::single_active_speaker ... ok
+test pipeline::clustering::tests::fallback_to_raw_mask_when_clean_too_sparse ... ok
+test pipeline::queued::tests::receiver_repeats_unexpected_terminal_error_without_panicking ... ok
+test pipeline::queued::tests::iterator_yields_terminal_worker_panic_once ... ok
+test pipeline::queued::tests::sender_reports_worker_gone_after_request_channel_closes ... ok
+test pipeline::queued::tests::receiver_reports_clean_close_after_worker_exit ... ok
+test pipeline::queued::tests::receiver_reports_worker_panic ... ok
+test pipeline::tests::best_assignment_handles_more_speakers_than_clusters ... ok
+test pipeline::tests::chunk_start_frames_match_pyannote_rounding ... ok
+test pipeline::tests::total_output_frames_match_pyannote_aggregate_extent ... ok
+test pipeline::tests::assign_embeddings_matches_python_fixture ... ok
+test powerset::tests::hard_decode_matches_fixture ... ok
+test powerset::tests::hard_decode_overlap ... ok
+test powerset::tests::hard_decode_single_speaker ... ok
+test powerset::tests::hard_decode_silence ... ok
+test reconstruct::tests::speaker_count_rounds_overlap_added_sum ... ok
+test reconstruct::tests::reconstruct_selects_top_k_per_frame ... ok
+test powerset::tests::roundtrip_encode_hard_decode ... ok
+test powerset::tests::mapping_matrix_3_2 ... ok
+test segment::tests::all_zeros_no_segments ... ok
+test powerset::tests::num_powerset_classes_count ... ok
+test segment::tests::merge_close_segments ... ok
+test pipeline::tests::filter_embeddings_matches_python_fixture ... ok
+test segment::tests::multi_speaker_sorted_by_start ... ok
+test powerset::tests::mapping_matrices_match_fixtures ... ok
+test segment::tests::display_trait_human_readable ... ok
+test segment::tests::no_merge_far_segments ... ok
+test segment::tests::empty_input ... ok
+test segment::tests::rttm_format ... ok
+test utils::tests::cosine_similarity_identical_vectors ... ok
+test utils::tests::cosine_similarity_orthogonal_vectors ... ok
+test utils::tests::l2_normalize_zero_vector_stays_zero ... ok
+test utils::tests::l2_normalize_has_unit_norm ... ok
+test utils::tests::cosine_similarity_opposite_vectors ... ok
+test segment::tests::single_segment_timing ... ok
+test clustering::plda::tests::transform_matches_python_fixture ... ok
+test clustering::plda::tests::batch_matches_single ... ok
+test clustering::plda::tests::transform_from_models_has_expected_shapes ... ok
+test pipeline::tests::pipeline_builder_applies_custom_default_config_to_build ... ok
+test pipeline::tests::borrowed_pipeline_new_with_config_stores_custom_default_config ... ok
+test pipeline::tests::extract_embeddings_matches_python_fixture ... ok
+test pipeline::tests::run_inference_only_plus_finish_matches_run_with_config ... ok
+
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.27s
+
+     Running tests/end_to_end.rs (/tmp/target/release/deps/end_to_end-504465599a5740d5)
+
+running 6 tests
+test online_pipeline_downloads_and_runs ... ignored
+test segmentation_step_matches_pyannote_fixture ... ok
+test pipeline_fixture_shapes_are_available ... ok
+test pipeline_handles_short_audio_fixture ... ok
+test pipeline_runs_on_main_fixture_audio ... ok
+test owned_pipeline_from_dir ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 13.34s
+
+     Running tests/queued.rs (/tmp/target/release/deps/queued-2eb798ba6e96ab16)
+
+running 8 tests
+test queued_clean_shutdown ... ok
+test queued_handles_short_and_normal_audio ... ok
+test queued_drop_sender_unblocks_iteration ... ok
+test queued_results_match_sync ... ok
+test queued_basic_round_trip ... ok
+test queued_job_ids_are_monotonic_across_sender_clones ... ok
+test queued_shared_senders_across_threads ... ok
+test build_queued_preserves_custom_pipeline_config ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.92s
+
+   Doc-tests speakrs
+
+running 7 tests
+test src/lib.rs - (line 33) - compile ... ok
+test src/lib.rs - (line 50) - compile ... ok
+test src/pipeline.rs - pipeline::OwnedDiarizationPipeline (line 130) - compile ... ok
+test src/lib.rs - (line 92) - compile ... ok
+test src/lib.rs - (line 68) - compile ... ok
+test src/pipeline/queued.rs - pipeline::queued::QueueSender (line 91) - compile ... ok
+test src/pipeline/builder.rs - pipeline::builder::PipelineBuilder (line 19) - compile ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.89s; merged doctests compilation took 0.87s

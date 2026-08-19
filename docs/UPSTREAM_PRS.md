@@ -105,6 +105,48 @@ Clustering = 74% of the file's 474 s total.
 | 4.7h E2E (A6000, quiet) | 474 s | **171.6 s (~99× RT)** |
 | output | — | **RTTM bit-identical**; all 16 clustering tests incl. Python-parity fixtures pass (AHC==scipy order; VBx gamma/pi @1e-4/1e-5; PLDA fixture); AMI-16 corpus re-run: identical 13.101% aggregate, 16/16 RTTMs bit-identical |
 
+## PR-7 (correctness) — Exclusive diarization picks the overlap winner by cluster index
+
+**Bug (RESULTS §7.7).** `reconstruct.rs` `make_exclusive` documents itself as "zero out all but
+the highest-scoring speaker in each frame", but there are no scores left to compare by the time
+it runs: `Reconstructor::reconstruct`/`reconstruct_smoothed` write **1.0** for every active
+speaker, and `post_inference` may additionally `binarize()`. Every overlapped frame is therefore
+an N-way tie among 1.0s, and `Iterator::max_by` returns the **last** maximum on ties — so the
+surviving speaker is whichever has the highest cluster index.
+
+Measured on AMI test-16: over **22 297 sampled overlap frames the winner was the highest-indexed
+speaker 100.0% of the time.** Overlap ownership is decided by cluster numbering, never by
+acoustics. The evidence needed to decide it properly — `Reconstructor::frame_activations` — is
+computed and then discarded one step earlier.
+
+This is invisible in the full diarization (unaffected) and only shows up in the exclusive output,
+which is what any consumer assigning one speaker per word must use.
+
+**Change.**
+- `reconstruct.rs`: `reconstruct`/`reconstruct_smoothed` gain `*_with(activations, …)` variants
+  so one activation pass feeds both reconstructions; new `exclusive_from(full, activations)`
+  keeps, per frame, the active speaker with the highest activation score. By construction a
+  frame with ≥1 active speaker keeps exactly one and an empty frame stays empty — speech is
+  neither invented nor lost.
+- `post_inference.rs`: build `exclusive_diarization` next to the full one and run it through the
+  **same** `binarize` duration filter and `merge_segments(merge_gap)` the full path uses (the
+  exclusive path previously skipped gap merging).
+- `DiarizationResult` gains `exclusive_segments`.
+
+**Evidence** (AMI test-16, collar 0.25, UEM, overlap included — pyannote community-1 as control):
+
+| variant | DER | missed | false alarm | confusion |
+|---|---|---|---|---|
+| pyannote exclusive (control) | 17.828% | 14.387 | 1.632 | **1.808** |
+| speakrs exclusive (before) | 18.654% | 14.375 | 1.625 | **2.655** |
+| speakrs exclusive (**after**) | **17.813%** | 14.375 | 1.624 | **1.814** |
+
+The gap was **entirely confusion** — missed detection is identical to within 0.012 pp, and the
+union of speech time is bit-identical before and after, confirming nothing was ever being
+dropped. After the fix speakrs edges the pyannote control, and the **full diarization is
+bit-identical on 16/16 files**. Downstream (word-level speaker attribution through
+OpenTranscribe on a 66.5-min 2-speaker clip): WSER 1.312% → **0.890%**, vs pyannote's 0.859%.
+
 ## Consolidated E2E story (the cover-letter numbers, quiet-machine A6000)
 
 Cumulative effect of the full patch set (multimask fix + fbank pool + folded seg + VBx/pdist)

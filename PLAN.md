@@ -120,6 +120,12 @@ Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is ju
    now the flagship perf PR alongside the fbank pool.
 5. Bug report: ORT-CUDA teardown crash (`corrupted double-linked list`); batched-fbank-graph
    numeric deviation vs single-chunk graph.
+6. **Exclusive-diarization correctness** (RESULTS §7.7, UPSTREAM_PRS PR-7) — `make_exclusive`
+   runs on binarized activations, so every overlap tie resolves to the highest cluster index
+   (100.0% of 22 297 sampled AMI overlap frames). Fixed by resolving overlaps on the continuous
+   `frame_activations`: AMI exclusive DER 18.654% → **17.813%** (pyannote control 17.828%),
+   confusion 2.655% → 1.814%, full diarization bit-identical on 16/16 files. Found by T1's
+   app-level accuracy gate — the first defect the flip surfaced.
 
 ## Reference pointers
 

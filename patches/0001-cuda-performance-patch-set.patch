@@ -1,3 +1,64 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 9578705..a87a6e0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -888,6 +888,12 @@ version = "0.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+ 
++[[package]]
++name = "hermit-abi"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
++
+ [[package]]
+ name = "hf-hub"
+ version = "0.5.0"
+@@ -1376,7 +1382,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
+ dependencies = [
+  "autocfg",
++ "num_cpus",
++ "once_cell",
+  "rawpointer",
++ "thread-tree",
+ ]
+ 
+ [[package]]
+@@ -1540,6 +1549,16 @@ dependencies = [
+  "autocfg",
+ ]
+ 
++[[package]]
++name = "num_cpus"
++version = "1.17.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
++dependencies = [
++ "hermit-abi",
++ "libc",
++]
++
+ [[package]]
+ name = "objc2"
+ version = "0.6.4"
+@@ -2582,6 +2601,15 @@ dependencies = [
+  "syn",
+ ]
+ 
++[[package]]
++name = "thread-tree"
++version = "0.3.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ffbd370cb847953a25954d9f63e14824a36113f8c72eecf6eccef5dc4b45d630"
++dependencies = [
++ "crossbeam-channel",
++]
++
+ [[package]]
+ name = "thread_local"
+ version = "1.1.9"
 diff --git a/Cargo.toml b/Cargo.toml
 index 46c765f..1ae14f9 100644
 --- a/Cargo.toml
@@ -441,13 +502,14 @@ index 751dd24..c38f29d 100644
              .with_independent_thread_pool()?
              .with_intra_threads(threads)?
 diff --git a/src/pipeline/chunk_embedding.rs b/src/pipeline/chunk_embedding.rs
-index 17a8555..c430f2e 100644
+index 17a8555..b8632f6 100644
 --- a/src/pipeline/chunk_embedding.rs
 +++ b/src/pipeline/chunk_embedding.rs
-@@ -408,6 +408,7 @@ pub(super) fn try_batch_chunk_embedding(
+@@ -408,6 +408,8 @@ pub(super) fn try_batch_chunk_embedding(
                      hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
                      discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
                      segments: Vec::new(),
++                    exclusive_segments: Vec::new(),
 +                    centroids: Array2::zeros((0, 256)),
                  })
              })
@@ -528,13 +590,23 @@ index 3c941e6..f09b33f 100644
  }
  
 diff --git a/src/pipeline/post_inference.rs b/src/pipeline/post_inference.rs
-index b869ea5..6972cec 100644
+index b869ea5..5549a74 100644
 --- a/src/pipeline/post_inference.rs
 +++ b/src/pipeline/post_inference.rs
-@@ -36,11 +36,13 @@ pub fn post_inference(
+@@ -3,7 +3,7 @@ use tracing::debug;
+ 
+ use crate::binarize::binarize;
+ use crate::clustering::plda::PldaTransform;
+-use crate::reconstruct::Reconstructor;
++use crate::reconstruct::{Reconstructor, exclusive_from};
+ use crate::segment::merge_segments;
+ 
+ use super::config::{PipelineConfig, ReconstructMethod};
+@@ -36,32 +36,46 @@ pub fn post_inference(
              hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
              discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
              segments: Vec::new(),
++            exclusive_segments: Vec::new(),
 +            centroids: Array2::zeros((0, 256)),
          });
      }
@@ -546,21 +618,63 @@ index b869ea5..6972cec 100644
  
      let reconstructor =
          Reconstructor::with_clusters(&segmentations, &hard_clusters, &layout.start_frames, 0);
-@@ -75,5 +77,6 @@ pub fn post_inference(
++    // One activation pass feeds both reconstructions; the exclusive variant needs the
++    // continuous scores, which a reconstruction has already flattened to 1.0.
++    let activations = reconstructor.frame_activations(&speaker_count);
+     let discrete_diarization = match config.reconstruct_method {
+         ReconstructMethod::Smoothed { epsilon } => {
+-            reconstructor.reconstruct_smoothed(&speaker_count, epsilon)
++            reconstructor.reconstruct_smoothed_with(&activations, &speaker_count, epsilon)
++        }
++        ReconstructMethod::Standard => {
++            reconstructor.reconstruct_with(&activations, &speaker_count)
+         }
+-        ReconstructMethod::Standard => reconstructor.reconstruct(&speaker_count),
+     };
++    let exclusive_diarization = exclusive_from(&discrete_diarization, &activations);
+ 
+     // apply min-duration filtering to remove single-frame speaker flickers
+     let has_duration_filter =
+         config.binarize.min_duration_on > 0 || config.binarize.min_duration_off > 0;
+-    let discrete_diarization = if has_duration_filter {
+-        DiscreteDiarization(binarize(&discrete_diarization, &config.binarize))
++    let (discrete_diarization, exclusive_diarization) = if has_duration_filter {
++        (
++            DiscreteDiarization(binarize(&discrete_diarization, &config.binarize)),
++            DiscreteDiarization(binarize(&exclusive_diarization, &config.binarize)),
++        )
+     } else {
+-        discrete_diarization
++        (discrete_diarization, exclusive_diarization)
+     };
+ 
+     let segments = discrete_diarization.to_segments();
+     let segments = merge_segments(&segments, config.merge_gap);
++    let exclusive_segments = exclusive_diarization.to_segments();
++    let exclusive_segments = merge_segments(&exclusive_segments, config.merge_gap);
+ 
+     debug!(
+         post_inference_ms = post_start.elapsed().as_millis(),
+@@ -75,5 +89,7 @@ pub fn post_inference(
          hard_clusters,
          discrete_diarization,
          segments,
++        exclusive_segments,
 +        centroids,
      })
  }
 diff --git a/src/pipeline/types/data.rs b/src/pipeline/types/data.rs
-index 6ca4c04..dbbd9e5 100644
+index 6ca4c04..091d83b 100644
 --- a/src/pipeline/types/data.rs
 +++ b/src/pipeline/types/data.rs
-@@ -172,6 +172,10 @@ pub struct DiarizationResult {
+@@ -172,6 +172,14 @@ pub struct DiarizationResult {
      pub discrete_diarization: DiscreteDiarization,
      /// Merged speaker segments (time-stamped speaker turns)
      pub segments: Vec<crate::segment::Segment>,
++    /// Merged speaker segments with at most one speaker at any instant — the
++    /// `exclusive_speaker_diarization` equivalent. Overlapped frames go to the speaker with
++    /// the highest activation score, so the speech is kept rather than split or dropped.
++    pub exclusive_segments: Vec<crate::segment::Segment>,
 +    /// Gamma-weighted (un-normalized) speaker centroids from VBx clustering.
 +    /// Row index == cluster id used in `hard_clusters` / segment speaker ids.
 +    /// Empty (0 rows) when clustering was skipped (no speech / <2 embeddings).
@@ -568,3 +682,101 @@ index 6ca4c04..dbbd9e5 100644
  }
  
  impl DiarizationResult {
+diff --git a/src/reconstruct.rs b/src/reconstruct.rs
+index ce401c3..332d7c5 100644
+--- a/src/reconstruct.rs
++++ b/src/reconstruct.rs
+@@ -135,10 +135,19 @@ impl<'a> Reconstructor<'a> {
+     }
+ 
+     pub fn reconstruct(&self, speaker_count: &SpeakerCountTrack) -> DiscreteDiarization {
+-        let activations = self.frame_activations(speaker_count);
++        self.reconstruct_with(&self.frame_activations(speaker_count), speaker_count)
++    }
++
++    /// [`reconstruct`](Self::reconstruct) over activations the caller already computed —
++    /// so a caller that also needs the exclusive variant pays for one activation pass.
++    pub(crate) fn reconstruct_with(
++        &self,
++        activations: &FrameActivations,
++        speaker_count: &SpeakerCountTrack,
++    ) -> DiscreteDiarization {
+         let mut discrete = Array2::<f32>::zeros(activations.raw_dim());
+         for (frame_idx, &count) in speaker_count.iter().enumerate() {
+-            for speaker_idx in top_k_indices(&activations, frame_idx, count) {
++            for speaker_idx in top_k_indices(activations, frame_idx, count) {
+                 discrete[[frame_idx, speaker_idx]] = 1.0;
+             }
+         }
+@@ -150,13 +159,26 @@ impl<'a> Reconstructor<'a> {
+         speaker_count: &SpeakerCountTrack,
+         epsilon: f32,
+     ) -> DiscreteDiarization {
+-        let activations = self.frame_activations(speaker_count);
++        self.reconstruct_smoothed_with(
++            &self.frame_activations(speaker_count),
++            speaker_count,
++            epsilon,
++        )
++    }
++
++    /// [`reconstruct_smoothed`](Self::reconstruct_smoothed) over caller-supplied activations.
++    pub(crate) fn reconstruct_smoothed_with(
++        &self,
++        activations: &FrameActivations,
++        speaker_count: &SpeakerCountTrack,
++        epsilon: f32,
++    ) -> DiscreteDiarization {
+         let mut discrete = Array2::<f32>::zeros(activations.raw_dim());
+         let mut previous_speakers: Vec<usize> = Vec::new();
+ 
+         for (frame_idx, &count) in speaker_count.iter().enumerate() {
+             let current_speakers =
+-                top_k_indices_smoothed(&activations, frame_idx, count, &previous_speakers, epsilon);
++                top_k_indices_smoothed(activations, frame_idx, count, &previous_speakers, epsilon);
+             for &speaker_idx in &current_speakers {
+                 discrete[[frame_idx, speaker_idx]] = 1.0;
+             }
+@@ -167,6 +189,42 @@ impl<'a> Reconstructor<'a> {
+     }
+ }
+ 
++/// Collapse a reconstruction to one speaker per frame, keeping the speaker whose *activation
++/// score* is highest among those the reconstruction marked active.
++///
++/// This is the `exclusive_speaker_diarization` equivalent, and it has to read the continuous
++/// activations to mean anything: a reconstruction stores 1.0 for every active speaker, so an
++/// argmax taken over it is a tie that resolves to whichever cluster index the comparator
++/// happens to favour — the choice ends up made by cluster numbering rather than by acoustics.
++///
++/// Speech is never invented or lost: a frame with at least one active speaker keeps exactly
++/// one, and a frame with none stays empty.
++pub(crate) fn exclusive_from(
++    full: &DiscreteDiarization,
++    activations: &FrameActivations,
++) -> DiscreteDiarization {
++    let mut discrete = Array2::<f32>::zeros(full.raw_dim());
++    for (frame_idx, row) in full.rows().into_iter().enumerate() {
++        let mut best: Option<(usize, f32)> = None;
++        for (speaker_idx, &value) in row.iter().enumerate() {
++            if value <= 0.0 {
++                continue;
++            }
++            let score = activations
++                .get([frame_idx, speaker_idx])
++                .copied()
++                .unwrap_or(0.0);
++            if best.is_none_or(|(_, best_score)| score > best_score) {
++                best = Some((speaker_idx, score));
++            }
++        }
++        if let Some((speaker_idx, _)) = best {
++            discrete[[frame_idx, speaker_idx]] = 1.0;
++        }
++    }
++    DiscreteDiarization(discrete)
++}
++
+ /// Zero out all but the highest-scoring speaker in each frame, making activations exclusive
+ pub fn make_exclusive(activations: &mut Array2<f32>) {
+     for mut row in activations.rows_mut() {
