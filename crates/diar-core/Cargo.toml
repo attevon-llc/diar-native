@@ -1,0 +1,15 @@
+[package]
+name = "diar-core"
+version = "0.1.0"
+edition = "2021"
+description = "OpenTranscribe diarization engine: speakrs wrapper with centroids, embed_window, and deployment-tier config"
+license = "Apache-2.0"
+
+[features]
+default = []
+cuda = ["speakrs/cuda"]
+
+[dependencies]
+speakrs = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }

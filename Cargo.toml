@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/diar-core", "crates/diar-cli", "crates/diar-server"]
+exclude = ["vendor/speakrs"]
+
+[workspace.dependencies]
+speakrs = { path = "vendor/speakrs", default-features = false, features = ["openblas-system"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3.5"

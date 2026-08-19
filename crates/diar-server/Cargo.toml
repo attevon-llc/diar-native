@@ -1,0 +1,18 @@
+[package]
+name = "diar-server"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = []
+cuda = ["diar-core/cuda"]
+
+[dependencies]
+diar-core = { path = "../diar-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hound = { workspace = true }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

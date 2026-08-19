@@ -12,3 +12,4 @@ __pycache__/
 
 # large/raw benchmark outputs stay local; scored JSONs + RESULTS.md are committed
 results/rttm/*/*.log
+target/
