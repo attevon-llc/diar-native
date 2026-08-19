@@ -1,0 +1,127 @@
+[
+  {
+    "label": "0.5h_1899s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/0.5h_1899s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/0.5h_1899s_run0.rttm",
+    "ref_spk": 4,
+    "hyp_spk": 5,
+    "ref_seg": 703,
+    "hyp_seg": 615,
+    "der": 0.011162,
+    "der_pct": 1.1162,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "0.5h_1899s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/0.5h_1899s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/0.5h_1899s_run1.rttm",
+    "ref_spk": 4,
+    "hyp_spk": 5,
+    "ref_seg": 703,
+    "hyp_seg": 615,
+    "der": 0.011162,
+    "der_pct": 1.1162,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "0.5h_1899s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/0.5h_1899s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/0.5h_1899s_run2.rttm",
+    "ref_spk": 4,
+    "hyp_spk": 5,
+    "ref_seg": 703,
+    "hyp_seg": 615,
+    "der": 0.011162,
+    "der_pct": 1.1162,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "1.0h_3758s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/1.0h_3758s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/1.0h_3758s_run0.rttm",
+    "ref_spk": 5,
+    "hyp_spk": 5,
+    "ref_seg": 1313,
+    "hyp_seg": 1087,
+    "der": 0.011245,
+    "der_pct": 1.1245,
+    "spk_match": true,
+    "tier": "T4"
+  },
+  {
+    "label": "1.0h_3758s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/1.0h_3758s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/1.0h_3758s_run1.rttm",
+    "ref_spk": 5,
+    "hyp_spk": 5,
+    "ref_seg": 1313,
+    "hyp_seg": 1087,
+    "der": 0.011245,
+    "der_pct": 1.1245,
+    "spk_match": true,
+    "tier": "T4"
+  },
+  {
+    "label": "1.0h_3758s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/1.0h_3758s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/1.0h_3758s_run2.rttm",
+    "ref_spk": 5,
+    "hyp_spk": 5,
+    "ref_seg": 1313,
+    "hyp_seg": 1087,
+    "der": 0.011245,
+    "der_pct": 1.1245,
+    "spk_match": true,
+    "tier": "T4"
+  },
+  {
+    "label": "2.2h_7998s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/2.2h_7998s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/2.2h_7998s_run0.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 3,
+    "ref_seg": 2855,
+    "hyp_seg": 2629,
+    "der": 0.001813,
+    "der_pct": 0.1813,
+    "spk_match": true,
+    "tier": "T2"
+  },
+  {
+    "label": "2.2h_7998s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/2.2h_7998s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/2.2h_7998s_run1.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 3,
+    "ref_seg": 2855,
+    "hyp_seg": 2629,
+    "der": 0.001813,
+    "der_pct": 0.1813,
+    "spk_match": true,
+    "tier": "T2"
+  },
+  {
+    "label": "2.2h_7998s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/2.2h_7998s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve/2.2h_7998s_run2.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 3,
+    "ref_seg": 2855,
+    "hyp_seg": 2629,
+    "der": 0.001813,
+    "der_pct": 0.1813,
+    "spk_match": true,
+    "tier": "T2"
+  },
+  {
+    "label": "3.2h_11495s",
+    "error": "missing_ref"
+  },
+  {
+    "label": "4.7h_17044s",
+    "error": "missing_ref"
+  }
+]

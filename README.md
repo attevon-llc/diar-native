@@ -129,7 +129,16 @@ Planned (post-validation, C-pass path): `crates/diar-core` (speakrs wrapper: cen
 segments + exclusive segments + per-speaker L2-normalized 256-d centroids (OpenSearch kNN) +
 ad-hoc window embedding (boundary recheck) + min/max/num-speaker constraints.
 
-## 6. Ground rules
+## 6. Deployment tiers (product decision, 2026-08-19)
+
+| tier | target | design |
+|---|---|---|
+| **T1 — embedded/sidecar (DEFAULT, open source)** | laptops, small computers, single-GPU boxes | speakrs core + our patch set (folded seg, multimask-batching fix, fbank pool), **shared-weights concurrency**: one model set (Arc-shared ORT sessions — thread-safe `run()`, weights loaded once) + per-request scratch buffers + job queue, mirroring OpenTranscribe's Celery shared-weights pattern. CPU-only works (ORT CPU EP, ≈ eager-torch parity measured). No Triton, minimal RAM. |
+| **T2 — Triton (opt-in, larger home servers + AWS)** | multi-user / multi-job servers | tritonserver + TRT engines (fp32), dynamic batching across concurrent jobs (measured 2.14× throughput at 8 clients on one weight copy), `diar-ffi` custom backend or sidecar-calls-Triton topology. Higher RAM/system footprint — that's why it's opt-in, not default. |
+
+The Python fork path remains the universal fallback behind a config flag in both tiers.
+
+## 7. Ground rules
 
 - `transcribe-app` and `pyannote-audio-fork` are **read-only** (other agents work there; the fork
   is production-pinned). Their harness scripts/images are *used*, never modified.
