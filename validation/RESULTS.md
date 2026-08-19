@@ -1098,3 +1098,58 @@ Honest caveat: confidence rising with window length says the model is more *cert
 *correct*, and AMI carries no speaker-gender ground truth — so the one verdict that differs
 between 5 s and 10/20 s cannot be adjudicated here. If gender accuracy ever needs a real gate it
 needs a labelled set, not a confidence comparison.
+
+### 7.21 T6 telemetry — the tail markers were never missing, the flush was too early
+
+E2E_PIPELINE_MAP recorded `summary_*`, `clustering_*`, `search_index_*` as "never written".
+Measured: **six columns null on every row** (search_index, clustering, summary, redaction,
+speaker_upsert, waveform — 0 of 23 rows) while `gpu_end_ms` was 23/23, and
+`fully_indexed_duration_ms` was *exactly* equal to `user_perceived_duration_ms` on every row,
+making the work after the user sees the transcript look free.
+
+The diagnosis differs from the plan's. Reading the Redis hash for a completed task showed
+`redaction_start`, `redaction_end`, `search_index_chunks_start/end` **present**, alongside the
+new `transcript_ready`, `diarize_request_sent` and `diarize_joined` — while the DB row held
+NULL for all of them. The markers were being emitted all along; `_persist_timing_row` runs at
+the end of `postprocess`, *before* the enrichment fan-out, so every tail marker arrived after
+the only flush.
+
+Fix: a delayed re-flush (`pipeline_timing.flush_tail`, 180 s). `record_pipeline_timing` already
+upserts and merges, so the second write fills the late columns without disturbing the first,
+and an early flush records less rather than corrupting anything. Plus columns for the three
+markers T2/T3 introduced (migration `v393`) — without them the overlap claim is unfalsifiable
+from telemetry.
+
+Verified on a real job (358 s file):
+
+| metric | before | after |
+|---|---|---|
+| user-visible | 11.7 s | 11.7 s |
+| transcript_ready | not recorded | **8.9 s — 2.8 s before completion** |
+| diarize span | not recorded | **5.0 s, inside transcription** |
+| redaction | NULL | 1.1 s |
+| search index | NULL | 0.7 s |
+| fully_indexed | = user-visible | **12.6 s** |
+
+### 7.22 T8 VAD silence sweep — no effect on the acceptance clip
+
+`vad_min_silence_ms` ∈ {500, 1000, 2000} on the Karpathy 10-min clip, WSER harness:
+
+| setting | WSER off | WSER on | words | word errors |
+|---|---|---|---|---|
+| 500 ms | 1.15% | 0.27% | 2257 | 6 |
+| 1000 ms | 1.15% | 0.27% | 2257 | 6 |
+| 2000 ms (default) | 1.15% | 0.27% | 2257 | 6 |
+
+Identical to the digit — and confirmed as a real result, not a dead knob: the engine reports
+`vad_min_silence_ms: 500` when the env is set, so the setting applied and the output did not
+move. A dense two-speaker conversation has few silences in the 500-2000 ms band, so the
+detected speech regions are the same at every threshold.
+
+Conclusion: **accuracy-neutral here, and therefore no reason to change it on this evidence.**
+The latency argument for a lower threshold only pays on silence-heavy media, which this
+corpus does not contain — judging the knob needs such a file, not this one.
+
+Gap found while testing: `VAD_MIN_SILENCE_MS` was read by the engine but passed by **no**
+compose file, so the documented knob could not be set on any deployment. Now plumbed through
+the three GPU worker services.
