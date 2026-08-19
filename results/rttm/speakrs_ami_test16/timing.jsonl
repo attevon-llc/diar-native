@@ -8,3 +8,7 @@
 {"label":"ES2004d","run":0,"mode":"cuda","elapsed_s":68.18,"rttm_lines":607}
 {"label":"TS3003a","run":0,"mode":"cuda","elapsed_s":49.07,"rttm_lines":322}
 {"label":"TS3003b","run":0,"mode":"cuda","elapsed_s":70.99,"rttm_lines":392}
+{"label":"TS3003c","run":0,"mode":"cuda","elapsed_s":79.13,"rttm_lines":421}
+{"label":"TS3003d","run":0,"mode":"cuda","elapsed_s":79.53,"rttm_lines":804}
+{"label":"EN2002a","run":0,"mode":"cuda","elapsed_s":66.68,"rttm_lines":870}
+{"label":"EN2002b","run":0,"mode":"cuda","elapsed_s":56.25,"rttm_lines":576}
