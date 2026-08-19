@@ -276,6 +276,21 @@ reference, not the truth. **Arbiter = VoxConverse dev-216 (running):** parity th
 content edge (document, expose clustering knobs in diar-core, gate on ground-truth corpora);
 +1 tendency there too → systemic; per-stage dump bisection (AHC/VBx) before adoption call.
 
+### 4.16d ARBITER VERDICT — VoxConverse dev-216 (ground truth): speakrs BEATS the fork
+
+| metric | fork | speakrs (patched) |
+|---|---|---|
+| aggregate DER @0.25 | 5.099% | **4.847% (−0.25 pp)** |
+| files with exact ground-truth speaker count | 136/216 | **138/216** |
+| per-file DER wins | 38 | **95** (83 ties) |
+| speaker-count agreement between engines | — | 211/216 equal (speakrs higher on 3, fork on 2) |
+
+→ The §4.16c +1-cluster tendency does NOT appear on real audio — synthetic-curve-file edge case,
+formally adjudicated. **Accuracy across all ground-truth corpora: AMI +0.007pp, Karpathy
++0.025pp, VoxConverse −0.25pp (better). speakrs ≥ fork.** G3's synthetic miss recorded as a
+documented exception with the arbiter analysis; ground-truth gates govern.
+Raw: `results/{fork,speakrs}_vox_dev_der.json`.
+
 ### 4.17 Benchmark-hygiene incident #2 (self-inflicted)
 
 The b64 addendum export wrote into `models/` at 05:12 **while the speakrs curve benchmark was
