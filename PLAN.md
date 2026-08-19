@@ -11,17 +11,19 @@ decisions below.
 **Minimize upload→presented latency at maximum accuracy, on whatever machine the app is
 installed on.** Every optimization is judged against the per-tier E2E job timeline.
 
-**MEASURED at the flip (RESULTS §7.5, 3080 Ti, 5 files × 3 runs, controls held):** upload→presented
-is **1.40× faster on a 2.1 h file** (206.7 s → 147.2 s, 37× → 51× RT) and 1.35× on 66.5 min;
-the diarization stage itself is **2.01× faster** (116.6 s → 58.0 s) at unchanged transcription.
-Bottleneck ordering has flipped exactly as predicted: on the 2.1 h file diarization was 62% of
-the GPU stage and is now 45%, so (1) **transcription** is the clear #1 (levers: batch re-tune with
-freed VRAM, VAD gating, Parakeet tier — int8_float16 is already on), (2) NLP/aux stages,
-(3) preprocessing/handoff, (4) diarization (SOLVED). The stages still run **sequentially**, so
-L2 transcribe∥diarize overlap is worth a further ~45% of the GPU stage on its own — the largest
-remaining lever, now quantified. Also on the list: **progressive presentation** (transcript shown
-at ASR-complete, speaker labels attach after) — the biggest perceived-latency lever costs no
-model speed at all.
+**MEASURED after flip + overlap (RESULTS §7.13, 3080 Ti, 5 files × 3 runs, controls held):**
+upload→presented is **1.99× faster on the 66.5-min reference** (108.4 s → 54.4 s, 37× → **73× RT**)
+and **1.72× on 2.1 h** (206.7 s → 120.3 s, 37× → 63×). Contributions: the engine flip made
+diarization itself 2.01× faster, then T2 overlap made the GPU stage cost max(transcribe, diarize)
+instead of the sum. T3 shows the transcript ~1.6 s before completion on top of that.
+
+Bottleneck ordering now: (1) **transcription** is the clear #1 and is no longer hidden behind
+diarization — remaining levers are batch re-tune with freed VRAM, VAD gating (T8), and the
+Parakeet tier; int8_float16 is already on. (2) NLP/aux stages, (3) preprocessing/handoff,
+(4) diarization — **SOLVED, and now free**: it runs inside transcription's window, so further
+diarization speed buys nothing on single-job latency. It only matters again for throughput,
+which is gated by T9a, not by the engine. The short-file floor is ~4 s of fixed per-job
+overhead, which is what limits media under a minute.
 
 ## Product decisions (locked)
 
@@ -112,11 +114,14 @@ accompany any speed claim: `docs/BENCHMARK_PROTOCOL.md`.
 
 User-confirmed direction: progressive updates, async task loads, and downstream overlap
 wherever outputs allow. Execution order after the flip + baseline run:
-1. L2 true transcribe∥diarize overlap (sidecar makes it a small change; GPU stage → max not sum)
-2. L3 progressive presentation (transcript_ready at 0.78; labels late-attach via existing
-   handlers; redaction stays gating)
+1. L2 true transcribe∥diarize overlap — **DONE 2026-08-19 (T2, RESULTS §7.13)**, outputs
+   byte-identical, GPU stage = max not sum
+2. L3 progressive presentation — **DONE 2026-08-19 (T3)**, `transcript_ready` emitted at both
+   finalize commit points; redaction still gates server-side
 3. L4 finalize off the GPU worker (stop holding the GPU slot for CPU work)
-4. L5a gender-task QUEUE-PRIORITY fix now (one line — stop competing with the critical path);
+4. L5a gender-task QUEUE-PRIORITY fix — **DONE 2026-08-19**, folded into the CPU-pool wedge fix
+   (RESULTS §7.11): priority dropped to USER_TRIGGERED plus per-task time limits, because at
+   PIPELINE_CRITICAL with no limit it could deadlock the whole ingest pipeline;
    L5b **gender-in-sidecar promoted to early post-flip** (shares held PCM, kills presigned-URL
    clip fetches, unblocks LLM speaker-ID sooner — visible enrichment latency)
 5. L9+L7 telemetry completeness + batched progress writes (baseline hygiene)
