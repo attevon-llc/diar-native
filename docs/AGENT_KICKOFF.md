@@ -26,9 +26,14 @@ no context is lost between sessions.
 > legs are never co-scheduled (RESULTS §4.11). Every session ends with gates passed + numbers
 > in RESULTS.md + conventional commits + a closing summary.
 >
-> Required user-provided config (STOP and ask if missing): ENABLE_BENCHMARK_TIMING=1 in the
-> app .env; DIARIZER_ENGINE=native at flip time; DIAR_NATIVE_GPU / _MODELS_DIR / _MAX_INFLIGHT
-> if non-default; gpu-split service-name adjustment in the overlay if that profile is used.
+> Config state (confirmed by user 2026-08-19): ENABLE_BENCHMARK_TIMING=true and
+> ENABLE_VRAM_PROFILING=true are ALREADY SET in the deployment — the telemetry is live and the
+> python-engine "before" baseline has been accumulating passively in file_pipeline_timing.
+> T1 therefore has TWO baseline sources: (a) historical production rows (pull via
+> admin_timing API / GET /timing-summary/recent — real media mix), (b) the controlled fresh
+> runs on the benchmark corpus. Use both; label them separately in RESULTS.
+> Still user-provided at flip time: DIARIZER_ENGINE=native; DIAR_NATIVE_GPU / _MODELS_DIR /
+> _MAX_INFLIGHT if non-default; gpu-split service-name adjustment if that profile is used.
 >
 > Start now with T1.
 
