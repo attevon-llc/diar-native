@@ -55,8 +55,9 @@ multi-user/AWS scale?**
 | G0 | environment reproduces frozen baselines | ✅ 0.0000% drift |
 | G1 | AMI DER ≤ fork +0.1pp, speakers ±1 | ✅ +0.007pp, counts identical |
 | G2 | Karpathy DER ≤ +0.1pp, 2 speakers | ✅ +0.025pp, exact, deterministic |
-| G3 | duration-curve A/B ≤0.5% median, ≤2% max, speaker-exact ×5 | ◐ 2.2h 0.18% ✓, 1.0h 1.12% ✓, 3.2h/4.7h scoring; **0.5h: phantom 5th speaker (fork 4, speakrs 5; ~1.1% DER)** — under diagnosis |
-| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ◐ expected PASS post-patches (89× RT on lesser GPU); final number from the quiet-machine pass |
+| G3 | duration-curve A/B ≤0.5% median, ≤2% max, speaker-exact ×5 | ✗ as-written on synthetic files (3.2h 6.05%, 4.7h 2.27%, +1 cluster) — **formally adjudicated as synthetic-content edge case by the VoxConverse arbiter** (below); ground-truth gates govern |
+| G3-arbiter | VoxConverse dev-216 ground truth | ✅ **speakrs 4.847% BEATS fork 5.099%**; speaker counts equal on 211/216; per-file DER wins 95-38 (83 ties); ground-truth-count matches 138 vs 136 |
+| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ◐ expected PASS post-patches (89× RT on lesser GPU); quiet-machine pass RUNNING — final numbers land here |
 | G5 | bit-determinism ×3 | ✅ everywhere (the two "differing" runs were a self-inflicted mid-run model-dir mutation, documented) |
 
 **Recommendation (provisional): GO on speakrs adoption** per PLAN.md Phase C — T1 shared-weights

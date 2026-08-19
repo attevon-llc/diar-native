@@ -1,0 +1,24 @@
+{
+  "device": "cuda",
+  "model": "pyannote/speaker-diarization-community-1",
+  "records": [
+    {
+      "label": "2.2h_7998s",
+      "run": 0,
+      "duration_s": 8005.3,
+      "elapsed_s": 106.4,
+      "rtf_x": 75.2,
+      "num_speakers": 3,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "2.2h_7998s",
+      "run": 1,
+      "duration_s": 8005.3,
+      "elapsed_s": 105.84,
+      "rtf_x": 75.6,
+      "num_speakers": 3,
+      "peak_vram_mb": 886.0
+    }
+  ]
+}

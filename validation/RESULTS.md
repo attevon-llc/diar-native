@@ -64,9 +64,10 @@ exit codes untrusted — see §5 bug list). Mode `cuda` (1.0 s seg step = pyanno
 `cuda-fast` never used). Models = our §1 exports.
 
 - Smoke: clip30.wav → CPU 15.8 s / CUDA 1.4 s, identical segments across modes.
-- AMI test-16 on A6000 (GPU 2): IN PROGRESS. Early per-file wall: IS1009a (26 min) 31.8 s ≈ 49×;
-  ES2004a-d (~36 min) 68–75 s ≈ **31× RT** → **~2.5× slower than the fork (80×) on the same GPU**.
-  Cause identified in §4: fused-fbank ORT-CUDA tax.
+- AMI test-16 stock build (A6000, GPU 2, timing contaminated — §4.11): ~31–49× RT; DER §4.5.
+- FINAL STATE (patched build — §4.15/§4.16): AMI 13.101% @ **89× RT on the 3080 Ti**;
+  Karpathy 8.219%; **VoxConverse dev-216 4.847% — BEATS fork's 5.099%** (§4.16d). Definitive
+  speed comparison = quiet-machine pass (§ pending).
 
 ## 4. ORT/Triton serving spike (Phase B4 + user-approved Triton deploy) — KEY FINDINGS
 
