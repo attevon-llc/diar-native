@@ -250,6 +250,15 @@ Patches live in `vendor/speakrs` (local; upstream-PR candidates): (1) `SPEAKRS_F
 env override in `session.rs`; (2) `split_fbank_pool` in `load/sessions.rs` + parallel branch in
 `fbank.rs` (`SPEAKRS_FBANK_POOL`, default cores/4 clamped 1-8).
 
+### 4.16b Diagnosis: 0.5h "phantom 5th speaker" = minor-speaker cluster split
+
+Per-speaker airtime comparison (0.5h_1899s): fork = 1258.0 / 609.6 / 154.8 / **104.6** s (4 spk);
+speakrs = 1250.7 / 615.1 / 156.0 / **89.0 + 16.9** s (5 spk). speakrs splits the fork's smallest
+speaker into two clusters (sum 105.9 ≈ 104.6) — borderline AHC/VBx decision on a minor speaker,
+~1.1% A/B DER, NOT systemic drift (speaker counts matched on every ground-truth corpus file:
+AMI ×16, Karpathy, and equality on 1.0h/2.2h). Do not tune on this file (tuning-corpus rule);
+candidate later fix: expose speakrs' `speaker_keep_threshold`/VBx knobs in diar-core config.
+
 ### 4.17 Benchmark-hygiene incident #2 (self-inflicted)
 
 The b64 addendum export wrote into `models/` at 05:12 **while the speakrs curve benchmark was
