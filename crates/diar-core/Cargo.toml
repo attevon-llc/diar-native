@@ -7,9 +7,12 @@ license = "Apache-2.0"
 
 [features]
 default = []
-cuda = ["speakrs/cuda"]
+cuda = ["speakrs/cuda", "ort/cuda"]
 
 [dependencies]
 speakrs = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+ort = { workspace = true }
+ndarray = { workspace = true }
+tracing = { workspace = true }

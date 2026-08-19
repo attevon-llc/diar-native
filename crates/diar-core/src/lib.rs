@@ -13,6 +13,9 @@ use speakrs::inference::{EmbeddingModel, MaskedEmbeddingInput, SegmentationModel
 use speakrs::pipeline::{DiarizationPipeline, RuntimeConfig, segmentation_step_seconds};
 use speakrs::ExecutionMode;
 
+pub mod gender;
+use gender::{GenderModel, GenderVerdict};
+
 /// Frame count of the segmentation mask grid (10 s window @ SincNet stride).
 const MASK_FRAMES: usize = 589;
 /// Embedding dimension of the WeSpeaker ResNet34 head.
@@ -72,11 +75,16 @@ pub struct DiarizeOutput {
     pub num_speakers: usize,
     /// Full-diarization RTTM (harness-compatible).
     pub rttm: String,
+    /// Per-speaker gender, when the gender model is deployed and the caller asked for it.
+    /// Classified from the audio already decoded for diarization — no refetch, no re-decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_gender: Option<std::collections::HashMap<String, GenderVerdict>>,
 }
 
 pub struct DiarEngine {
     seg: SegmentationModel,
     emb: EmbeddingModel,
+    gender: Option<GenderModel>,
     models_dir: PathBuf,
 }
 
@@ -106,9 +114,13 @@ impl DiarEngine {
             &RuntimeConfig::default(),
         )
         .context("loading embedding model")?;
+        // Optional: absent model means the app keeps its own gender path untouched.
+        let gender = GenderModel::load_optional(&config.models_dir, config.mode == Mode::Cuda)
+            .context("loading gender model")?;
         Ok(Self {
             seg,
             emb,
+            gender,
             models_dir: config.models_dir.clone(),
         })
     }
@@ -116,6 +128,16 @@ impl DiarEngine {
     /// Diarize 16 kHz mono f32 samples. `&mut` because speakrs sessions carry scratch
     /// buffers; concurrency is provided by multiple engines or the server's admission gate.
     pub fn diarize(&mut self, audio: &[f32], file_id: &str) -> Result<DiarizeOutput> {
+        self.diarize_with(audio, file_id, false)
+    }
+
+    /// `with_gender` classifies each speaker from this same buffer before it is dropped.
+    pub fn diarize_with(
+        &mut self,
+        audio: &[f32],
+        file_id: &str,
+        with_gender: bool,
+    ) -> Result<DiarizeOutput> {
         let mut pipeline = DiarizationPipeline::new(&mut self.seg, &mut self.emb, &self.models_dir)
             .map_err(|e| anyhow::anyhow!("pipeline init: {e}"))?;
         let result = pipeline
@@ -134,7 +156,20 @@ impl DiarEngine {
 
         // Exclusive variant: the engine resolves overlaps by activation score and applies the
         // same duration filter and gap merging the full segments get.
-        let exclusive_segments = result.exclusive_segments.iter().map(to_segment_out).collect();
+        let exclusive_segments: Vec<SegmentOut> =
+            result.exclusive_segments.iter().map(to_segment_out).collect();
+
+        // Classify while the decoded audio is still here: the caller's buffer is the same one
+        // diarization just used, so this costs windows of an existing allocation rather than a
+        // second fetch, decode and copy.
+        let speaker_gender = match (with_gender, self.gender.as_mut()) {
+            (true, Some(model)) => Some(model.classify_speakers(audio, &exclusive_segments, 16_000)),
+            (true, None) => {
+                tracing::warn!("gender requested but {} is not deployed", gender::GENDER_MODEL_FILE);
+                None
+            }
+            _ => None,
+        };
 
         Ok(DiarizeOutput {
             segments,
@@ -142,6 +177,7 @@ impl DiarEngine {
             centroids,
             num_speakers,
             rttm,
+            speaker_gender,
         })
     }
 

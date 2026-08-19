@@ -27,6 +27,10 @@ struct DiarizeRequest {
     wav_path: PathBuf,
     #[serde(default)]
     file_id: Option<String>,
+    /// Also classify each speaker's gender from this same decoded audio, before it is
+    /// dropped — saves the caller a second fetch, decode and model host.
+    #[serde(default)]
+    gender: bool,
 }
 
 #[derive(Deserialize)]
@@ -119,7 +123,7 @@ async fn diarize(
             })
             .unwrap_or_else(|| "file".into());
         let mut engine = state2.engine.lock().expect("engine mutex poisoned");
-        engine.diarize(&audio, &file_id)
+        engine.diarize_with(&audio, &file_id, req.gender)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
