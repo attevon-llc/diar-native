@@ -5,9 +5,13 @@ targeting the **pyannote `speaker-diarization-community-1`** pipeline that OpenT
 production — at equal accuracy, higher speed, lower deployment weight, and with a clean path to
 **Triton Inference Server** and **AWS GPU** serving.
 
-> **Status: Phase A/B — validation.** Every measurement is logged in
-> [`validation/RESULTS.md`](validation/RESULTS.md). The test matrix and accept/reject gates are in
-> [`validation/TESTPLAN.md`](validation/TESTPLAN.md). Nothing here modifies the production repos.
+> **Status: Phase B validation nearly complete — provisional GO on speakrs adoption.**
+> Start here, then: [`validation/REPORT.md`](validation/REPORT.md) (narrative: what was done,
+> found, and decided) · [`PLAN.md`](PLAN.md) (roadmap + locked decisions) ·
+> [`validation/TESTPLAN.md`](validation/TESTPLAN.md) (test matrix + gates) ·
+> [`validation/RESULTS.md`](validation/RESULTS.md) (every measurement, append-only) ·
+> [`docs/UPSTREAM_PRS.md`](docs/UPSTREAM_PRS.md) (speakrs contribution plan, diffs in
+> [`patches/`](patches/)). Nothing here modifies the production repos.
 
 ---
 
