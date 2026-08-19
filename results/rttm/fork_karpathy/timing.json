@@ -1,0 +1,33 @@
+{
+  "device": "cuda",
+  "model": "pyannote/speaker-diarization-community-1",
+  "records": [
+    {
+      "label": "karpathy",
+      "run": 0,
+      "duration_s": 3991.2,
+      "elapsed_s": 53.01,
+      "rtf_x": 75.3,
+      "num_speakers": 2,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "karpathy",
+      "run": 1,
+      "duration_s": 3991.2,
+      "elapsed_s": 49.79,
+      "rtf_x": 80.2,
+      "num_speakers": 2,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "karpathy",
+      "run": 2,
+      "duration_s": 3991.2,
+      "elapsed_s": 47.99,
+      "rtf_x": 83.2,
+      "num_speakers": 2,
+      "peak_vram_mb": 886.0
+    }
+  ]
+}

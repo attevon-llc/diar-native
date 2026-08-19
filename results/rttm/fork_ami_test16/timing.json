@@ -1,0 +1,150 @@
+{
+  "device": "cuda",
+  "model": "pyannote/speaker-diarization-community-1",
+  "records": [
+    {
+      "label": "IS1009a",
+      "run": 0,
+      "duration_s": 838.8,
+      "elapsed_s": 10.71,
+      "rtf_x": 78.3,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "IS1009b",
+      "run": 0,
+      "duration_s": 2052.3,
+      "elapsed_s": 24.7,
+      "rtf_x": 83.1,
+      "num_speakers": 5,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "IS1009c",
+      "run": 0,
+      "duration_s": 1820.8,
+      "elapsed_s": 21.81,
+      "rtf_x": 83.5,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "IS1009d",
+      "run": 0,
+      "duration_s": 1944.5,
+      "elapsed_s": 22.86,
+      "rtf_x": 85.1,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "ES2004a",
+      "run": 0,
+      "duration_s": 1049.4,
+      "elapsed_s": 14.36,
+      "rtf_x": 73.1,
+      "num_speakers": 5,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "ES2004b",
+      "run": 0,
+      "duration_s": 2345.5,
+      "elapsed_s": 28.98,
+      "rtf_x": 80.9,
+      "num_speakers": 5,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "ES2004c",
+      "run": 0,
+      "duration_s": 2334.4,
+      "elapsed_s": 28.53,
+      "rtf_x": 81.8,
+      "num_speakers": 5,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "ES2004d",
+      "run": 0,
+      "duration_s": 2222.3,
+      "elapsed_s": 29.64,
+      "rtf_x": 75.0,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "TS3003a",
+      "run": 0,
+      "duration_s": 1505.6,
+      "elapsed_s": 19.43,
+      "rtf_x": 77.5,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "TS3003b",
+      "run": 0,
+      "duration_s": 2210.3,
+      "elapsed_s": 25.24,
+      "rtf_x": 87.6,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "TS3003c",
+      "run": 0,
+      "duration_s": 2570.0,
+      "elapsed_s": 28.7,
+      "rtf_x": 89.5,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "TS3003d",
+      "run": 0,
+      "duration_s": 2618.2,
+      "elapsed_s": 36.29,
+      "rtf_x": 72.1,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "EN2002a",
+      "run": 0,
+      "duration_s": 2142.7,
+      "elapsed_s": 25.82,
+      "rtf_x": 83.0,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "EN2002b",
+      "run": 0,
+      "duration_s": 1786.8,
+      "elapsed_s": 24.24,
+      "rtf_x": 73.7,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "EN2002c",
+      "run": 0,
+      "duration_s": 2972.3,
+      "elapsed_s": 37.16,
+      "rtf_x": 80.0,
+      "num_speakers": 3,
+      "peak_vram_mb": 886.0
+    },
+    {
+      "label": "EN2002d",
+      "run": 0,
+      "duration_s": 2209.9,
+      "elapsed_s": 27.65,
+      "rtf_x": 79.9,
+      "num_speakers": 4,
+      "peak_vram_mb": 886.0
+    }
+  ]
+}

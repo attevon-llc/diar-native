@@ -1,0 +1,117 @@
+{
+  "aggregate_der_pct": 13.093,
+  "rows": [
+    {
+      "label": "EN2002a",
+      "hyp": "EN2002a_run0.rttm",
+      "der_pct": 17.806,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "EN2002b",
+      "hyp": "EN2002b_run0.rttm",
+      "der_pct": 17.244,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "EN2002c",
+      "hyp": "EN2002c_run0.rttm",
+      "der_pct": 15.418,
+      "ref_speakers": 3,
+      "hyp_speakers": 3
+    },
+    {
+      "label": "EN2002d",
+      "hyp": "EN2002d_run0.rttm",
+      "der_pct": 19.979,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "ES2004a",
+      "hyp": "ES2004a_run0.rttm",
+      "der_pct": 14.402,
+      "ref_speakers": 4,
+      "hyp_speakers": 5
+    },
+    {
+      "label": "ES2004b",
+      "hyp": "ES2004b_run0.rttm",
+      "der_pct": 8.681,
+      "ref_speakers": 4,
+      "hyp_speakers": 5
+    },
+    {
+      "label": "ES2004c",
+      "hyp": "ES2004c_run0.rttm",
+      "der_pct": 8.412,
+      "ref_speakers": 4,
+      "hyp_speakers": 5
+    },
+    {
+      "label": "ES2004d",
+      "hyp": "ES2004d_run0.rttm",
+      "der_pct": 13.967,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "IS1009a",
+      "hyp": "IS1009a_run0.rttm",
+      "der_pct": 14.421,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "IS1009b",
+      "hyp": "IS1009b_run0.rttm",
+      "der_pct": 10.476,
+      "ref_speakers": 4,
+      "hyp_speakers": 5
+    },
+    {
+      "label": "IS1009c",
+      "hyp": "IS1009c_run0.rttm",
+      "der_pct": 6.338,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "IS1009d",
+      "hyp": "IS1009d_run0.rttm",
+      "der_pct": 11.041,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "TS3003a",
+      "hyp": "TS3003a_run0.rttm",
+      "der_pct": 13.957,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "TS3003b",
+      "hyp": "TS3003b_run0.rttm",
+      "der_pct": 8.401,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "TS3003c",
+      "hyp": "TS3003c_run0.rttm",
+      "der_pct": 10.176,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    },
+    {
+      "label": "TS3003d",
+      "hyp": "TS3003d_run0.rttm",
+      "der_pct": 16.121,
+      "ref_speakers": 4,
+      "hyp_speakers": 4
+    }
+  ]
+}

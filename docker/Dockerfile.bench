@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+# Benchmark image for speakrs Phase B validation.
+# Self-contained (upstream ghcr base images are private); base/runtime package
+# lists mirror vendor/speakrs/docker/{base,runtime}.Dockerfile.
+# Builds the `xtask` CLI (diarize subcommand, RTTM to stdout) with CUDA support.
+# Build context: vendor/speakrs
+
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config cmake \
+    ca-certificates curl git python3 \
+    libssl-dev libclang-dev libopenblas-dev \
+    libcudnn9-dev-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV CARGO_HOME="/root/.cargo" \
+    PATH="/root/.cargo/bin:${PATH}" \
+    RUSTUP_HOME="/root/.rustup"
+WORKDIR /build
+
+FROM base AS ort-download
+ARG ORT_VERSION=1.24.2
+RUN curl -fSL -o /tmp/ort.tgz \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" && \
+    mkdir -p /opt/ort-libs && \
+    tar xzf /tmp/ort.tgz --strip-components=2 -C /opt/ort-libs \
+        --wildcards "*/lib/*.so*" && \
+    rm /tmp/ort.tgz
+
+FROM base AS builder
+COPY Cargo.toml Cargo.lock ./
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY src/ ./src/
+COPY xtask/ ./xtask/
+RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-bench-cargo-registry \
+    --mount=type=cache,target=/root/.cargo/git,id=diar-bench-cargo-git \
+    cargo build --release -p xtask --features cuda,speakrs/openblas-system --bin xtask && \
+    mkdir -p /opt/bin && cp -P target/release/xtask /opt/bin/
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libcudnn9-cuda-12 libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/bin/xtask /usr/local/bin/
+COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
+# ORT resolves provider libs relative to the executable's directory
+RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/xtask"]

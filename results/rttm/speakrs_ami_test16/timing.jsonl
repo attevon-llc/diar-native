@@ -1,0 +1,10 @@
+{"label":"IS1009a","run":0,"mode":"cuda","elapsed_s":31.77,"rttm_lines":221}
+{"label":"IS1009b","run":0,"mode":"cuda","elapsed_s":71.46,"rttm_lines":437}
+{"label":"IS1009c","run":0,"mode":"cuda","elapsed_s":68.73,"rttm_lines":369}
+{"label":"IS1009d","run":0,"mode":"cuda","elapsed_s":62.90,"rttm_lines":518}
+{"label":"ES2004a","run":0,"mode":"cuda","elapsed_s":35.24,"rttm_lines":254}
+{"label":"ES2004b","run":0,"mode":"cuda","elapsed_s":75.03,"rttm_lines":442}
+{"label":"ES2004c","run":0,"mode":"cuda","elapsed_s":71.14,"rttm_lines":478}
+{"label":"ES2004d","run":0,"mode":"cuda","elapsed_s":68.18,"rttm_lines":607}
+{"label":"TS3003a","run":0,"mode":"cuda","elapsed_s":49.07,"rttm_lines":322}
+{"label":"TS3003b","run":0,"mode":"cuda","elapsed_s":70.99,"rttm_lines":392}

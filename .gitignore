@@ -1,0 +1,14 @@
+# vendored upstream clone (pin recorded in validation/RESULTS.md; re-clone to reproduce)
+vendor/
+
+# exported model artifacts — derivatives of gated pyannote community-1 weights (CC-BY-4.0,
+# terms-gated); regenerate with vendor/speakrs/scripts/export_models.py — never commit
+models/
+
+# local tooling
+venv/
+__pycache__/
+*.pyc
+
+# large/raw benchmark outputs stay local; scored JSONs + RESULTS.md are committed
+results/rttm/*/*.log
