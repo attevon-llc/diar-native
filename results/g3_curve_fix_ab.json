@@ -1,0 +1,92 @@
+[
+  {
+    "label": "0.5h_1899s",
+    "error": "missing_hyp"
+  },
+  {
+    "label": "1.0h_3758s",
+    "error": "missing_hyp"
+  },
+  {
+    "label": "2.2h_7998s",
+    "error": "missing_hyp"
+  },
+  {
+    "label": "3.2h_11495s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/3.2h_11495s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/3.2h_11495s_run0.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 4,
+    "ref_seg": 3040,
+    "hyp_seg": 2995,
+    "der": 0.060533,
+    "der_pct": 6.0533,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "3.2h_11495s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/3.2h_11495s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/3.2h_11495s_run1.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 4,
+    "ref_seg": 3040,
+    "hyp_seg": 2994,
+    "der": 0.060533,
+    "der_pct": 6.0533,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "3.2h_11495s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/3.2h_11495s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/3.2h_11495s_run2.rttm",
+    "ref_spk": 3,
+    "hyp_spk": 4,
+    "ref_seg": 3040,
+    "hyp_seg": 2994,
+    "der": 0.060533,
+    "der_pct": 6.0533,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "4.7h_17044s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/4.7h_17044s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/4.7h_17044s_run0.rttm",
+    "ref_spk": 8,
+    "hyp_spk": 9,
+    "ref_seg": 12104,
+    "hyp_seg": 9507,
+    "der": 0.022699,
+    "der_pct": 2.2699,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "4.7h_17044s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/4.7h_17044s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/4.7h_17044s_run1.rttm",
+    "ref_spk": 8,
+    "hyp_spk": 9,
+    "ref_seg": 12104,
+    "hyp_seg": 9507,
+    "der": 0.022699,
+    "der_pct": 2.2699,
+    "spk_match": false,
+    "tier": "T3"
+  },
+  {
+    "label": "4.7h_17044s",
+    "ref_path": "/work/results/rttm/fork_curve_ab/4.7h_17044s_run0.rttm",
+    "hyp_path": "/work/results/rttm/speakrs_curve_fix/4.7h_17044s_run2.rttm",
+    "ref_spk": 8,
+    "hyp_spk": 9,
+    "ref_seg": 12104,
+    "hyp_seg": 9507,
+    "der": 0.022699,
+    "der_pct": 2.2699,
+    "spk_match": false,
+    "tier": "T3"
+  }
+]

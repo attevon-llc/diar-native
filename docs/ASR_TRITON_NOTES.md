@@ -35,6 +35,20 @@ model family). Serving evolution = the diarization-T1 shared-weights pattern app
 ops consolidation — no cross-request batching, accepted). Routes 1/2 move to a watch-list keyed
 to vLLM #25750 (word-level DTW) — revisit only if that lands with quality parity.
 
+## Why Whisper serving stacks have worse word timestamps (user-confirmed by testing)
+
+Whisper has no native word timings — every implementation reconstructs them post-hoc via DTW
+over cross-attention. faster-whisper/CrisperWhisper carry the most battle-tuned implementation;
+vLLM/TRT-LLM/Triton recipes that skip that reimplementation ship segment-only or degraded word
+timings. This is architectural, not a maturity gap that waits itself out.
+
+**The one alternative class that sidesteps it: transducer/CTC models (NVIDIA Parakeet TDT,
+Canary).** Tokens are frame-aligned by construction → word timestamps are a native byproduct;
+several-× faster than Whisper-class; Triton/NIM-servable with real batching. Bake-off entrant
+alongside CT2 when the ASR workstream opens — judge on (a) WER on our real corpora (noisy/
+accented audio vs large-v3-turbo), (b) word-timestamp quality THROUGH the app's WSER pipeline,
+(c) multilingual needs, (d) jobs/hour/GPU. Until something beats CT2 on (a)+(b), CT2 stays.
+
 ## Watch-items
 
 - **Word-level timestamps** (speaker assignment + WSER depend on them): TRT-LLM/vLLM Whisper are
