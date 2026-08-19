@@ -66,6 +66,24 @@ NeMo installs cleanly on the backend image's torch 2.11 (`pip install -U nemo_to
 per model card; NGC nemo container is the fallback). Raw outputs:
 `results/asr_spike_{faster_whisper,parakeet}.json`.
 
+## Timing recovery for NVIDIA models (measured 2026-08-19)
+
+Signed-error analysis of the spike data shows the errors are mostly SYSTEMATIC lateness
+(emission delay), not noise:
+
+| engine | signed bias | raw abs median | bias-corrected abs median / p95 |
+|---|---|---|---|
+| parakeet-tdt-0.6b-v2 | +110 ms | 110 ms | **50 ms** / 280 ms |
+| faster-whisper large-v3-turbo | +40 ms | 40 ms | **10 ms** / 210 ms |
+
+Levers, in value order: (1) **constant-offset calibration** per model (one labeled clip) —
+recovers Parakeet to ≈ uncorrected-FW level, and improves FW itself to 10 ms median (**apply in
+the app regardless of engine**); (2) larger variants (tdt-1.1b/v3) improve match-rate, not the
+~80 ms TDT frame-grid timing floor; (3) NeMo Forced Aligner (fast CTC alignment — NOT the slow
+wav2vec2 path that was removed) as an optional sharpening stage. Final judge = WSER through the
+app pipeline. Conclusion unchanged (FW stays), but calibrated Parakeet is a legitimate
+throughput-tier contender for the bake-off.
+
 ## Watch-items
 
 - **Word-level timestamps** (speaker assignment + WSER depend on them): TRT-LLM/vLLM Whisper are
