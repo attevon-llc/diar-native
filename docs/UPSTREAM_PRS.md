@@ -81,6 +81,47 @@ Design-heavy — open as an issue with our use-case before any code.
 3. **`--chunk-emb-workers` is a no-op on the CUDA path** — either wire it up or document it as
    CoreML-only.
 
+## PR-6 (flagship) — Vectorized VBx + threaded blocked pdist: 8× clustering, output-identical
+
+**Problem.** At scale (4.7 h meeting → N=21,418 filtered embeddings, K=1,902 AHC seed clusters,
+D=128), clustering dominates E2E wall: VB-EM 305 s (scalar O(N·K·D) loops ×20 iterations,
+including a per-speaker penalty recomputed per sample), AHC pdist 64.5 s (per-pair scalar loop).
+Clustering = 74% of the file's 474 s total.
+
+**Change** (in `patches/0001-cuda-performance-patch-set.patch`):
+- `vbx.rs`: M-step as one `gammaᵀ·rho` matmul; E-step as one `rho·alphaᵀ` matmul + penalty
+  vector computed once per iteration; fused logsumexp/gamma row pass. Same f64 math, same
+  iteration/early-stop semantics.
+- `ahc.rs`: condensed distances via blocked Gram matmul (`d² = |a|²+|b|²−2ab`) with
+  `std::thread::scope` over disjoint contiguous condensed ranges (lock-free, deterministic).
+- `Cargo.toml`: ndarray `matrixmultiply-threading`.
+
+**Evidence:**
+| metric | before | after |
+|---|---|---|
+| VB-EM (N=21k, K=1.9k) | 305.1 s | **36.7 s (8.3×)** |
+| AHC pdist | 64.5 s | **1.2 s (53×)** |
+| clustering total | 348 s | **43.6 s (8×)** — also beats scipy (~145 s) on the same data |
+| 4.7h E2E (A6000, quiet) | 474 s | **171.6 s (~99× RT)** |
+| output | — | **RTTM bit-identical**; all 16 clustering tests incl. Python-parity fixtures pass (AHC==scipy order; VBx gamma/pi @1e-4/1e-5; PLDA fixture); AMI-16 corpus re-run: identical 13.101% aggregate, 16/16 RTTMs bit-identical |
+
+## Consolidated E2E story (the cover-letter numbers, quiet-machine A6000)
+
+Cumulative effect of the full patch set (multimask fix + fbank pool + folded seg + VBx/pdist)
+vs stock speakrs `b0756b1`, using self-exported community-1 models:
+
+| corpus / file | stock speakrs | patched | pyannote fork (GPU-optimized production baseline) |
+|---|---|---|---|
+| ES2004a (36 min AMI) | 39.4 s | **12.9 s (3.1×)** | ~27 s |
+| 4.7h 8-speaker file | 474 s | **171.6 s (2.8×)** | 349 s |
+| AMI test-16 corpus | ~31–49× RT | **105× RT** | 80× RT |
+| accuracy (AMI/Karpathy/VoxConverse) | 13.100 / 8.219 / 4.847% | **identical (bit-level RTTMs)** | 13.093 / 8.194 / 5.099% |
+
+Framing for upstream: the patch set makes speakrs-CUDA decisively faster than a heavily
+GPU-optimized pyannote deployment while keeping its accuracy word-for-word — with the VoxConverse
+number *better* than pyannote's. Every claim has a runnable reproduction in
+`validation/TESTPLAN.md` §4 and raw artifacts under `results/`.
+
 ## Housekeeping before submitting
 
 - Rebase patches onto upstream `main` (our pin: `b0756b1`, 2026-07-20).

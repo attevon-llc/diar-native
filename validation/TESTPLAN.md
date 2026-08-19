@@ -33,9 +33,9 @@ VBx Fa 0.07 / Fb 0.8 — speakrs defaults match the community-1 `config.yaml`.
 | M6 | VoxConverse dev | 216 wavs (~20 h) | official RTTMs | ×1 | ×1 | DER@0.25 + DER@0 (published-comparable), RTF | apples-to-apples vs speakrs' published 7.0–7.1% claim |
 | M7 | CPU-only leg | 0.5h wav (+clip30 smoke) | frozen RTTM | `--device cpu` | mode `cpu` | RTF, DER vs GPU run | lite/CPU deployment matrix |
 | M8 | Serving spike | synthetic batch-32 tensors | parity vs eager | — | — | ms/batch server-side, EP placement, folding effect | Triton/ORT serving viability (RESULTS §4) |
-| M9 | (planned) TRT plans on Triton | batch-32 | parity gates | — | — | ms/batch vs M8 | tensorrt backend upside |
-| M10 | (planned) A6000 re-run of M8 headline numbers | — | — | — | — | — | remove 3080 Ti confound |
-| M11 | (planned) **A6000 Triton concurrency/throughput** | AMI-16 and/or duration curve, N∈{1,2,4,8} concurrent clients | RTTM parity vs serial run | — | — | corpus wall-clock, req latency p50/p95, GPU util, throughput vs serial | the core serving question: does parallel+batched Triton beat serial in-process throughput on one A6000? |
+| M9 | DONE (RESULTS §4.4/§4.6) TRT plans on Triton | batch-32 | parity gates | — | — | ms/batch vs M8 | tensorrt backend upside |
+| M10 | DONE (RESULTS §4.6) A6000 re-run of M8 headline numbers | — | — | — | — | — | remove 3080 Ti confound |
+| M11 | **A6000 Triton concurrency/throughput** — model-level DONE (RESULTS §4.7: 2.14× at 8 clients); full-pipeline deferred to Phase C M4 | N∈{1,2,4,8} concurrent clients | RTTM parity vs serial | — | — | throughput, p50/p95, GPU util | does parallel+batched Triton beat serial throughput on one A6000? |
 
 Scoring: `validation/score_der.py` — `pyannote.metrics.DiarizationErrorRate`, **collar 0.25,
 skip_overlap=False**, AMI cropped by official UEMs, hypothesis `<label>_run<N>.rttm` vs reference
