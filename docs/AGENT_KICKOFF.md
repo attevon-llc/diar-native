@@ -41,6 +41,14 @@ no context is lost between sessions.
 > Deliverables every session: (1) gates passed with numbers in RESULTS.md, (2) commits, (3) a
 > closing summary listing what moved in PLAN.md and what the next session should pick up.
 
+## SINGLE-AGENT CONFIGURATION (recommended if one agent runs the whole plan)
+
+**Opus 5 / high effort**, using the MASTER PROMPT with the session sequence below executed in
+order across sessions. Escalation rule from the prompt applies: a gate failing twice → xhigh
+effort; still failing → hand that one task to Fable 5 with the failure transcript. Budget
+alternative: Sonnet 5 / high (accepts more retries on T9/T11). Fable 5 reserved for: T12 design
+(after the user's clustering research is located) and escalations only.
+
 ## Session sequence (recommended order + model per DETAILED_SPECS matrix)
 
 | session | goal | model/effort |
