@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# diar-server runtime image (T1 sidecar). Build context: repo root (diar-native/).
+#   docker build -f docker/Dockerfile.server -t diar-server:latest .
+# Requires the workspace binaries to have been built already OR builds them here.
+
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config cmake ca-certificates curl git python3 \
+    libssl-dev libclang-dev libopenblas-dev libcudnn9-dev-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV CARGO_HOME="/root/.cargo" PATH="/root/.cargo/bin:${PATH}" RUSTUP_HOME="/root/.rustup"
+
+FROM base AS ort-download
+ARG ORT_VERSION=1.24.2
+RUN curl -fSL -o /tmp/ort.tgz \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" && \
+    mkdir -p /opt/ort-libs && \
+    tar xzf /tmp/ort.tgz --strip-components=2 -C /opt/ort-libs --wildcards "*/lib/*.so*" && \
+    rm /tmp/ort.tgz
+
+FROM base AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+COPY vendor/speakrs/ ./vendor/speakrs/
+RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cargo-registry \
+    cargo build --release --features cuda -p diar-server && \
+    mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libcudnn9-cuda-12 libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/bin/diar-server /usr/local/bin/
+COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
+# ORT resolves provider libs relative to the executable dir AND cwd — cover both.
+RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ && \
+    mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/
+WORKDIR /srv
+EXPOSE 8701
+ENTRYPOINT ["/usr/local/bin/diar-server"]

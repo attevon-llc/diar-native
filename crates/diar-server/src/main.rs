@@ -31,12 +31,47 @@ struct DiarizeRequest {
 
 #[derive(Deserialize)]
 struct EmbedRequest {
-    wav_path: PathBuf,
-    /// Optional window within the file, in seconds.
+    /// Path to a 16 kHz mono WAV on a shared volume…
+    #[serde(default)]
+    wav_path: Option<PathBuf>,
+    /// …or raw 16 kHz mono f32 little-endian samples, base64 (small clips).
+    #[serde(default)]
+    samples_b64: Option<String>,
+    /// Optional window within the file, in seconds (wav_path input only).
     #[serde(default)]
     start_s: Option<f64>,
     #[serde(default)]
     end_s: Option<f64>,
+}
+
+fn decode_samples_b64(b64: &str) -> anyhow::Result<Vec<f32>> {
+    // minimal base64 decode without an extra dependency
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut rev = [255u8; 256];
+    for (i, &c) in TABLE.iter().enumerate() {
+        rev[c as usize] = i as u8;
+    }
+    let clean: Vec<u8> = b64.bytes().filter(|b| !b" \n\r\t=".contains(b)).collect();
+    let mut bytes = Vec::with_capacity(clean.len() * 3 / 4);
+    for chunk in clean.chunks(4) {
+        let vals: Vec<u8> = chunk
+            .iter()
+            .map(|&c| rev[c as usize])
+            .collect();
+        anyhow::ensure!(vals.iter().all(|&v| v != 255), "invalid base64");
+        let mut acc: u32 = 0;
+        for &v in &vals {
+            acc = (acc << 6) | v as u32;
+        }
+        acc <<= 6 * (4 - vals.len());
+        let out = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
+        bytes.extend_from_slice(&out[..vals.len().saturating_sub(1)]);
+    }
+    anyhow::ensure!(bytes.len() % 4 == 0, "sample byte length not a multiple of 4");
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect())
 }
 
 #[derive(Serialize)]
@@ -103,15 +138,21 @@ async fn embed_window(
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let state2 = Arc::clone(&state);
     let embedding = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<f32>> {
-        let audio = load_wav(&req.wav_path)?;
-        let sr = 16_000.0;
-        let clip: Vec<f32> = match (req.start_s, req.end_s) {
-            (Some(s), Some(e)) if e > s => {
-                let a = ((s * sr) as usize).min(audio.len());
-                let b = ((e * sr) as usize).min(audio.len());
-                audio[a..b].to_vec()
+        let clip: Vec<f32> = if let Some(b64) = &req.samples_b64 {
+            decode_samples_b64(b64)?
+        } else if let Some(path) = &req.wav_path {
+            let audio = load_wav(path)?;
+            let sr = 16_000.0;
+            match (req.start_s, req.end_s) {
+                (Some(s), Some(e)) if e > s => {
+                    let a = ((s * sr) as usize).min(audio.len());
+                    let b = ((e * sr) as usize).min(audio.len());
+                    audio[a..b].to_vec()
+                }
+                _ => audio,
             }
-            _ => audio,
+        } else {
+            anyhow::bail!("embed_window requires wav_path or samples_b64");
         };
         let mut engine = state2.engine.lock().expect("engine mutex poisoned");
         engine.embed_window(&clip)

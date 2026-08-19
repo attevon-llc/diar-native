@@ -327,7 +327,7 @@ index 59c66fd..ef5b335 100644
 +    )
 +}
 diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
-index ff5ae7f..87b1d1f 100644
+index ff5ae7f..7e10572 100644
 --- a/src/inference/embedding/load/sessions.rs
 +++ b/src/inference/embedding/load/sessions.rs
 @@ -26,6 +26,7 @@ pub(super) struct LoadedOrtSessions {
@@ -338,7 +338,47 @@ index ff5ae7f..87b1d1f 100644
      split_fbank_batched_session: Option<Session>,
      split_tail_session: Option<Session>,
      split_tail_batched_session: Option<Session>,
-@@ -236,10 +237,29 @@ impl LoadedSessions {
+@@ -84,13 +85,21 @@ impl LoadedSessions {
+             }};
+         }
+ 
++        // diar-native patch: SPEAKRS_LAZY_SESSIONS=1 skips the heavy batched sessions the
++        // CUDA multimask pipeline never executes (fused-b64 primary + batched split tails) —
++        // each idle session pins its own ORT arena (~GBs of VRAM at batch-64 activations).
++        // embed_batch degrades gracefully (per-item path) when primary_batched is absent.
++        let lazy_sessions = std::env::var("SPEAKRS_LAZY_SESSIONS")
++            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
++            .unwrap_or(false);
++
+         let (session, session_elapsed) = timed!(EmbeddingModel::build_session(
+             model_path,
+             EmbeddingModel::single_execution_mode(mode)
+         )?);
+         let (primary_batched_session, primary_batched_elapsed) = timed!(
+             batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path| EmbeddingModel::build_batched_session(&path, mode))
+                 .transpose()?
+         );
+@@ -116,14 +125,14 @@ impl LoadedSessions {
+         let (split_tail_batched_session, split_tail_batched_elapsed) = timed!(
+             use_split_backend
+                 .then_some(split_tail_batched_path)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
+                 .transpose()?
+         );
+         let (split_primary_tail_batched_session, split_primary_tail_batched_elapsed) = timed!(
+             use_split_backend
+                 .then_some(split_primary_tail_batched_path)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
+                 .transpose()?
+         );
+@@ -236,10 +245,29 @@ impl LoadedSessions {
              );
          }
  
@@ -368,7 +408,7 @@ index ff5ae7f..87b1d1f 100644
              split_fbank_batched_session,
              split_tail_session,
              split_tail_batched_session,
-@@ -288,6 +308,7 @@ impl LoadedSessions {
+@@ -288,6 +316,7 @@ impl LoadedSessions {
                  session: self.ort.session,
                  primary_batched_session: self.ort.primary_batched_session,
                  split_fbank_session: self.ort.split_fbank_session,
