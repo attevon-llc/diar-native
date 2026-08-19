@@ -50,6 +50,21 @@ request floods into GPU/CPU-efficient batches with bounded memory (queue caps + 
 when full). Implement as a generic `micro_batch<T>` worker in diar-core when the first text
 model is absorbed.
 
+## 3a2. CPU-vs-GPU placement bench protocol (run once text-native components exist)
+
+For EACH aux model (VAD, gender, PII, re-ranker, toxicity, mdeberta) in Rust/ort:
+1. Export to ONNX (optimum or native export); verify output parity vs the PyTorch original on
+   a fixture set (same discipline as diarization: parity BEFORE speed).
+2. Bench matrix: {CPU EP (intra-threads 1/4/8), CUDA EP} × batch {1, 8, 32, 128} ×
+   realistic input lengths. Record latency p50/p95 + throughput + VRAM.
+3. Decision rule per model: GPU only if throughput at its REAL production batch size beats CPU
+   by >2× (PCIe + transfer overhead rule; tiny models at batch 1 almost always stay CPU).
+4. VAD-specific: bench per-chunk streaming (the actual usage) not just batch — the Rust gain is
+   per-call overhead removal (reused session, no GIL) + new capability (gate diarization
+   windows); absolute seconds/job are small but scale with volume and enable preprocessing
+   consolidation.
+5. Results land in validation/RESULTS.md; placement table goes here.
+
 ## 3b. Service topology decision (2026-08-19): TWO sidecars
 
 - **diar-native** (audio, GPU): diarization + gender classifier (shares held PCM).
