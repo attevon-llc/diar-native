@@ -6,6 +6,19 @@ The living roadmap. Companion docs: [README](README.md) (context/why/tiers),
 work lands. Origin: approved plan of 2026-08-18/19 (Claude session), amended by product
 decisions below.
 
+## North star (stated 2026-08-19)
+
+**Minimize upload→presented latency at maximum accuracy, on whatever machine the app is
+installed on.** Every optimization is judged against the per-tier E2E job timeline. Current
+bottleneck ordering post-diarization-flip (1 h file, GPU box): (1) **transcription** (~2-3 min —
+now the clear #1; levers: int8_float16, batch re-tune with freed VRAM, VAD gating, Parakeet
+tier), (2) NLP/aux stages (profile → optimum-ORT → text-native), (3) preprocessing/handoff
+(tmpfs → symphonia), (4) diarization (SOLVED: ~13 s at 277× RT warm). Transcribe∥diarize
+overlap makes E2E ≈ transcription + tail. Also on the list: **progressive presentation**
+(transcript shown at ASR-complete, speaker labels attach after) — the biggest perceived-latency
+lever costs no model speed at all. The post-PR E2E protocol (SPEEDUP_ROADMAP) measures this
+timeline per tier.
+
 ## Product decisions (locked)
 
 1. **Adopt speakrs** (validated: G1/G2 accuracy parity, patched-build speed > fork) as the engine
