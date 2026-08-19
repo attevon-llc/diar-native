@@ -320,6 +320,16 @@ the adoption track, with "≥1.0× fork on the 4.7h file" retained as the T1 SHI
 long-file clustering gap becomes a named Milestone-1 optimization item (likely upstream-PR-able,
 same as the fbank pool).
 
+### 4.20 4.7h gap attribution (trace-instrumented, quiet A6000)
+
+`total_ms=473953`: inference 125.4 s (fbank 73.9 s + gpu_predict 50.2 s, concurrent) +
+**post/clustering 348.6 s = 74% of wall** at N≈50k embeddings / 17,050 chunks. Fork's scipy
+clustering on the same file ≈ 145 s. → The extreme-file regression is **AHC linkage scale**
+(kodama vs scipy's nn-chain C implementation), NOT inference. Named Milestone-1 item (T1 ship
+gate): faster linkage at N>10k (nn-chain port, stronger filter_embeddings pre-reduction, or
+sub-sampled seeding) — upstream-PR candidate alongside the fbank pool. Secondary: fbank pool
+scaling for 17k-chunk files (74 s at pool=8; raise pool for long files).
+
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
 **8.219% DER — bit-identical to the stock-build result and across all 3 runs; 2 speakers exact;

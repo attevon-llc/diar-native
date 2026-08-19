@@ -30,7 +30,7 @@ decisions below.
 
 - **Phase A — stock-fork baselines: DONE** (Gate 0 passed; AMI 13.093%, Karpathy 8.194%,
   VoxConverse dev 5.099%, duration curve, CPU leg — RESULTS §2).
-- **Phase B — speakrs validation: NEARLY DONE.** G1 ✅ G2 ✅ G5 ✅ (bit-determinism);
+- **Phase B — speakrs validation: DONE (2026-08-19). FINAL VERDICT: GO** — see validation/REPORT.md gate table. G1 ✅ G2 ✅ G5 ✅ (bit-determinism);
   G3 partial (2.2h 0.18% A/B ✓, 1.0h ✓, 0.5h phantom-5th-speaker flagged; 3.2h/4.7h scoring in
   progress); G4 flipped to expected-pass by the patch set (3.1× E2E; 89× RT on 3080 Ti vs fork
   80× on A6000) — final verdict from the **quiet-machine timing pass** (mandatory; see RESULTS

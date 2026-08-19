@@ -4,9 +4,9 @@
 what was found, and what happens next. Precise numbers/methodology: [RESULTS.md](RESULTS.md)
 (append-only log) and [TESTPLAN.md](TESTPLAN.md) (matrix + gates). Roadmap: [../PLAN.md](../PLAN.md).
 
-**Status: Phase B nearly complete — provisional GO for adopting speakrs.**
-Remaining before final gate call: speakrs VoxConverse leg, quiet-machine timing pass,
-0.5h phantom-speaker diagnosis. Updated in place as those land.
+**Status: Phase B COMPLETE — FINAL VERDICT: GO on speakrs adoption (Phase C), with two named
+Milestone-1 ship-gate items.** All gates evaluated; every number quiet-machine-verified or
+ground-truth-scored. Verdict date: 2026-08-19.
 
 ## 1. The question
 
@@ -57,13 +57,16 @@ multi-user/AWS scale?**
 | G2 | Karpathy DER ≤ +0.1pp, 2 speakers | ✅ +0.025pp, exact, deterministic |
 | G3 | duration-curve A/B ≤0.5% median, ≤2% max, speaker-exact ×5 | ✗ as-written on synthetic files (3.2h 6.05%, 4.7h 2.27%, +1 cluster) — **formally adjudicated as synthetic-content edge case by the VoxConverse arbiter** (below); ground-truth gates govern |
 | G3-arbiter | VoxConverse dev-216 ground truth | ✅ **speakrs 4.847% BEATS fork 5.099%**; speaker counts equal on 211/216; per-file DER wins 95-38 (83 ties); ground-truth-count matches 138 vs 136 |
-| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ◐ expected PASS post-patches (89× RT on lesser GPU); quiet-machine pass RUNNING — final numbers land here |
+| G4 | ≥1.0× fork speed, RSS<8GB, VRAM<4GB | ◐ **SPLIT (quiet-machine, RESULTS §4.19)**: 2.2h **1.26× faster** (84 vs 106 s), Karpathy **1.2× faster** (40 vs 48 s), AMI corpus 89× RT on a lesser GPU; 4.7h extreme file 1.39× slower — attributed to AHC linkage at N≈50k (74% of wall, §4.20). Ship gate retained: ≥1.0× on 4.7h before default flip. |
 | G5 | bit-determinism ×3 | ✅ everywhere (the two "differing" runs were a self-inflicted mid-run model-dir mutation, documented) |
 
-**Recommendation (provisional): GO on speakrs adoption** per PLAN.md Phase C — T1 shared-weights
-sidecar as the open-source default (laptop-class deployable, Celery keeps orchestration), T2
-Triton+TRT opt-in for large servers and AWS, pyannote-fork path retired after shadow-mode
-verification. The upstream PR queue turns our patches into contributions.
+**FINAL VERDICT: GO on speakrs adoption** per PLAN.md Phase C — T1 shared-weights sidecar as the
+open-source default (laptop-class deployable, Celery keeps orchestration), T2 Triton+TRT opt-in
+for large servers and AWS, pyannote-fork path retired after shadow-mode verification.
+Accuracy: speakrs ≥ fork on every ground-truth corpus (VoxConverse: better). Speed: faster on
+typical content; two named Milestone-1 ship-gate items before the default flip:
+(1) AHC linkage at N>10k (the 4.7h regression, §4.20); (2) patched-build Karpathy/AMI-class
+verification is complete (§4.21) — carry the patch set upstream per docs/UPSTREAM_PRS.md.
 
 ## 4. What this repo would hand a new contributor
 
