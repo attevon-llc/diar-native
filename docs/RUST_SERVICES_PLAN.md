@@ -59,9 +59,17 @@ model is absorbed.
   Same cargo workspace → shared micro_batch/ORT/tokenizers code; two ~30-50 MB single-purpose
   containers. Build order: flip → profile → optimum-ORT interim → text-native for proven-hot
   models only.
-- **Torch-free backend endgame**: whisper=CT2 (torch-free), diarization=Rust, text=ORT →
-  remaining torch pins need the PLAN decision-#5 audit (alignment leftovers, VAD, transitive
-  imports); if clean, the backend image drops torch entirely.
+- **Torch-free backend endgame**: whisper=CT2 (torch-free), diarization=Rust, text=ORT.
+  Audit clarifications (user, 2026-08-19):
+  - **VAD is not a torch pin**: faster-whisper's VAD is Silero-ONNX via onnxruntime already.
+    Rust move = same Silero ONNX in `ort` (~2 MB, CPU, trivially fast) — lands in sidecar
+    preprocessing (P2) so silence-gating happens once at the PCM and feeds BOTH diarization
+    (skip empty windows) and transcription.
+  - **Alignment is OUT of scope by decision**: removed from the pipeline in favor of ASR-native
+    word timestamps; reinstating would require a per-language wav2vec2 model + an extra model
+    pass per job — contrary to the model-zoo-shrinking goal. Revisit only if a future feature
+    needs sub-word precision the ASR timestamps can't provide.
+  - Remaining audit targets: transitive torch imports in NLP/redaction paths.
 - **Task overlap**: with diarization off-worker, transcribe+diarize run concurrently without
   stages.py VRAM gating → job latency approaches max(stage) not sum(stages); measured by the
   post-PR E2E protocol. Output-identity gates every migration step, as throughout.
