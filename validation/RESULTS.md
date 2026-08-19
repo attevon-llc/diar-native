@@ -386,7 +386,15 @@ T1 ship gate CLEARED. `results/speakrs_ami_optimized_der.json`.
 - **Peak VRAM 4,236 MB** vs the 4 GB target — **marginal exceed (~3%), PASS-WITH-NOTE**: driven
   by the b64 session variants; fits all target GPUs (full AMI corpus ran on the 12 GB 3080 Ti);
   tunable for small GPUs via a b32-only model set (b32 exports already exist). Fork reference:
-  886 MB — VRAM is the one resource where the fork is lighter; not deployment-limiting.
+  886 MB torch-allocated (~1.4-1.7 GB process-level) — apples-to-apples gap ≈ 2.8×.
+  **Why speakrs uses more:** (1) eager-loads ~6 CUDA sessions each with its own ORT arena —
+  and the CUDA pipeline only RUNS the multimask path, so fused-single/fused-b64/split-tail
+  sessions hold idle VRAM (→ **lazy session loading = cheapest VRAM optimization**, diar-core
+  M1 item + upstream suggestion); (2) b64 graphs retain peak ResNet activation workspace in
+  arenas that never shrink; (3) no cross-session allocator sharing (ORT supports a shared
+  env allocator — second mitigation). Fork is lean by necessity (coexists with Whisper in one
+  worker + explicit empty_cache) — same pressure applies to the T1 sidecar, so this list is
+  scheduled work, not trivia.
 
 ### 4.21 Patched-build accuracy closure — Karpathy ×3 (quiet A6000, GPU 2)
 
