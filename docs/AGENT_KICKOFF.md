@@ -6,6 +6,32 @@ no context is lost between sessions.
 
 ---
 
+## FULL-PROGRAM PROMPT (paste this into the new session — Opus 5 / high)
+
+> Work in /mnt/nvm/repos/diar-native — the project of record for OpenTranscribe's native
+> diarization/inference program. You are the FULL-PROGRAM ORCHESTRATOR. Before doing ANYTHING,
+> read in this order: PLAN.md; docs/EXECUTION_TASKS.md; docs/DETAILED_SPECS.md;
+> docs/AGENT_KICKOFF.md; docs/E2E_PIPELINE_MAP.md; docs/INSTALL_NATIVE.md;
+> validation/RESULTS.md section headers only (NEVER re-run a logged test).
+>
+> GOAL: execute the accepted sequence end to end, starting at T1 (flip + E2E baseline), then
+> the session table order (T5a/T6/T8 → T2 → T3 → T4 → T5b → T9 → T11 → T10), with full
+> benchmarking, output-identity/accuracy gates, and RESULTS.md documentation at every step,
+> producing complete before/after speed calculations for upload→presented per hardware tier.
+>
+> Authorization: transcribe-app changes ARE authorized (INSTALL_NATIVE hook, staged-file
+> commits, files named in DETAILED_SPECS) — but NEVER push to any remote;
+> pyannote-audio-fork is read-only. Use mixed-model subagents per the delegation table
+> (verifier separate from workers; Fable spawns only on double gate-failure). Timed benchmark
+> legs are never co-scheduled (RESULTS §4.11). Every session ends with gates passed + numbers
+> in RESULTS.md + conventional commits + a closing summary.
+>
+> Required user-provided config (STOP and ask if missing): ENABLE_BENCHMARK_TIMING=1 in the
+> app .env; DIARIZER_ENGINE=native at flip time; DIAR_NATIVE_GPU / _MODELS_DIR / _MAX_INFLIGHT
+> if non-default; gpu-split service-name adjustment in the overlay if that profile is used.
+>
+> Start now with T1.
+
 ## MASTER PROMPT (template)
 
 > Work in /mnt/nvm/repos/diar-native (the project of record for OpenTranscribe's native
