@@ -206,7 +206,51 @@ comparisons (G4) must come from a quiet-machine timing pass** (queued: fork vs s
 - fork eager CPU, 0.5h file: 1123 s = **1.7× RT** (machine under moderate load).
 - speakrs `cpu` mode: running.
 
-### 4.13 fp16 engines — deferred (TRT 11 strongly-typed)
+### 4.14 Gate G2 PASSED + G5 evidence (speakrs Karpathy) & fork VoxConverse anchor
+
+- **G2:** speakrs Karpathy DER **8.219%** vs fork 8.194% (+0.025 pp, gate +0.1); 2 speakers exact;
+  3 runs bit-identical. Curve files 0.5h/1.0h/2.2h also 3× bit-identical (G5 evidence).
+- **Fork VoxConverse dev-216 anchor: 5.099% aggregate DER** @collar 0.25
+  (`results/fork_vox_dev_der.json`); speakrs vox leg pending.
+- 2.2h segments: speakrs 2629 vs fork 2855 — pending A/B DER scoring to classify
+  (merge-semantics vs drift).
+
+### 4.15 UPSTREAM BUG #2 — multimask batching silently disabled (b32/b64 filename mismatch)
+
+speakrs' loader requests `wespeaker-multimask-tail-b64.onnx` (`PRIMARY_BATCH_SIZE=64`,
+`load/sessions.rs:162`) but `scripts/export_models.py` only writes `-b32`
+(`MULTI_MASK_BATCH_SIZE=32`) → batched multimask session = None → **batch size falls back to 1**
+(per-chunk fbank + batch-1 GPU predict; trace: flushes==chunks). Runtime buffers are sized 32, so
+a TRUE batch-64 graph under that name crashes the worker ("receiver disconnected") — verified.
+**Workaround (zero code): place the b32-shaped graph under the b64 filename** → batching engages
+(flushes=33 for 1041 chunks), RTTM bit-identical. Upstream PR: make exporter+loader agree (export
+b64 name with batch-32 graph, or load b32 name).
+
+With batching engaged, ES2004a trace: **fbank_ms=28182 (76% of ~37 s wall!), gpu_predict_ms=3572**
+→ GPU was never the bottleneck; single-session CPU fbank is.
+
+### 4.16 fbank optimization ladder (ES2004a, GPU 1, same-session A/B — relative numbers valid)
+
+| variant | wall | note |
+|---|---|---|
+| stock models (batch-1 path) | 39.4 s | |
+| + folded seg | 36.7 s | RTTM identical |
+| + multimask b64(b32 graph) batching | 37.1 s | RTTM identical; GPU batched but fbank dominates |
+| + SPEAKRS_FBANK_THREADS=24 (patch 1) | 32.1 s | intra-op threads DON'T scale fbank (35.4→32.1) |
+| + split_fbank_pool fan-out (patch 2) | pending | pool of N CPU sessions, per-chunk parallel |
+
+Patches live in `vendor/speakrs` (local; upstream-PR candidates): (1) `SPEAKRS_FBANK_THREADS`
+env override in `session.rs`; (2) `split_fbank_pool` in `load/sessions.rs` + parallel branch in
+`fbank.rs` (`SPEAKRS_FBANK_POOL`, default cores/4 clamped 1-8).
+
+### 4.17 Benchmark-hygiene incident #2 (self-inflicted)
+
+The b64 addendum export wrote into `models/` at 05:12 **while the speakrs curve benchmark was
+reading that directory** → 3.2h runs 1-2 and all 4.7h runs crashed (empty RTTMs; the "runs differ"
+on 3.2h is this, not nondeterminism). Re-run launched from the fixed dir. RULE: never mutate a
+model/data dir that a live benchmark mounts; stage changes in a new dir.
+
+### 4.18 fp16 engines — deferred (TRT 11 strongly-typed)
 
 TRT 11 (26.06 image) removed `--fp16`: networks are **strongly typed by default** — engine
 precision follows the ONNX graph's tensor types. fp16 therefore requires converting the ONNX
