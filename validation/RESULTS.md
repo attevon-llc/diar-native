@@ -1074,3 +1074,27 @@ already an ONNX model, so a rewrite would have to beat it. The value is running 
 upstream, and sharing it** — today whisper computes VAD for itself while diarization runs its
 own segmentation over the same audio, and neither sees the other's work. That is a
 shared-computation win, not a kernel-speed one, and it should be scoped that way.
+
+### 7.20 Gender window size — swept across AMI-16, 5 s confirmed
+
+Asked because the sidecar reported higher confidence than the CPU path on the same file
+(0.989 vs 0.593 for one speaker) — which is window selection, not fp16 (§7.18 showed fp16 and
+fp32 agree 67/67 with a mean confidence delta of 0.0002). Swept across all 16 AMI meetings,
+67 speaker verdicts each:
+
+| cap | VRAM | mean confidence | labels vs 5 s |
+|---|---|---|---|
+| 3 s | 4 634 MiB | 0.9425 | **67/67 identical** |
+| **5 s (default)** | 4 890 MiB | 0.9481 | — |
+| 10 s | 4 892 MiB | 0.9497 | 66/67 (1 differs) |
+| 20 s | **13 633 MiB** | 0.9527 | 66/67 (1 differs) |
+
+**Larger is not better here.** 20 s costs 13.6 GB — it would not fit on the 12 GB target at all
+(this ran on a 49 GB A6000), and it changes one verdict in 67. 10 s costs the same memory as
+5 s for +0.0016 mean confidence and the same single flip. Decisions are effectively flat from
+3 s upward, so the cap is a pure cost choice and 5 s stays.
+
+Honest caveat: confidence rising with window length says the model is more *certain*, not more
+*correct*, and AMI carries no speaker-gender ground truth — so the one verdict that differs
+between 5 s and 10/20 s cannot be adjudicated here. If gender accuracy ever needs a real gate it
+needs a labelled set, not a confidence comparison.
