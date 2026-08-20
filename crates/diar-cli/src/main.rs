@@ -52,6 +52,12 @@ fn load_wav(path: &PathBuf) -> Result<Vec<f32>> {
 }
 
 fn main() -> Result<()> {
+    // Engine stage traces (fbank_ms, gpu_predict_ms, clustering timing) go to stderr when
+    // RUST_LOG is set, e.g. RUST_LOG=speakrs=debug — stdout stays parseable JSONL.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let args = Args::parse();
     let mode = match args.mode.as_str() {
         "cpu" => Mode::Cpu,

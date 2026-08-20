@@ -1415,3 +1415,29 @@ run's first batches. Disposition: env-gated, DEFAULT OFF — on 12 GB the floor 
 (§7.23) and the speed cost is real. For the 4 GB laptop tier this is the knob that makes
 diarization and transcription co-residable between (not during) jobs. Refinement if that tier
 ships: shrink only on queue-drain instead of every run, restoring full speed under load.
+
+### 7.28 Pipelined fbank ∥ GPU predict — 1.37× single-job, outputs identical, fbank lever closed
+
+The §7.24-era trace showed the multimask consumer alternating strictly between CPU fbank
+(16.1 s) and GPU predict (11.9 s) on the 66.5-min file — the GPU idled through every fbank
+batch and the segmentation thread's 15.6 s "overhead" was backpressure waiting on it.
+`run_multi_mask` is now a two-stage pipeline: a fbank stage on a `clone_shared()` handle
+(T9a made this safe — sessions shared, scratch separate) feeds a GPU stage over bounded(1)
+channels. Same math, same batch boundaries, same flush order; the CoreML build keeps the
+original sequential body verbatim.
+
+| file | before | after | note |
+|---|---|---|---|
+| ES2004a (36 min) | 8.4-8.8 s | **6.6 s (159× RT)** | seg backpressure now 0 ms |
+| Karpathy (66.5 min) | 28.5-29.7 s | **21.6 s (184× RT)** | wall is now the SEG thread (12.4→20.5 s under GPU contention with multimask) |
+
+Identity: ES2004a + Karpathy + **AMI 16/16 content-identical** to the recorded diar-cli runs;
+94/94 tests pass; N=4 concurrent identical to serial (4/4). Concurrency scaling flattens to
+1.08× (serial-4 41.0 s / concurrent 38.1 s) because each job now saturates the pipeline
+internally — total 4-file wall matches the pre-pipelining concurrent figure while single-job
+latency (the app's actual metric at DIAR_MAX_INFLIGHT=2) improves 1.37×.
+
+**Lever 2 (native Rust fbank) is closed as superseded:** with fbank fully hidden behind
+segmentation, replacing its math would buy ~0 wall time while risking output drift. The next
+single-job lever, if ever needed, is the segmentation thread (seg batches now contend with
+multimask on the GPU).

@@ -14,3 +14,4 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 hound = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
