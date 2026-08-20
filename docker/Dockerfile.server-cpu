@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+# diar-server CPU-only runtime image — multi-arch (linux/amd64, linux/arm64).
+# No CUDA anywhere in this file: Apple Silicon has no NVIDIA GPU, and this codebase has no
+# CoreML/Metal execution path wired in yet (README §6: "Apple Silicon is future work"), so
+# there is no GPU acceleration to target on arm64 regardless of base image choice. This image
+# validates cross-platform correctness (ORT CPU EP) — see README T1 tier: "CPU-only works,
+# ≈ eager-torch parity measured".
+#   docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.server-cpu \
+#     -t <tag> --push .
+# Build context: repo root (diar-native/).
+
+FROM ubuntu:24.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config cmake ca-certificates curl git \
+    libssl-dev libclang-dev libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV CARGO_HOME="/root/.cargo" PATH="/root/.cargo/bin:${PATH}" RUSTUP_HOME="/root/.rustup"
+
+FROM base AS ort-download
+ARG ORT_VERSION=1.24.2
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        amd64) ORT_ARCH=x64 ;; \
+        arm64) ORT_ARCH=aarch64 ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    curl -fSL -o /tmp/ort.tgz \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" && \
+    mkdir -p /opt/ort-libs && \
+    tar xzf /tmp/ort.tgz --strip-components=2 -C /opt/ort-libs --wildcards "*/lib/*.so*" && \
+    rm /tmp/ort.tgz
+
+FROM base AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+COPY vendor/speakrs/ ./vendor/speakrs/
+# No --features cuda: cuda is purely additive (diar-core/Cargo.toml), the default build is
+# already CPU-mode via openblas-system (pinned in the workspace root Cargo.toml's speakrs dep).
+RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-registry-${TARGETARCH} \
+    cargo build --release -p diar-server && \
+    mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
+
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    ca-certificates curl libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/bin/diar-server /usr/local/bin/
+COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
+RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ 2>/dev/null || true && \
+    mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/ 2>/dev/null || true
+RUN mkdir -p /tmp/diar-native && chmod 1777 /tmp/diar-native
+WORKDIR /srv
+EXPOSE 8701
+ENTRYPOINT ["/usr/local/bin/diar-server"]
