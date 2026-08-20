@@ -26,6 +26,12 @@ pub const EMBEDDING_DIM: usize = 256;
 pub enum Mode {
     Cpu,
     Cuda,
+    /// Native CoreML, FP32 precision (~1s step). macOS only — requires the `coreml` feature
+    /// and `.mlmodelc` bundles alongside the ONNX files in `models_dir` (see speakrs
+    /// `scripts/native_coreml/convert_coreml.py`).
+    CoreMl,
+    /// Native CoreML, W8A16 segmentation (~2s step, higher throughput).
+    CoreMlFast,
 }
 
 impl Mode {
@@ -33,6 +39,8 @@ impl Mode {
         match self {
             Mode::Cpu => ExecutionMode::Cpu,
             Mode::Cuda => ExecutionMode::Cuda,
+            Mode::CoreMl => ExecutionMode::CoreMl,
+            Mode::CoreMlFast => ExecutionMode::CoreMlFast,
         }
     }
 }
@@ -94,7 +102,7 @@ impl DiarEngine {
         let mode = config.mode.execution_mode();
         // Pool sizing is read from env by the (patched) speakrs loader; pin it before load.
         let pool = config.fbank_pool.unwrap_or(match config.mode {
-            Mode::Cpu => 1,
+            Mode::Cpu | Mode::CoreMl | Mode::CoreMlFast => 1,
             Mode::Cuda => std::thread::available_parallelism()
                 .map(|c| (c.get() / 4).clamp(1, 8))
                 .unwrap_or(1),

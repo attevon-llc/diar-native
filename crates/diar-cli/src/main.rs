@@ -76,7 +76,9 @@ fn main() -> Result<()> {
     let mode = match args.mode.as_str() {
         "cpu" => Mode::Cpu,
         "cuda" => Mode::Cuda,
-        other => bail!("unknown mode '{other}' (cpu|cuda)"),
+        "coreml" => Mode::CoreMl,
+        "coreml_fast" => Mode::CoreMlFast,
+        other => bail!("unknown mode '{other}' (cpu|cuda|coreml|coreml_fast)"),
     };
     fs::create_dir_all(&args.out_dir)?;
     let mut engine = DiarEngine::load(&EngineConfig::new(&args.models_dir, mode))?;

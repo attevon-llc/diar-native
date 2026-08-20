@@ -220,6 +220,8 @@ async fn run() -> anyhow::Result<()> {
         std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
     let mode = match std::env::var("DIAR_MODE").as_deref() {
         Ok("cpu") => Mode::Cpu,
+        Ok("coreml") => Mode::CoreMl,
+        Ok("coreml_fast") => Mode::CoreMlFast,
         _ => Mode::Cuda,
     };
     let max_inflight: usize = std::env::var("DIAR_MAX_INFLIGHT")
