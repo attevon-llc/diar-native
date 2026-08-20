@@ -1441,3 +1441,26 @@ latency (the app's actual metric at DIAR_MAX_INFLIGHT=2) improves 1.37×.
 segmentation, replacing its math would buy ~0 wall time while risking output drift. The next
 single-job lever, if ever needed, is the segmentation thread (seg batches now contend with
 multimask on the GPU).
+
+### 7.29 Native media ingest (symphonia) — WAV/FLAC exact, resampler chosen by measurement
+
+diar-server and diar-cli now accept original media directly (`media_path` alias on
+/diarize): 16 kHz mono WAV keeps the hound fast path byte-for-byte (the app handoff is
+untouched); everything else decodes via symphonia (mp3/aac/isomp4/flac/ogg/wav) with
+channel-average downmix and FFT resampling to 16 kHz (`diar-core::audio`).
+
+Gates on the Karpathy 10-min clip (GPU 2):
+- **FLAC (16 kHz mono, lossless): RTTM bit-identical to the WAV path** — the decode is exact.
+- **44.1 kHz stereo WAV: 88 segments** vs ffmpeg-resampled control 90 and original 92.
+  The first implementation (rubato `SincFixedIn`, sinc_len 256/linear/BlackmanHarris2)
+  produced spectrally-plausible audio that diarized to **203 segments** with 40 s of speech
+  lost — localized bursts of error on loud content. Swapping to `FftFixedIn` fixed it
+  outright. Recorded because the failure mode is nasty: the bad audio passed rms, alignment
+  and band-power checks; only diarization exposed it.
+- mp3 128k: 115 segments vs 105 for the same mp3 decoded by ffmpeg — lossy re-encoding
+  itself moves boundaries (original 92); our decoder is in the same class as ffmpeg's.
+  Lossy ingest is a convenience path, not a parity path.
+
+App-pipeline impact: none by construction — the worker still ships 16 kHz WAVs, which
+bypass all of this. Known wart: diar-cli labels default to the file stem, so two inputs with
+the same stem overwrite each other's RTTMs (pre-existing; use --label).

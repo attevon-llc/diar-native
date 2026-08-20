@@ -16,3 +16,10 @@ serde = { workspace = true }
 ort = { workspace = true }
 ndarray = { workspace = true }
 tracing = { workspace = true }
+# Native media ingest (audio.rs): decode original media in-process instead of requiring a
+# pre-decoded 16 kHz WAV. The app's WAV handoff path does not touch these.
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
+rubato = "0.16"
+
+[dev-dependencies]
+hound = { workspace = true }

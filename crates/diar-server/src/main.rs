@@ -36,7 +36,10 @@ impl AppState {
 
 #[derive(Deserialize)]
 struct DiarizeRequest {
-    /// Path to a 16 kHz mono WAV on a shared volume.
+    /// Path to media on a shared volume. A 16 kHz mono WAV takes the exact handoff fast
+    /// path the app relies on; anything else (mp3/m4a/flac/ogg, any-rate wav) is decoded
+    /// and resampled in-process. `media_path` is accepted as an alias.
+    #[serde(alias = "media_path")]
     wav_path: PathBuf,
     #[serde(default)]
     file_id: Option<String>,
@@ -96,6 +99,21 @@ struct EmbedResponse {
     embedding: Vec<f32>,
 }
 
+/// 16 kHz mono WAVs keep the hound fast path (byte-identical to the app handoff);
+/// everything else decodes via symphonia and resamples to 16 kHz mono.
+fn load_audio(path: &PathBuf) -> anyhow::Result<Vec<f32>> {
+    let is_wav = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if is_wav {
+        if let Ok(samples) = load_wav(path) {
+            return Ok(samples);
+        }
+    }
+    diar_core::audio::decode_to_16k_mono(path)
+}
+
 fn load_wav(path: &PathBuf) -> anyhow::Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
@@ -125,7 +143,7 @@ async fn diarize(
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let state2 = Arc::clone(&state);
     let out = tokio::task::spawn_blocking(move || -> anyhow::Result<DiarizeOutput> {
-        let audio = load_wav(&req.wav_path)?;
+        let audio = load_audio(&req.wav_path)?;
         let file_id = req
             .file_id
             .clone()
@@ -158,7 +176,7 @@ async fn embed_window(
         let clip: Vec<f32> = if let Some(b64) = &req.samples_b64 {
             decode_samples_b64(b64)?
         } else if let Some(path) = &req.wav_path {
-            let audio = load_wav(path)?;
+            let audio = load_audio(path)?;
             let sr = 16_000.0;
             match (req.start_s, req.end_s) {
                 (Some(s), Some(e)) if e > s => {

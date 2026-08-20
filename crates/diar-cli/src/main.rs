@@ -11,7 +11,7 @@ use clap::Parser;
 use diar_core::{DiarEngine, EngineConfig, Mode};
 
 #[derive(Parser)]
-#[command(about = "Diarize 16 kHz mono WAVs via diar-core (speakrs engine)")]
+#[command(about = "Diarize media files (wav/flac/mp3/m4a/ogg) via diar-core (speakrs engine)")]
 struct Args {
     /// WAV files (16 kHz mono)
     files: Vec<PathBuf>,
@@ -29,6 +29,20 @@ struct Args {
     /// Also write <label>_run<N>.json with segments/centroids/exclusive
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+/// 16 kHz mono WAVs keep the hound fast path; other media decodes via symphonia.
+fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
+    let is_wav = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if is_wav {
+        if let Ok(samples) = load_wav(path) {
+            return Ok(samples);
+        }
+    }
+    diar_core::audio::decode_to_16k_mono(path)
 }
 
 fn load_wav(path: &PathBuf) -> Result<Vec<f32>> {
@@ -75,7 +89,7 @@ fn main() -> Result<()> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "file".into()),
         };
-        let audio = load_wav(file)?;
+        let audio = load_audio(file)?;
         let duration_s = audio.len() as f64 / 16_000.0;
         for run in 0..args.runs {
             let t0 = Instant::now();

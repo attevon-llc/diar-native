@@ -13,6 +13,7 @@ use speakrs::inference::{EmbeddingModel, MaskedEmbeddingInput, SegmentationModel
 use speakrs::pipeline::{DiarizationPipeline, RuntimeConfig, segmentation_step_seconds};
 use speakrs::ExecutionMode;
 
+pub mod audio;
 pub mod gender;
 use gender::{GenderModel, GenderVerdict};
 
