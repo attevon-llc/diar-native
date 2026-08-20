@@ -774,8 +774,9 @@ the fork: 0.890% vs 0.859% after the §7.7 fix), not an absolute-threshold one.
 ### 7.10 Deployment hardening — shared-volume ownership (permanent fix)
 
 `/scratch/opentranscribe` and `/tmp/transcription` are docker **named volumes** (not host binds;
-they surface under the NAS only because this host's docker data-root is `/mnt/nas/docker`, a
-local ext4 RAID). A named volume inherits its ownership from the image directory at creation —
+they surface under the NAS only because this host's docker data-root points at a local ext4
+RAID mount, not the default). A named volume inherits its ownership from the image directory
+at creation —
 and neither backend image reserved those paths, so every volume was created `root:root 0755`
 while the workers run as `appuser` (uid 1000). Consequence: `write_wav_to_shared_volume` failed
 with EACCES on every job and silently degraded to a re-decode in stage 2 — **and S-T2's premise
@@ -1492,7 +1493,7 @@ feature exactly. speakrs upstream already has full CoreML support
 (`ExecutionMode::CoreMl`/`CoreMlFast`, `src/inference/coreml.rs`,
 `scripts/native_coreml/convert_coreml.py`) — this wasn't new engine work, it was wiring +
 fixing two real gaps found only by actually building and running on real hardware (a Mac
-Studio on the local network, `superstudio@10.10.10.40`, Apple M2 Max):
+Studio on the operator's private network, Apple M2 Max):
 
 1. **Concurrency model incompatible.** speakrs cfgs `SegmentationModel`/`EmbeddingModel`'s
    `clone_shared` out under `feature = "coreml"` — CoreML models aren't ORT sessions and are

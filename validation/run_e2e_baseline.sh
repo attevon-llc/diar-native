@@ -16,9 +16,10 @@ if ! flock -n 9; then
   echo "another E2E leg is already running (/tmp/diar_e2e_baseline.lock) — refusing to start" >&2
   exit 1
 fi
-APP=/mnt/nvm/repos/transcribe-app
-PY=/mnt/nvm/repos/diar-native/venv/bin/python
-OUT=/mnt/nvm/repos/diar-native/results/e2e_baseline/$LABEL
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP="${TRANSCRIBE_APP_DIR:-/path/to/transcribe-app}"
+PY="$REPO_ROOT/venv/bin/python"
+OUT="$REPO_ROOT/results/e2e_baseline/$LABEL"
 mkdir -p "$OUT"
 
 # file_uuid:short_name — ordered shortest first so a failure surfaces cheaply

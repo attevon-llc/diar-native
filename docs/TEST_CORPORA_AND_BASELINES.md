@@ -14,9 +14,9 @@ Companions: `HANDOFF_T9A_SHARED_SESSIONS.md`, `HANDOFF_DIARIZATION_SPEED.md`,
 
 | corpus | audio | references | size |
 |---|---|---|---|
-| **AMI test-16** | `/mnt/nas/ai/datasets/diarization-boundary/ami_audio/<ID>.Mix-Headset.wav` (34 files present; the 16 scored are named by the refs) | `refs/ami/<ID>.rttm` + `<ID>.uem` (16) | 2.1 GB |
+| **AMI test-16** | `/path/to/datasets/diarization-boundary/ami_audio/<ID>.Mix-Headset.wav` (34 files present; the 16 scored are named by the refs) | `refs/ami/<ID>.rttm` + `<ID>.uem` (16) | 2.1 GB |
 | **Karpathy** (hand-labelled) | `transcribe-app/benchmark/diarization-boundary/karpathy/karpathy_kwSVtQ7dziU/` — `audio.wav` 3991 s, `karpathy_10m.wav` 600 s, `clip30.wav` 30 s | `reference.rttm` (committed), `reference.words.json`; fixed-name copy `refs/karpathy/karpathy.rttm` | 122 MB |
-| **VoxConverse dev** | `/mnt/nas/ai/datasets/diarization-boundary/voxconverse_audio/audio/<ID>.wav` (216) | `refs/voxconverse/<ID>.rttm` (216) | 2.2 GB |
+| **VoxConverse dev** | `/path/to/datasets/diarization-boundary/voxconverse_audio/audio/<ID>.wav` (216) | `refs/voxconverse/<ID>.rttm` (216) | 2.2 GB |
 
 Karpathy's `reference.rttm` uses speaker names with spaces ("Sarah Guo"), which breaks standard
 RTTM parsers — `refs/karpathy/` holds the fixed copy. AMI is scored **UEM-cropped**.

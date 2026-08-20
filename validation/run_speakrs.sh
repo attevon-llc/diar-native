@@ -6,6 +6,7 @@
 #
 # Usage: run_speakrs.sh <mode> <gpu|none> <out_dir> <runs> <label:path> [label:path ...]
 set -u
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE=$1; GPU=$2; OUT=$3; RUNS=$4; shift 4
 mkdir -p "$OUT"
 GPU_ARGS=()
@@ -18,7 +19,7 @@ for spec in "$@"; do
   for run in $(seq 0 $((RUNS - 1))); do
     start=$(date +%s.%N)
     docker run --rm "${GPU_ARGS[@]}" \
-      -v /mnt/nvm/repos/diar-native/models:/models:ro \
+      -v "$REPO_ROOT/models":/models:ro \
       -v "$dir":/audio:ro \
       diar-bench:latest diarize --mode "$MODE" --models-dir /models "/audio/$file" \
       > "$OUT/${label}_run${run}.rttm" 2>> "$OUT/${label}.log"

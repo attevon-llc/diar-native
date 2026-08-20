@@ -78,27 +78,27 @@ be Milestone 1 work; decision then weighs effort vs the Triton-BLS branch.
 ```bash
 # Engine A — AMI test-16 (GPU 2)
 docker run --rm --gpus '"device=2"' --entrypoint python \
-  -v /mnt/nvm/repos/diar-native:/work \
-  -v /mnt/nvm/repos/pyannote-audio-fork/src/pyannote/audio:/home/appuser/.local/lib/python3.13/site-packages/pyannote/audio:ro \
-  -v /mnt/nvm/repos/transcribe-app/models/huggingface:/home/appuser/.cache/huggingface:ro \
-  -v /mnt/nas/ai/datasets/diarization-boundary:/data:ro -e HF_HUB_OFFLINE=1 \
+  -v /path/to/diar-native:/work \
+  -v /path/to/pyannote-audio-fork/src/pyannote/audio:/home/appuser/.local/lib/python3.13/site-packages/pyannote/audio:ro \
+  -v /path/to/transcribe-app/models/huggingface:/home/appuser/.cache/huggingface:ro \
+  -v /path/to/datasets/diarization-boundary:/data:ro -e HF_HUB_OFFLINE=1 \
   opentranscribe-backend:latest /work/validation/run_fork_baseline.py \
   --out /work/results/rttm/fork_ami_test16 --label-mode first-dot --device cuda \
   /data/ami_audio/<MEETING>.Mix-Headset.wav ...
 
 # Engine B — same corpus (GPU 2)
 validation/run_speakrs.sh cuda 2 results/rttm/speakrs_ami_test16 1 \
-  <LABEL>:/mnt/nas/ai/datasets/diarization-boundary/ami_audio/<MEETING>.Mix-Headset.wav ...
+  <LABEL>:/path/to/datasets/diarization-boundary/ami_audio/<MEETING>.Mix-Headset.wav ...
 
 # Score any pair
-docker run --rm --entrypoint python -v /mnt/nvm/repos/diar-native:/work \
-  -v /mnt/nvm/repos/pyannote-audio-fork/src/pyannote/audio:/home/appuser/.local/lib/python3.13/site-packages/pyannote/audio:ro \
+docker run --rm --entrypoint python -v /path/to/diar-native:/work \
+  -v /path/to/pyannote-audio-fork/src/pyannote/audio:/home/appuser/.local/lib/python3.13/site-packages/pyannote/audio:ro \
   opentranscribe-backend:latest /work/validation/score_der.py \
   --ref-dir /work/refs/ami --hyp-dir /work/results/rttm/<TAG> --uem-dir /work/refs/ami --json-out /work/results/<TAG>_der.json
 
 # Model export (regenerate gitignored models/)
-docker run --rm --entrypoint bash -v /mnt/nvm/repos/diar-native:/work \
-  -v /mnt/nvm/repos/transcribe-app/models/huggingface:/home/appuser/.cache/huggingface:ro \
+docker run --rm --entrypoint bash -v /path/to/diar-native:/work \
+  -v /path/to/transcribe-app/models/huggingface:/home/appuser/.cache/huggingface:ro \
   -e HF_HUB_OFFLINE=1 -e TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 opentranscribe-backend:latest \
   -c "pip install -q --user onnxscript; python /work/vendor/speakrs/scripts/export_models.py /work/models"
 
@@ -107,12 +107,12 @@ docker build -f docker/Dockerfile.bench -t diar-bench:latest vendor/speakrs
 
 # Triton spike (GPU 1)
 docker run -d --name diar-triton-spike --gpus '"device=1"' -p 8610:8000 -p 8611:8001 -p 8612:8002 \
-  -v /mnt/nvm/repos/diar-native/triton/models:/models:ro nvcr.io/nvidia/tritonserver:26.06-py3 \
+  -v /path/to/diar-native/triton/models:/models:ro nvcr.io/nvidia/tritonserver:26.06-py3 \
   tritonserver --model-store=/models
 venv/bin/python3 validation/triton_bench.py localhost:8611
 ```
 
 Corpora locations: AMI + VoxConverse + Karpathy ground truth under
-`/mnt/nas/ai/datasets/diarization-boundary/`; duration-curve wavs under
+`/path/to/datasets/diarization-boundary/`; duration-curve wavs under
 `transcribe-app/benchmark/test_audio/`; frozen baselines under
 `transcribe-app/benchmark/results/rttm/baseline_a6000_*`.

@@ -45,7 +45,7 @@ curl -s localhost: (mapped port or exec) http://diar-native:8701/healthz  # → 
 ```
 
 Compose var defaults: `DIAR_NATIVE_GPU=0`, `DIAR_NATIVE_MODE=cuda`,
-`DIAR_NATIVE_MODELS_DIR=/mnt/nvm/repos/diar-native/models_folded`,
+`DIAR_NATIVE_MODELS_DIR=/path/to/diar-native/models_folded`,
 `DIAR_NATIVE_MAX_INFLIGHT=2`. Under the gpu-split profile, move the env/volume overlay from
 `celery-worker` to your diarize worker service name.
 

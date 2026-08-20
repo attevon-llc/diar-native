@@ -125,7 +125,7 @@ DER looks fine — DER is an aggregate and will hide a handful of corrupted chun
   `from_pretrained`.
 - **`RUST_MIN_STACK=16777216`** for the test harness (2 MiB default overflows).
 - **Build in the container**, not on the host: `target/` is root-owned from container writes.
-  `docker run --rm -v /mnt/nvm/repos/diar-native:/build -v /tmp/spk_target:/tmp/target -w /build
+  `docker run --rm -v /path/to/diar-native:/build -v /tmp/spk_target:/tmp/target -w /build
   -e CARGO_TARGET_DIR=/tmp/target diar-bench-builder:latest cargo test ...`
 - **After any vendored change**, regenerate `patches/0001-cuda-performance-patch-set.patch`
   (`cd vendor/speakrs && git diff > ../../patches/0001-...patch`) — T10 ships from it.

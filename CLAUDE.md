@@ -49,8 +49,8 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 - Host `cargo check` works for fast iteration (CARGO_TARGET_DIR to a /tmp dir).
 - `coreml` feature (Apple Silicon, native GPU accel via Metal/CoreML — NOT reachable through
   Docker, which has no Metal access on macOS regardless of image arch) builds only on macOS
-  (`objc2`/`objc2-core-ml` deps). Dev machine: Mac Studio `superstudio@10.10.10.40` on the
-  local network, already has cargo/uv/Homebrew/openblas set up; `~/repos/diar-native` there is
+  (`objc2`/`objc2-core-ml` deps). Dev machine: an Apple Silicon Mac on the operator's private
+  network, already has cargo/uv/Homebrew/openblas set up; `~/repos/diar-native` there is
   a manual `git archive | ssh ... tar -x` snapshot, not a git clone — re-sync by hand, no
   remote configured. `.mlmodelc` model artifacts are gated (same policy as ONNX), local-only
   on that machine at `vendor/speakrs/fixtures/models/`, produced via

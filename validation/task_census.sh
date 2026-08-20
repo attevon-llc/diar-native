@@ -14,7 +14,8 @@ UUID="${1:?usage: task_census.sh <file-uuid> [label]}"
 LABEL="${2:-census}"
 API=http://localhost:5174
 SETTLE=25          # seconds of quiet after user-visible completion for the tail to finish
-OUT=/mnt/nvm/repos/diar-native/results/task_census
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="$REPO_ROOT/results/task_census"
 mkdir -p "$OUT"
 
 WORKERS=(celery-worker celery-cpu-worker celery-nlp-worker celery-embedding-worker
