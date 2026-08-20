@@ -1258,6 +1258,47 @@ of the tree matched the patch hunk-for-hunk.
 image — needs operator action) + re-run of the §7.24 two-concurrent-file measurement, and a
 quiet-machine throughput leg.
 
+### 7.26 T11 TensorRT EP — measured, working, PARKED AS OPT-IN (accuracy is why)
+
+Wired per S-T11: `SPEAKRS_TRT=1` registers `[TensorRT, CUDA, CPU]` on the four fixed-shape GPU
+sessions (segmentation b1+b32, multimask b1+b32); fbank/tail untouched; fp32 only; engine +
+timing cache at `SPEAKRS_TRT_CACHE` (default `/tmp/diar-native/trt_cache`);
+`DiarEngine::load` warms all four sessions so the build cost lands before `/healthz`. Image
+ships TRT 10.16.1 cuda12.9 libs only with `--build-arg WITH_TENSORRT=1` (~1.5 GB); the ORT
+1.24.2 tarball's `libonnxruntime_providers_tensorrt.so` was present all along — it was
+`libnvinfer.so.10`/`libnvonnxparser.so.10` that were missing.
+
+**Speed (warm, GPU 2 / A6000 sm_86, one leg at a time):**
+
+| file | CUDA EP | TensorRT EP | speedup |
+|---|---|---|---|
+| ES2004a 36.4 min | 8.8 s | **5.9 s (177× RT)** | 1.48× |
+| Karpathy 66.5 min | 29.1 s | **21.4 s (187× RT)** | 1.36× |
+| 2.2h_7998s | 59-62 s | **45.1 s (178× RT)** | 1.33× |
+
+**Accuracy — the bit-parity gate FAILS as written, and the miss is honest:** TRT compiles
+different kernels, so logits shift at the last ulp and binarized boundaries move by ~one
+frame (clip30: one boundary 27.506 → 27.489 s). Within TRT, runs are byte-deterministic.
+DER across the full corpora:
+
+| corpus | CUDA EP (recorded) | TensorRT EP | delta |
+|---|---|---|---|
+| AMI-16 full | 13.101% | **13.131%** | +0.030 pp |
+| AMI-16 exclusive | 17.813% | **17.819%** | +0.006 pp (still beats fork 17.828) |
+| Karpathy full | 8.219% | **8.217%** | −0.002 pp |
+
+**Ops gates:** restart with populated cache = **6 s total** vs ~7 min first build (4 engines +
+timing cache, `sm86`-tagged files); empty cache dir → clean rebuild; `SPEAKRS_TRT=1` on an
+image WITHOUT the TRT libs → registration falls back and output is **byte-identical to the
+CUDA EP** (verified by diff).
+
+**Disposition (operator-confirmed):** parked as a measured option, DEFAULT OFF. The +0.03 pp
+AMI drift is tiny but the project's bar for silent engine changes is bit-identity, and since
+T2 the single-job speed is hidden inside transcription's window anyway. Turn it on
+(`SPEAKRS_TRT=1` + `WITH_TENSORRT=1` image) where diarization wall-time is user-visible: the
+4 GB laptop tier (sequential), very long files, or throughput-saturated servers — and note
+engines rebuild per GPU on first boot (cached thereafter).
+
 ### 7.26 Redaction PII detection parallelised — 3.5x, and the container bug underneath it
 
 Presidio's `analyze()` is CPU-bound spaCy NER plus a recognizer sweep, called **once per

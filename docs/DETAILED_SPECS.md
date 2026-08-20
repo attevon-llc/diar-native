@@ -105,6 +105,17 @@ unforced behavior bit-identical to current (feature is pure addition).
 
 ## S-T11: TensorRT EP inside ort (multimask + segmentation sessions)
 
+**IMPLEMENTED + MEASURED 2026-08-19 (RESULTS §7.26); PARKED AS OPT-IN, default off.**
+Corrections learned: (a) the ORT 1.24.2 tarball DOES ship the TRT provider — what's missing is
+`libnvinfer.so.10`/`libnvonnxparser.so.10` (now behind `--build-arg WITH_TENSORRT=1`, TRT
+10.16.1 cuda12.9 — the repo's cuda13 default candidate will not load); (b) the bit-parity gate
+below is unachievable in principle: TRT kernels shift logits at the last ulp and binarized
+boundaries move ~1 frame. Measured cost/benefit: 1.33-1.48× warm diarization speed; AMI-16
+full +0.030 pp, exclusive +0.006 pp, Karpathy −0.002 pp; runs byte-deterministic within TRT;
+cache-hit restart 6 s vs ~7 min build; libs-absent fallback byte-identical to CUDA EP. Runtime
+gate `SPEAKRS_TRT=1`, cache at `SPEAKRS_TRT_CACHE` (default `/tmp/diar-native/trt_cache` — the
+persistent handoff volume, NOT the ro models mount). Original spec follows:
+
 Config (ort rc.12): register providers in order [TensorRT, CUDA, CPU] on the target sessions:
 ```rust
 TensorRTExecutionProvider::default()
