@@ -218,3 +218,68 @@ re-validate on tip; our harness makes each re-run ~30 min.
 **Non-negotiables:** quiet-machine numbers only (RESULTS §4.11); never attach gated-model
 artifacts (community-1 derivatives) to public PRs — fixtures/models stay local; benchmarks
 reference our corpora by name, raw RTTMs available on request.
+
+---
+
+## Status at handoff (2026-08-19) — read this before executing the gameplan above
+
+T10 is being handed to the agent working `vendor/speakrs` directly, because T9a changed the
+tree the gameplan above assumes. Everything here is what that plan does **not** yet account for.
+
+### 1. PR-4 is no longer a proposal — it is built
+
+PR-4 is written above as *"issue first, design-heavy, before any code"*. **T9a implemented it**
+(RESULTS §7.25): all 13 ORT sessions became `Arc<Mutex<Session>>` (`SharedSession`,
+`vendor/speakrs/src/inference.rs`), locked for exactly one `run()` per inference call, with the
+model structs themselves becoming per-request scratch via `clone_shared()`. No speakrs method
+signatures changed and the pipeline code is untouched.
+
+This is the strongest thing in the queue and it should be **re-planned as a real PR, not an
+issue**. It arrives with gates already passed: 94/94 tests, byte-identical determinism, AMI-16
+full 13.101% / exclusive 17.813%, Karpathy full 8.219%, N=4-concurrent output identical to
+serial across three runs, and VRAM flat at ~one warm engine during 4 concurrent jobs.
+
+Note for the write-up: **the spec's original option 1 could not work** — per-model locks are
+held for the whole pipeline lifetime, so wrapping each model in its own mutex still serialises.
+Worth saying explicitly upstream; it is the non-obvious part of the design.
+
+### 2. PR-7 is missing from the execution plan
+
+PR-7 (exclusive diarization resolving overlaps by cluster index instead of activation) is
+documented in its own section above, but is **absent from the Step-1 branch table and from the
+Step-3 two-PR submission shape**. It should not be lost — it is a *correctness* fix, not a perf
+one, and correctness fixes merge easily and build maintainer trust.
+
+Recommendation: send it with **PR-A** (the multimask one-liner), or immediately after. Do not
+bury it inside the perf series, where it would be reviewed as an optimization.
+
+Evidence: the gap was **entirely confusion**, which is the signature of picking the wrong
+speaker rather than losing speech — AMI-16 exclusive DER 18.654% → **17.813%** with missed
+(14.375) and false-alarm (1.624) essentially unchanged, and confusion 2.655 → 1.814. The
+pyannote fork scores 17.828 on the same protocol, so the fix lands *at* the reference.
+
+### 3. Numbers in the handoff table that are stale
+
+`HANDOFF_T9A_SHARED_SESSIONS.md` §5 lists Karpathy exclusive **6.545%** — that is the
+**pre-§7.7-fix** figure (660 segments). The post-fix exclusive path produces 766 segments and
+scores **6.188%**. Use 6.188% in any upstream claim.
+
+### 4. Mechanical consequences of T9a on the plan above
+
+- **The patch set must be regenerated.** Step 1 splits branches out of
+  `patches/0001-cuda-performance-patch-set.patch`, which predates T9a. Regenerate from the
+  post-T9a tree (`cd vendor/speakrs && git diff > ../../patches/0001-...patch`) before splitting.
+- **PR-2 overlaps T9a's files.** `perf/fbank-session-pool` touches `session.rs`,
+  `load/sessions.rs`, `embedding.rs` — all rewritten by the shared-session work. Split PR-2
+  after regenerating, not before, or the hunks will not apply.
+- **Re-confirm isolated numbers on a quiet machine.** The figures in Step 2 (folded seg −7%,
+  batching+pool 3.1×, VBx/pdist 2.76×) were measured before T9a. T9a's own throughput gate came
+  back **1.51× on a machine at load average 19** and is explicitly marked RE-MEASURE. Do not
+  quote any throughput number upstream that was taken under that load — accuracy and
+  bit-identity results are unaffected, only timings.
+
+### 5. Unchanged and still true
+
+PR-1, PR-3, PR-5 (the three bug reports) and PR-6 are untouched by T9a. The Step-3 decision to
+consolidate into **two PRs** rather than a burst still holds and is still the right call for a
+single-maintainer project.
