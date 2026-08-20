@@ -31,8 +31,16 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cargo-registr
 
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
+# TensorRT runtime (T11, opt-in: --build-arg WITH_TENSORRT=1, adds ~1.5 GB).
+# libonnxruntime_providers_tensorrt.so from the ORT 1.24.2 tarball dlopens
+# libnvinfer/libnvonnxparser at registration. Pinned to the newest cuda12 build in NVIDIA's
+# repo — the cuda13 default candidate will not load against this 12.x runtime. TRT stays
+# inert unless SPEAKRS_TRT=1; without these libs registration falls back to the CUDA EP.
+ARG WITH_TENSORRT=0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl libcudnn9-cuda-12 libopenblas0 \
+    && if [ "$WITH_TENSORRT" = "1" ]; then apt-get install -y --no-install-recommends \
+    libnvinfer10=10.16.1.11-1+cuda12.9 libnvonnxparsers10=10.16.1.11-1+cuda12.9; fi \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/bin/diar-server /usr/local/bin/
 COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
