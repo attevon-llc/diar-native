@@ -138,6 +138,12 @@ impl DiarEngine {
     /// PLAN decision #4). Weights + arenas (the VRAM) load once; each handle carries
     /// only staging buffers (~130 MB host RAM), so N handles run N jobs concurrently
     /// without N × engine. Every inference call locks its session for exactly one run.
+    ///
+    /// Unavailable under `coreml`: speakrs cfg's `SegmentationModel`/`EmbeddingModel`'s own
+    /// `clone_shared` out for that backend (CoreML models aren't ORT sessions, and speakrs
+    /// documents them as single-thread-at-a-time). diar-server's `AppState::with_engine`
+    /// holds the engine mutex for the whole request under coreml instead of calling this.
+    #[cfg(not(feature = "coreml"))]
     pub fn clone_shared(&self) -> Result<Self> {
         Ok(Self {
             seg: self.seg.clone_shared(),

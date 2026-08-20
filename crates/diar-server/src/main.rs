@@ -26,11 +26,37 @@ struct AppState {
 }
 
 impl AppState {
-    fn request_handle(&self) -> anyhow::Result<DiarEngine> {
-        self.engine
+    /// Run `f` against the engine. Off coreml, this clones a cheap per-request handle and
+    /// releases the mutex immediately, so jobs run concurrently up to the admission
+    /// semaphore (T9a). speakrs cfg's `clone_shared` out under `coreml` — CoreML models
+    /// aren't wrapped in diar-native's `Arc<Mutex<Session>>` scheme, and speakrs' own
+    /// `SegmentationModel`/`EmbeddingModel` document themselves as single-thread-at-a-time
+    /// under coreml (`unsafe impl Send`, not `Sync`) — so this path holds the mutex for the
+    /// whole request instead. Correct, but serializes all coreml jobs; DIAR_MAX_INFLIGHT has
+    /// no effect in this mode.
+    #[cfg(not(feature = "coreml"))]
+    fn with_engine<R>(
+        &self,
+        f: impl FnOnce(&mut DiarEngine) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let mut handle = self
+            .engine
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone_shared()
+            .clone_shared()?;
+        f(&mut handle)
+    }
+
+    #[cfg(feature = "coreml")]
+    fn with_engine<R>(
+        &self,
+        f: impl FnOnce(&mut DiarEngine) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let mut guard = self
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut guard)
     }
 }
 
@@ -153,8 +179,7 @@ async fn diarize(
                     .map(|s| s.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "file".into());
-        let mut engine = state2.request_handle()?;
-        engine.diarize_with(&audio, &file_id, req.gender)
+        state2.with_engine(|engine| engine.diarize_with(&audio, &file_id, req.gender))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -189,8 +214,7 @@ async fn embed_window(
         } else {
             anyhow::bail!("embed_window requires wav_path or samples_b64");
         };
-        let mut engine = state2.request_handle()?;
-        engine.embed_window(&clip)
+        state2.with_engine(|engine| engine.embed_window(&clip))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
