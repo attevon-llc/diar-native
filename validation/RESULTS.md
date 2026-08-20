@@ -1258,6 +1258,24 @@ of the tree matched the patch hunk-for-hunk.
 image — needs operator action) + re-run of the §7.24 two-concurrent-file measurement, and a
 quiet-machine throughput leg.
 
+**QUIET-MACHINE ADDENDUM (same day, GPU 2 idle, top container 9% CPU):**
+
+- **The §7.24 signature is gone.** Two concurrent jobs, engine level: ES2004a solo 8.1 s →
+  10.8 s concurrent (**1.33×**, was 2.0×); EN2002b 13.5 s → 17.3 s (**1.28×**). Pair wall
+  17.3 s vs 21.6 s sequential. Spans no longer double — the lock wait is gone; what remains is
+  genuine GPU sharing.
+- **4-way throughput: 1.37×** (serial 51.2 s → concurrent 37.3 s), identity 4/4 again.
+  `SPEAKRS_FBANK_POOL=16` changes nothing (1.35×) — the ceiling is not the fbank pool and not
+  machine load; it is the serialized GPU fraction on one device (same-session batches queue on
+  the session mutex, and the ORT CUDA EP runs one stream per session regardless). The written
+  ≥2× bar is not reachable for 4 GPU-heavy jobs on one GPU by removing locks alone; the
+  unsafe-Sync escalation would not change this (kernels still queue on the session's stream).
+  Gate re-judged: **the defect §7.24 measured — serialization — is fixed; the 2× number was
+  mis-calibrated for this file mix.**
+- **T9a + TRT stack:** with `SPEAKRS_TRT=1` the same 4-file leg runs serial 43.6 s /
+  concurrent **31.4 s** (identity 4/4) — 1.63× total vs the CUDA-serial baseline, TRT's
+  engine-level speedup carrying through under concurrency.
+
 ### 7.26 T11 TensorRT EP — measured, working, PARKED AS OPT-IN (accuracy is why)
 
 Wired per S-T11: `SPEAKRS_TRT=1` registers `[TensorRT, CUDA, CPU]` on the four fixed-shape GPU
