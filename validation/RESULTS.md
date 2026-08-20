@@ -1464,3 +1464,22 @@ Gates on the Karpathy 10-min clip (GPU 2):
 App-pipeline impact: none by construction — the worker still ships 16 kHz WAVs, which
 bypass all of this. Known wart: diar-cli labels default to the file stem, so two inputs with
 the same stem overwrite each other's RTTMs (pre-existing; use --label).
+
+### 7.30 T9a CLOSED at app level — the flip is live and spans no longer double
+
+`diar-server:0.2.0` (T9a shared sessions + pipelined fbank∥GPU + arena knob + media ingest)
+built, tagged `latest`, and the compose `diar-native` service recreated onto it
+(operator-directed). E2E through the app: 358 s file reprocessed → completed in 8 s
+user-visible, diarize span 4.4 s inside a 7.2 s GPU stage; enrichment chain intact.
+
+§7.24 re-measurement (live stack, load avg ~8 — same-conditions comparison):
+
+| | §7.24 (engine mutex) | now (shared sessions) |
+|---|---|---|
+| Karpathy diarize span, solo → 2-concurrent | 37.5 s → **76.1 s (2.0×)** | 48.4 s → **62.6 s (1.29×)** |
+| seed 2.1 h span under 2-concurrent | **113.8 s** | **89.4 s** |
+| pair completion | 131 s | ~110 s |
+
+The doubling signature is gone; residual inflation is genuine GPU sharing. Solo spans are
+load-inflated tonight (the §7.24 solo was 37.5 s on a quieter box) — the within-run ratio is
+the controlled comparison. Karpathy solo user-visible reproduced the 54.4 s anchor (54.3 s).
