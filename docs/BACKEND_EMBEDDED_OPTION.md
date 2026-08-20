@@ -38,15 +38,41 @@ paths in the running `opentranscribe-backend:latest` image (`appuser`'s pip user
 ONNX Runtime's own libs (~375MB: 33MB binary + 342MB ORT `.so`s, unaffected by this change) can
 be `COPY`'d in from a multi-stage build referencing the published `davidamacey/diar-native`
 image, with `LD_LIBRARY_PATH` extended to those existing pip lib dirs — no `apt-get` CUDA install
-in `backend/Dockerfile.prod` at all.
+in `backend/Dockerfile.prod` at all. One small addition is still needed: `libopenblas0`
+(speakrs' CPU-side BLAS ops — not covered by any backend lib; 48MB via apt, see below).
 
-## Sketch (illustrative — not tested end-to-end, not applied)
+## Verified end-to-end (2026-08-20) — NOT applied to transcribe-app, tested in a scratch image
+
+Built a throwaway image (`FROM opentranscribe-backend:latest`, `apt-get install libopenblas0`,
+`COPY` in `diar-server` + ORT libs from `diar-server:0.2.0-slim` — same content as the published
+`davidamacey/diar-native:0.2.0`/`:latest`) in `/tmp`, no `transcribe-app` files touched or
+referenced as build context. Result:
+
+- `ldd libonnxruntime_providers_cuda.so` inside that image resolves all 6 CUDA/cuDNN libs
+  against the backend's own `/home/appuser/.local/.../nvidia/*/lib/` paths — confirmed, not
+  assumed.
+- `diar-server` starts, `/healthz` returns `ok`.
+- A real `/diarize` call against the shared test fixture: `segments`, `exclusive_segments`,
+  `num_speakers`, and `rttm` are **byte-identical** to the standalone image's output. Raw
+  embedding `centroids` differ starting at the 5th-6th decimal place (different physical cuBLAS
+  build — backend's pip 12.8.4.1 vs. the standalone image's apt-installed build — floating-point
+  matmul isn't bit-reproducible across BLAS builds). Verified against
+  `transcribe-app/backend/app/services/speaker_matching_service.py` +
+  `opensearch_service/clusters.py`: all centroid matching is OpenSearch kNN cosine similarity
+  against coarse thresholds (`SPEAKER_CONFIDENCE_HIGH=0.75`, `MEDIUM=0.50`,
+  `app/core/constants.py:168-170`) — this drift (~1e-5–1e-6 in cosine similarity) is ~100,000×
+  smaller than the gap between tiers. **Not a correctness concern**, nothing to fix.
+
+## Ready-to-apply Dockerfile snippet
 
 ```dockerfile
 # in backend/Dockerfile.prod, alongside the existing deno-bin stage:
 FROM davidamacey/diar-native:0.2.0 AS diar-native-bin
 
-# ...in the final backend stage, after the existing COPY --from=builder steps:
+# ...in the final backend stage, after the existing COPY --from=builder steps, before `USER appuser`:
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=diar-native-bin /usr/local/bin/diar-server /usr/local/bin/diar-server
 COPY --from=diar-native-bin /usr/local/lib/libonnxruntime*.so* /usr/local/lib/
 ENV LD_LIBRARY_PATH="/home/appuser/.local/lib/python3.13/site-packages/nvidia/cublas/lib:\
@@ -55,11 +81,16 @@ ENV LD_LIBRARY_PATH="/home/appuser/.local/lib/python3.13/site-packages/nvidia/cu
 /home/appuser/.local/lib/python3.13/site-packages/nvidia/cuda_runtime/lib:\
 /home/appuser/.local/lib/python3.13/site-packages/nvidia/cudnn/lib:\
 /usr/local/lib:${LD_LIBRARY_PATH}"
+USER appuser
 ```
+
+(The `python3.13` path segment must match whatever Python version `backend/Dockerfile.prod`'s
+final stage actually uses — confirm against its own `FROM python:3.13-slim-trixie` line at apply
+time in case it's since changed.)
 
 `diar-server` would then run as a **second process inside the backend container** (e.g. under
 `supervisord`/`tini -s`, or as a separate `celery-worker`-side subprocess call), not merged into
-the FastAPI/Celery process itself.
+the FastAPI/Celery process itself. **This part is NOT yet built or tested** — see below.
 
 ## Why this hasn't been recommended as the default — read before adopting
 
