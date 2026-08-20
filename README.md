@@ -186,6 +186,27 @@ for 4 GB**: that needs redaction off the GPU, the small model set, and sidecar l
 which trades away the transcribe∥diarize overlap. Apple Silicon is future work, after Linux is
 stable.
 
+## 6a. Publishing & consuming the image
+
+`diar-native` stays its own repo — different toolchain (Rust/CUDA) than the rest of
+OpenTranscribe (Python/Node), independent release cadence. The connection to `transcribe-app`
+is at the image layer only (`docker-compose.diar-native.yml`'s `diar-native` service), not git.
+
+- **Release images** publish to Docker Hub as `davidamacey/diar-native:<version>` (+ `:latest`),
+  after a `trivy image --severity HIGH,CRITICAL` scan comes back clean (or documented as
+  accepted). Built via `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`, then
+  `docker tag`/`docker push` to the registry name.
+- **Non-developers / prod:** pull the published tag — no Rust toolchain, no clone of this repo,
+  no local build. `transcribe-app`'s compose just needs its `diar-native` service's `image:` to
+  point at `davidamacey/diar-native:<version>` instead of the local-only `diar-server:latest`
+  (a one-line compose change, made there, not here — see Ground Rules below).
+- **Developers modifying diar-native:** clone this repo, build locally
+  (`docker build -f docker/Dockerfile.server -t diar-server:latest .` — matches the compose
+  file's current default image name/tag exactly, so it's picked up automatically), point a
+  local `transcribe-app` deployment at it (already the default — override
+  `DIAR_NATIVE_MODELS_DIR` / the image tag via `.env` if diverging from the registry version).
+  No push required for local iteration.
+
 ## 7. Ground rules
 
 - `transcribe-app` and `pyannote-audio-fork` are **read-only** (other agents work there; the fork

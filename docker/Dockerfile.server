@@ -31,7 +31,9 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cargo-registr
 
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# upgrade first: patches HIGH-severity CVEs in base-image packages (gnupg family,
+# openssl) that aren't touched by our own install list but ship preinstalled.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl libcudnn9-cuda-12 libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/bin/diar-server /usr/local/bin/
