@@ -1393,3 +1393,25 @@ That directly risks T3's progressive-presentation win, which S-T4's own gate for
 as `_DiarizerOnlyStage` does — so `gpu_total` never reached the job result at all. Revisit only
 if the GPU worker is ever moved to a prefork pool or a per-task GPU semaphore, where a held slot
 would mean something.
+
+### 7.27 ORT arena shrinkage — the 4 GB-tier lever exists, and it costs ~20% per job
+
+§7.23 ruled out conv workspace; the remaining hypothesis was per-run arena shrinkage on
+RunOptions (`memory.enable_memory_arena_shrinkage = gpu:0`). Implemented env-gated
+(`SPEAKRS_ARENA_SHRINK=1`) on the two big batched sessions (segmentation b32, multimask b32)
+— a few lines each; RunOptions carries the config entry per run.
+
+A/B on ES2004a (GPU 2, scratch server, T9a build, 2 runs each, idle floor sampled 15 s after
+the last job settles):
+
+| leg | warm wall | idle floor after load | idle floor after jobs | RTTM |
+|---|---|---|---|---|
+| baseline | 8.0-9.3 s | 934 MiB | **4 526 MiB** (arenas stay grown) | — |
+| shrink | 9.8-10.1 s | 930 MiB | **1 068 MiB** | **identical** |
+
+**The sidecar's between-job VRAM floor drops ~3.4 GB** — weights + fragments remain, arenas
+release. Cost: ~1.5-2 s per job on a 36-min file (~20%), paid as re-allocation on the next
+run's first batches. Disposition: env-gated, DEFAULT OFF — on 12 GB the floor does not bind
+(§7.23) and the speed cost is real. For the 4 GB laptop tier this is the knob that makes
+diarization and transcription co-residable between (not during) jobs. Refinement if that tier
+ships: shrink only on queue-drain instead of every run, restoring full speed under load.
