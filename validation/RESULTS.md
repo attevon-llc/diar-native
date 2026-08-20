@@ -1257,3 +1257,79 @@ of the tree matched the patch hunk-for-hunk.
 **Pending to close T9a:** app-level flip (compose recreate of `diar-native` onto the T9a
 image — needs operator action) + re-run of the §7.24 two-concurrent-file measurement, and a
 quiet-machine throughput leg.
+
+### 7.26 Redaction PII detection parallelised — 3.5x, and the container bug underneath it
+
+Presidio's `analyze()` is CPU-bound spaCy NER plus a recognizer sweep, called **once per
+transcript segment**: 1077 calls on file 5409 (2.9 h, 197 102 chars), 82 % of a redaction scan.
+
+Measured on that corpus, 3 runs each, `opentranscribe-celery-redaction`:
+
+| approach | median | vs sequential |
+|---|---|---|
+| sequential (in-process) | 14.85 s | 1.00x |
+| 4 threads | 20.6 s | **0.72x** |
+| 8 threads | 25.6 s | **0.58x** |
+| `BatchAnalyzerEngine` | 13.5 s | 1.10x |
+| **8 processes, persistent pool** | **1.97 s** | **7.53x** |
+
+Threads make it *worse* — spaCy holds the GIL for nearly all of the work, so adding threads adds
+only contention. A **per-scan** pool is also worse than sequential (21 s): each worker loads
+spaCy, which costs more than one scan saves. Only a **persistent** pool pays.
+
+`forkserver`, not `fork` or `spawn`: the worker runs `--pool=threads` with a live CUDA context,
+so forking clones one thread and can deadlock on a lock another thread holds; `spawn` re-imports
+`__main__`, which under the Celery CLI is the worker itself.
+
+End to end on `redaction.detect`, back to back: **21.4 / 19.4 s in-process → 7.2 / 5.6 / 5.3 s
+pooled (3.5x)**, with 1077 segments and 734 entities either way. Toxicity was measured separately
+and stays on CPU: 2.67 s CPU vs 2.62 s GPU is a 2 % gain for 1 346 MiB.
+
+**The bug underneath it.** The pool broke instantly in the worker while every isolated
+reproduction passed. The children died with no traceback in our logs because the failure was in
+their *own* stderr, which carries no log prefix — filtering the container log by timestamp hid
+exactly the lines that mattered:
+
+```
+File "multiprocessing/spawn.py", line 132, in _main
+ModuleNotFoundError: No module named 'app'
+```
+
+`/app` was importable only because the Celery CLI inserts cwd at runtime, **in-process**. The
+forkserver server is a freshly exec'd interpreter: it inherits the environment but not
+`sys.path`, so every child died unpickling the initializer, before any of our code ran. The
+isolated tests passed because each test script did its own `sys.path.insert(0, "/app")`.
+
+Fixed by declaring `ENV PYTHONPATH=/app` in `backend/Dockerfile.{prod,lite,blackwell}` — the
+image now states its import root instead of depending on how the process was launched. This was
+a latent defect for *any* subprocess in those images, not just this pool.
+
+### 7.27 T4 (finalize off the GPU worker) — the premise does not hold here; not worth doing
+
+Measured on Karpathy (66.5 min), one run, quiet machine, via a new
+`TIMING: engine stages` log (`pipelines.py`) plus the existing critical-path line:
+
+| stage | wall | share of the GPU task |
+|---|---|---|
+| `gpu_total` (transcribe ∥ diarize) | **53.93 s** | 93.1 % |
+| `finalize` (dedup + speaker assignment) | 2.18 s | 3.8 % |
+| critical path (DB save + notify) | 1.83 s | 3.2 % |
+| **CPU-only tail T4 would move** | **4.01 s** | **6.9 %** |
+
+S-T4 assumes that tail holds a scarce GPU slot. **It does not in this deployment.** The GPU
+worker runs `--pool=threads --concurrency=8`, and `ModelManager`'s `RLock` guards model
+*loading and caching* only (`model_manager.py:54,75,158,168`) — there is no semaphore
+serialising inference per task. A task doing pure-CPU finalize therefore occupies a thread slot,
+not the GPU; another file can already be on the GPU while file 1 finalizes, which is what the
+5-file concurrent leg (136 s for 3.38 h of audio, 89x RT aggregate) shows.
+
+Against ~0 gain, splitting costs a 0.6-2.5 MB `RawInferenceResult` round trip through Redis and
+moves the user-visible save behind the CPU queue — the same queue that wedged in §7.x / bug #22.
+That directly risks T3's progressive-presentation win, which S-T4's own gate forbids
+("user_perceived_duration unchanged or better").
+
+**Closed as a negative result, like T8.** Kept from the work: the stage-timing log, and a fix to
+`_FinalizeStage`, which was **discarding the upstream `stage_timings`** rather than merging them
+as `_DiarizerOnlyStage` does — so `gpu_total` never reached the job result at all. Revisit only
+if the GPU worker is ever moved to a prefork pool or a per-task GPU semaphore, where a held slot
+would mean something.

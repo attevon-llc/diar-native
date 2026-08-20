@@ -128,6 +128,15 @@ trt_cache volume absent.
 
 ## S-T4 addendum (finalize off GPU worker)
 
+> **CLOSED — negative result, measured 2026-08-19 (RESULTS §7.27).** The premise below is that
+> the CPU-only tail holds a scarce GPU slot. It does not: the GPU worker runs
+> `--pool=threads --concurrency=8`, and `ModelManager`'s lock guards model *loading*, not
+> inference, so nothing serialises per task. The tail is 4.01 s of a 57.9 s job (finalize 2.18 s
+> + save 1.83 s) and sits on a thread slot, not the GPU. Splitting would add a 0.6-2.5 MB Redis
+> hop and put the user-visible save behind the CPU queue, which S-T4's own gate forbids. Revisit
+> only under a prefork pool or a per-task GPU semaphore. Spec retained below for that case.
+
+
 The chain already has a 3-link structure; the fast path merely fuses stages (pipelines.py:
 273-274). Split = call `run_gpu_stage()` only in the GPU task, return `RawInferenceResult`
 (job.py:117 — 0.6-2.5 MB JSON via Redis for 4.7h: acceptable), and let `postprocess` (cpu)
