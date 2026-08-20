@@ -29,15 +29,24 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cargo-registr
     cargo build --release --features cuda -p diar-server && \
     mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
 
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+# -base, not -runtime: the -runtime tag's cuda-libraries-12-8 meta-package drags in
+# libcusolver/libcusparse/libnpp/libnvjpeg/libnvjitlink/cufile/opencl — none of which
+# libonnxruntime_providers_cuda.so links against (verified via ldd). Only install the
+# 3 CUDA math libs it actually needs (cudart ships in -base already) + cudnn. Cuts the
+# CUDA layer from ~3.4GB to ~1.6GB with identical runtime behavior.
+FROM nvidia/cuda:12.8.1-base-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
 # upgrade first: patches HIGH-severity CVEs in base-image packages (gnupg family,
 # openssl) that aren't touched by our own install list but ship preinstalled.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ca-certificates curl libcudnn9-cuda-12 libopenblas0 \
+    ca-certificates curl libcublas-12-8 libcufft-12-8 libcurand-12-8 libcudnn9-cuda-12 libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/bin/diar-server /usr/local/bin/
 COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
+# TensorRT EP was rolled back (RESULTS §7.26) and libnvinfer/libnvonnxparser are never
+# installed — this provider .so is dead weight that can't load; drop it rather than ship
+# a file that fails confusingly if anyone ever points DIAR_MODE at tensorrt.
+RUN rm -f /usr/local/lib/libonnxruntime_providers_tensorrt.so
 # ORT resolves provider libs relative to the executable dir AND cwd — cover both.
 RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ && \
     mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/
