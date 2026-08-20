@@ -20,8 +20,12 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
   represent production).
 - `crates/diar-core` — engine wrapper: `DiarEngine::clone_shared()` per-request handles,
   centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode.
+  `clone_shared` is `#[cfg(not(feature = "coreml"))]` — speakrs cfgs its own equivalent out
+  for CoreML (not ORT sessions, single-thread-at-a-time). `Mode` also has `CoreMl`/`CoreMlFast`.
 - `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz`;
-  `DIAR_MAX_INFLIGHT` bounds concurrency; requests run on cloned handles (no engine mutex).
+  `DIAR_MAX_INFLIGHT` bounds concurrency; requests run on cloned handles (no engine mutex) —
+  except under `coreml`, where `AppState::with_engine` holds the mutex for the whole request
+  instead (RESULTS §7.31; `DIAR_MAX_INFLIGHT` has no effect in that mode).
 - `crates/diar-cli` — bench runner; `RUST_LOG=speakrs=trace` for engine stage timings.
 - `upstream-work/` (gitignored) — upstream-tip clone with the 7 prepared PR branches;
   drafts in `docs/pr_drafts.md`. `origin` = `attevon-llc/speakrs` (our fork, branches pushed
@@ -40,8 +44,18 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
   `cargo test --release --no-default-features --features openblas-system,online`
   (94 tests; plain `--features openblas-system` fails — duplicate BLAS).
   Fixture models live only in `vendor/speakrs/fixtures/models/` — mount them into any clone.
-- Image: `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`
+- Image: `docker build -f docker/Dockerfile.server -t diar-server:<ver> .` (CUDA);
+  `docker/Dockerfile.server-cpu` for the multi-arch CPU-only variant (linux/amd64+arm64).
 - Host `cargo check` works for fast iteration (CARGO_TARGET_DIR to a /tmp dir).
+- `coreml` feature (Apple Silicon, native GPU accel via Metal/CoreML — NOT reachable through
+  Docker, which has no Metal access on macOS regardless of image arch) builds only on macOS
+  (`objc2`/`objc2-core-ml` deps). Dev machine: Mac Studio `superstudio@10.10.10.40` on the
+  local network, already has cargo/uv/Homebrew/openblas set up; `~/repos/diar-native` there is
+  a manual `git archive | ssh ... tar -x` snapshot, not a git clone — re-sync by hand, no
+  remote configured. `.mlmodelc` model artifacts are gated (same policy as ONNX), local-only
+  on that machine at `vendor/speakrs/fixtures/models/`, produced via
+  `scripts/native_coreml/convert_coreml.py` + `export_b64_seg.py` + `export_fbank_30s.py` (all
+  three needed — RESULTS §7.31 has the gaps found in the first two).
 
 ## Benchmarks & gates (docs/BENCHMARK_PROTOCOL.md is law)
 

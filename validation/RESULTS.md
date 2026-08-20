@@ -1483,3 +1483,70 @@ user-visible, diarize span 4.4 s inside a 7.2 s GPU stage; enrichment chain inta
 The doubling signature is gone; residual inflation is genuine GPU sharing. Solo spans are
 load-inflated tonight (the §7.24 solo was 37.5 s on a quieter box) — the within-run ratio is
 the controlled comparison. Karpathy solo user-visible reproduced the 54.4 s anchor (54.3 s).
+
+### 7.31 Native CoreML brought up end-to-end on Apple Silicon (M2 Max) — README's "future work" done
+
+`coreml` feature wired through diar-core/diar-server/diar-cli (`Mode::CoreMl`/`CoreMlFast`,
+`DIAR_MODE=coreml`/`coreml_fast`, `--mode coreml`/`coreml_fast`), mirroring the existing `cuda`
+feature exactly. speakrs upstream already has full CoreML support
+(`ExecutionMode::CoreMl`/`CoreMlFast`, `src/inference/coreml.rs`,
+`scripts/native_coreml/convert_coreml.py`) — this wasn't new engine work, it was wiring +
+fixing two real gaps found only by actually building and running on real hardware (a Mac
+Studio on the local network, `superstudio@10.10.10.40`, Apple M2 Max):
+
+1. **Concurrency model incompatible.** speakrs cfgs `SegmentationModel`/`EmbeddingModel`'s
+   `clone_shared` out under `feature = "coreml"` — CoreML models aren't ORT sessions and are
+   documented single-thread-at-a-time (`unsafe impl Send`, not `Sync`). T9a's shared-handle
+   pattern doesn't apply. Fixed: `AppState::with_engine` in diar-server is now feature-gated
+   — off coreml, unchanged (clone a handle, release the mutex, T9a concurrency intact); under
+   coreml, holds the mutex for the whole request (correct, but serializes jobs —
+   `DIAR_MAX_INFLIGHT` has no effect in this mode. Not measured whether this matters in
+   practice; nothing here stresses concurrent coreml load).
+2. **Two required model assets, neither produced by the documented conversion path.**
+   `segmentation-3.0-b64.mlmodelc` and `wespeaker-fbank-30s.mlmodelc` are unconditionally
+   required at load time. `convert_coreml.py` only exports segmentation batches 1-32
+   (`SEGMENTATION_BATCH_SIZES = tuple(range(1, 33))`); the b64 variant needs the separate
+   `export_b64_seg.py` (hardcodes a relative `fixtures/models` output path — easy to point at
+   the wrong directory, which is what happened the first time). The fbank-30s asset had no
+   script anywhere. Added `scripts/native_coreml/export_fbank_30s.py` (mirrors
+   `export_b64_seg.py`'s fixed-shape pattern, `[1, 1, 480_000]` matching the Rust side's
+   `CachedInputShape` exactly) — pushed to the fork (`attevon-llc/speakrs` PR #2, merged to
+   `master`), patch regenerated.
+
+**Model export:** ran `convert_coreml.py` + `export_b64_seg.py` + the new
+`export_fbank_30s.py` on the Mac Studio, fully offline (`HF_HUB_OFFLINE=1`, using the same
+locally-cached `pyannote/speaker-diarization-community-1` weights this project already uses
+for ONNX export — no HF token needed on the Mac). 57 `.mlmodelc` bundles, 1.7 GB. Ran
+speakrs' own `compare_coreml.py` validation: **parity checks passed**
+(`segmentation batch=1 max_abs=5.7e-06`, `batch=32 max_abs=9.5e-06`,
+`tail batch=1 max_abs=5.0e-03`, `batch=3 max_abs=1.0e-02`, `batch=32 max_abs=1.3e-02` — all
+within the script's own tolerances).
+
+**Correctness:** real `/diarize` call against `karpathy_10m.wav` (600 s) on the CoreML build:
+2 speakers, 93 segments vs. 92 on the CUDA reference for the same file — 99%+ match, the
+1-segment difference explained by the same class of harmless numeric drift as the
+backend-embedded-build cuBLAS comparison earlier this session (different backend, different
+float rounding near a boundary, not a bug). Speaker label swap (`SPEAKER_00`/`01`) is
+expected — cluster-label assignment order is arbitrary per run.
+
+**Speed — NOT a controlled comparison, flagged explicitly:** `karpathy_10m.wav` (600 s), warm
+runs (2nd/3rd call, discarding cold-load first call):
+
+| | run 2 | run 3 |
+|---|---|---|
+| CUDA (RTX A6000, **this machine loaded**: load avg 17.7, GPU already 39% utilized by something else) | 4.17 s | 4.53 s |
+| CoreML (Apple M2 Max, quiet) | 2.42 s | 2.46 s |
+
+CoreML came out ~1.7-1.9× faster in this run, but the CUDA side violates this project's own
+quiet-machine protocol (docs/BENCHMARK_PROTOCOL.md) outright — GPU already contended,
+load avg near 18. **Do not read this as "Apple Silicon beats an A6000."** It shows CoreML on
+an M2 Max is genuinely fast (same ballpark as CUDA under those conditions), not a validated
+relative ranking. Re-measure on a quiet CUDA box before quoting a real ratio anywhere.
+
+**Not verified:** actual GPU utilization % during CoreML inference (would need `powermetrics`,
+which needs sudo on the Mac Studio — not set up this session). What is verified: conversion
+was restricted to `compute_units=ct.ComputeUnit.CPU_AND_GPU` (ANE excluded) at export time,
+and inference definitely ran through CoreML's own code path (real `.mlmodelc` bundles loaded,
+not a silent ONNX/CPU fallback) — proven by successful load + correct output through the
+coreml-specific loaders. Only tested on this one machine (Apple M2 Max) — CoreML's compiled
+`mlprogram` format is chip-generation-portable by design, but M1/M3/M4 haven't been run.

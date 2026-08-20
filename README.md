@@ -34,7 +34,7 @@ It works well, but the Python stack has structural ceilings:
 - **GIL + single process**: clustering (VBx, scipy/numpy) is ~41% of wall time on a 4.7 h file and
   serializes with everything else; whisper and diarization fight for the same worker.
 - **Deployment weight**: ~9 GB image with full torch — painful for AWS instances and for the
-  open-source install matrix (CPU-only boxes, future Apple Silicon).
+  open-source install matrix (CPU-only boxes; Apple Silicon now has a native CoreML path, §6).
 - **No serving story**: models are locked inside a Celery worker process; no dynamic batching, no
   cross-job GPU sharing, no independent scaling of the 53%-of-GPU-time embedding stage.
 
@@ -183,8 +183,17 @@ The floor is warm-start caching, not a leak — it returns to the same figure af
 Note the sidecar's share is ~547 MiB of weights plus ~3.6 GB of ORT arena acquired on first
 inference and never released, so **T1's "laptops" claim above holds for 6-8 GB cards but not yet
 for 4 GB**: that needs redaction off the GPU, the small model set, and sidecar load/unload —
-which trades away the transcribe∥diarize overlap. Apple Silicon is future work, after Linux is
-stable.
+which trades away the transcribe∥diarize overlap.
+
+**Apple Silicon (native, CoreML):** brought up end-to-end 2026-08-20 on an Apple M2 Max —
+`coreml` feature (mirrors `cuda`), real GPU-accelerated inference (not Docker: Docker Desktop's
+Linux VM on macOS has no Metal/CoreML access regardless of image arch — this needs a native
+macOS binary), speakrs' own `compare_coreml.py` parity checks passed, real diarization output
+verified 99%+ match against CUDA on the same file. Speed is *not yet* validated under matched
+quiet-machine conditions (RESULTS §7.31 has the honest caveat — CoreML looked competitive with
+CUDA in an apples-to-oranges quick check, but the CUDA side was on a contended machine). Two
+gaps in speakrs' own conversion tooling found and fixed along the way (missing
+`export_fbank_30s.py`, pushed to the fork) — full writeup in RESULTS §7.31.
 
 ## 6a. Publishing & consuming the image
 
