@@ -1,17 +1,24 @@
 # diar-native — Fast, Deployable Speaker Diarization for OpenTranscribe
 
-Native (Rust/ONNX) speaker diarization engine evaluation and (pending validation) implementation,
-targeting the **pyannote `speaker-diarization-community-1`** pipeline that OpenTranscribe runs in
-production — at equal accuracy, higher speed, lower deployment weight, and with a clean path to
-**Triton Inference Server** and **AWS GPU** serving.
+Native (Rust/ONNX) speaker diarization engine for OpenTranscribe, built on a vendored,
+heavily-patched [`speakrs`](https://github.com/avencera/speakrs) — matching the **pyannote
+`speaker-diarization-community-1`** pipeline's accuracy at a fraction of its wall time and
+deployment weight, with a clean path to **Triton Inference Server** and **AWS GPU** serving.
 
-> **Status: Phase B validation nearly complete — provisional GO on speakrs adoption.**
-> Start here, then: [`validation/REPORT.md`](validation/REPORT.md) (narrative: what was done,
-> found, and decided) · [`PLAN.md`](PLAN.md) (roadmap + locked decisions) ·
-> [`validation/TESTPLAN.md`](validation/TESTPLAN.md) (test matrix + gates) ·
-> [`validation/RESULTS.md`](validation/RESULTS.md) (every measurement, append-only) ·
-> [`docs/UPSTREAM_PRS.md`](docs/UPSTREAM_PRS.md) (speakrs contribution plan, diffs in
-> [`patches/`](patches/)). Nothing here modifies the production repos.
+> **Status: SHIPPED — `diar-server:0.2.0` runs live in the OpenTranscribe stack (2026-08-20).**
+> Accuracy holds the recorded gates exactly (AMI-16 full **13.101%** / exclusive **17.813%**,
+> Karpathy **8.219%**, VoxConverse **4.847%** — beats the production fork). Warm engine speed:
+> Karpathy 66.5 min diarized in **21.6 s (184× RT)**; ES2004a 36 min in **6.6 s**. Concurrent
+> requests share one engine's VRAM (T9a shared sessions — spans no longer double under load),
+> fbank runs pipelined against the GPU, and the sidecar ingests original media (mp3/m4a/flac/
+> any-rate wav) directly. Upload→transcript on the reference file: 108.4 s (Python) → **54.4 s**.
+>
+> Read next: [`PLAN.md`](PLAN.md) (roadmap + locked decisions) ·
+> [`validation/RESULTS.md`](validation/RESULTS.md) (every measurement, append-only — §7.25-7.30
+> are the latest) · [`docs/TEST_CORPORA_AND_BASELINES.md`](docs/TEST_CORPORA_AND_BASELINES.md)
+> (every number to beat) · [`docs/UPSTREAM_PRS.md`](docs/UPSTREAM_PRS.md) +
+> [`docs/pr_drafts.md`](docs/pr_drafts.md) (speakrs contribution queue — branches prepared in
+> `upstream-work/`, submission pending approval).
 
 ---
 
@@ -126,27 +133,37 @@ diar-native/
 │   ├── INSTALL_NATIVE.md      ← the flip procedure into OpenTranscribe
 │   ├── E2E_PIPELINE_MAP.md    ← app pipeline anchors + ranked levers L1-L10
 │   └── UPSTREAM_PRS.md        ← the speakrs contribution queue (incl. PR-7 exclusive fix)
-├── docker/Dockerfile.bench    ← self-contained speakrs CUDA build (xtask diarize CLI)
+├── crates/
+│   ├── diar-core/             ← speakrs wrapper: shared-session engine handles (clone_shared),
+│   │                            centroids, embed_window, exclusive output, gender, media decode
+│   ├── diar-server/           ← the T1 sidecar: /diarize /embed_window /healthz (axum);
+│   │                            per-request engine handles — jobs run concurrently
+│   └── diar-cli/              ← bench/ops runner (RTTM+JSON out, engine traces via RUST_LOG)
+├── docker/
+│   ├── Dockerfile.server      ← production image (diar-server:0.2.0; ORT 1.24.2 GPU libs)
+│   └── Dockerfile.bench       ← self-contained speakrs CUDA build (xtask diarize CLI)
+├── patches/0001-…patch        ← THE vendored speakrs diff (regenerate after any vendor edit)
+├── upstream-work/             ← [gitignored] upstream-tip clone holding the 7 prepared PR
+│                                branches (see docs/pr_drafts.md); nothing pushed
 ├── triton/models/             ← Triton spike model repo (config.pbtxt per model)
 ├── refs/                      ← staged references (AMI test RTTM+UEM, Karpathy fixed RTTM)
-├── models/                    ← [gitignored] self-exported community-1 ONNX + PLDA (gated weights)
-├── vendor/speakrs/            ← [gitignored] upstream clone @ pin (re-clone to reproduce)
+├── models*/                   ← [gitignored] self-exported community-1 ONNX + PLDA (gated weights)
+│                                models_folded/=fast set (default), models_small/=laptop set
+├── vendor/speakrs/            ← upstream clone @ pin b0756b1 + our working-tree patch set
 └── results/                   ← RTTMs, timing JSONL, DER JSONs per run tag
 ```
 
-Planned (post-validation, C-pass path): `crates/diar-core` (speakrs wrapper: centroids,
-`embed_window`, speaker-count constraints, dual outputs), `crates/diar-server` (axum sidecar:
-`/diarize`, `/embed_window`, `/healthz`), `crates/diar-ffi` (C ABI for Triton custom backend),
-`crates/diar-cli`. Integration contract with OpenTranscribe (per its `SpeakerDiarizer`):
-segments + exclusive segments + per-speaker L2-normalized 256-d centroids (OpenSearch kNN) +
-ad-hoc window embedding (boundary recheck) + min/max/num-speaker constraints.
+Integration contract with OpenTranscribe (per its `SpeakerDiarizer`), all implemented:
+segments + exclusive segments + per-speaker un-normalized 256-d centroids (OpenSearch kNN
+normalizes) + ad-hoc window embedding (boundary recheck) + optional per-speaker gender.
+Still open: min/max/num-speaker constraints (T9b — forced counts currently warn + auto-count).
 
 ## 6. Deployment tiers (product decision, 2026-08-19)
 
 | tier | target | design |
 |---|---|---|
-| **T1 — embedded/sidecar (DEFAULT, open source)** | laptops, small computers, single-GPU boxes | speakrs core + our patch set (folded seg, multimask-batching fix, fbank pool), **shared-weights concurrency**: one model set (Arc-shared ORT sessions — thread-safe `run()`, weights loaded once) + per-request scratch buffers + job queue, mirroring OpenTranscribe's Celery shared-weights pattern. CPU-only works (ORT CPU EP, ≈ eager-torch parity measured). No Triton, minimal RAM. |
-| **T2 — Triton (opt-in, larger home servers + AWS)** | multi-user / multi-job servers | tritonserver + TRT engines (fp32), dynamic batching across concurrent jobs (measured 2.14× throughput at 8 clients on one weight copy), `diar-ffi` custom backend or sidecar-calls-Triton topology. Higher RAM/system footprint — that's why it's opt-in, not default. |
+| **T1 — embedded/sidecar (DEFAULT, open source — SHIPPED as `diar-server:0.2.0`)** | laptops, small computers, single-GPU boxes | speakrs core + our patch set (folded seg, multimask-batching fix, fbank pool, VBx vectorization, exclusive-overlap fix, **shared sessions**, **pipelined fbank∥GPU**): one model set (Arc-shared ORT sessions, weights + arenas loaded once) + per-request scratch handles — concurrent jobs at one engine's VRAM, verified output-identical to serial. Ingests original media directly (symphonia + FFT resample). CPU-only works (ORT CPU EP, ≈ eager-torch parity measured). `SPEAKRS_ARENA_SHRINK=1` drops the between-job VRAM floor 4.5 GB → 1.1 GB for small cards (~20% per-job cost). No Triton, minimal RAM. |
+| **T2 — Triton (opt-in, larger home servers + AWS)** | multi-user / multi-job servers | tritonserver + TRT engines (fp32), dynamic batching across concurrent jobs (measured 2.14× throughput at 8 clients on one weight copy), `diar-ffi` custom backend or sidecar-calls-Triton topology. Higher RAM/system footprint — that's why it's opt-in, not default. Note: an in-`ort` TensorRT EP for T1 was implemented, measured (1.33-1.48× at +0.03 pp AMI DER) and **rolled back** — the compatibility surface wasn't worth speed that hides behind transcription (RESULTS §7.26 is the recipe if this changes). |
 
 The Python fork path remains the universal fallback behind a config flag in both tiers.
 
