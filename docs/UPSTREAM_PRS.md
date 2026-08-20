@@ -315,3 +315,19 @@ now fixed) with the full current production diff applied as a real commit for an
 diar-native to check out directly, no manual patch-apply needed. `upstream-work/`'s `origin`
 now points at the fork; `upstream` stays `avencera/speakrs`. Opening the intro issue and PRs
 against avencera/speakrs is still gated on explicit operator approval — not done yet.
+
+**Update 2026-08-20 (cont'd) — fork's `master` is now the canonical "what we run" branch.**
+Opened and merged (real merge commit, not squash) attevon-llc/speakrs PR #1:
+`attevon/production-0.2.0` → `master` (725cc4d). This only touches our own fork, not
+avencera/speakrs. Verified: fork `master`'s tree is byte-identical to the local
+`vendor/speakrs` working tree (`git diff attevon/production-0.2.0 origin/master` empty);
+a completely fresh, independent clone of fork `master` passes the full 94-test speakrs suite
+inside `diar-bench-builder` (74 unit + 5 integration [1 intentionally-ignored online test] +
+8 queued + 7 doctests, all green). `scripts/bootstrap_vendor_speakrs.sh` now reproduces
+`vendor/speakrs` from this pinned fork commit — tested end-to-end in an isolated scratch dir,
+output byte-identical to the real `vendor/speakrs`. The 7 individual PR-prep branches were
+deliberately left unmerged into `master` (they're trimmed subsets for clean upstream review,
+not full production — merging them would misrepresent both). Did not do a full
+`docker build -f docker/Dockerfile.server` re-run since it only `COPY`s `vendor/speakrs/` as
+already-proven-identical content — the currently-live `diar-server:0.2.0` image already is,
+byte-for-byte, a build of what's now on fork `master`.

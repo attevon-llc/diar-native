@@ -153,9 +153,11 @@ diar-native/
 ├── models*/                   ← [gitignored] self-exported community-1 ONNX + PLDA (gated weights)
 │                                models_folded/=fast set (default), models_small/=laptop set
 ├── vendor/speakrs/            ← upstream clone @ pin b0756b1 + our working-tree patch set
-│                                (reproduce: clone attevon-llc/speakrs, checkout
-│                                attevon/production-0.2.0 for the patch pre-applied as commits,
-│                                or checkout b0756b1 + `git apply patches/0001-…patch`)
+│                                (reproduce: scripts/bootstrap_vendor_speakrs.sh — clones our
+│                                fork attevon-llc/speakrs pinned to the master commit matching
+│                                live diar-server:0.2.0, verified byte-identical + 94/94 tests)
+├── scripts/bootstrap_vendor_speakrs.sh  ← populates vendor/speakrs from our fork at a pinned
+│                                commit (idempotent; re-run to refresh)
 └── results/                   ← RTTMs, timing JSONL, DER JSONs per run tag
 ```
 

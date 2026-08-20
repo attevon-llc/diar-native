@@ -11,10 +11,13 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
   diff. After ANY vendored edit: `cd vendor/speakrs && git diff HEAD > ../../patches/0001-cuda-performance-patch-set.patch`
   (use `git diff HEAD`, not bare `git diff` — staged changes are otherwise silently dropped).
   Never commit inside the vendored repo (`vendor/` is fully gitignored; not a submodule).
-  Reproduce elsewhere: `git clone https://github.com/attevon-llc/speakrs.git` (our fork,
-  Apache-2.0 unchanged) and either checkout `attevon/production-0.2.0` (patch pre-applied as
-  a real commit, matches live `diar-server:0.2.0`) or checkout `b0756b1` and apply
-  `patches/0001-...patch` by hand. `avencera/speakrs` remains the canonical upstream for PRs.
+  Reproduce elsewhere: `scripts/bootstrap_vendor_speakrs.sh` clones our fork
+  (`attevon-llc/speakrs`, Apache-2.0 unchanged) pinned at the commit on `master` matching
+  live `diar-server:0.2.0` (verified byte-identical to the vendored tree; 94/94 speakrs tests
+  pass from a clean clone — 2026-08-20). `avencera/speakrs` remains the canonical upstream for
+  PRs; fork's `master` is now the mergeable "what we run" branch, kept separate from the 7
+  PR-prep branches (which are trimmed subsets tailored for clean upstream review, not meant to
+  represent production).
 - `crates/diar-core` — engine wrapper: `DiarEngine::clone_shared()` per-request handles,
   centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode.
 - `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz`;
