@@ -1,7 +1,9 @@
 # diar-native — Fast, Deployable Speaker Diarization for OpenTranscribe
 
 Native (Rust/ONNX) speaker diarization engine for OpenTranscribe, built on a vendored,
-heavily-patched [`speakrs`](https://github.com/avencera/speakrs) — matching the **pyannote
+heavily-patched [`speakrs`](https://github.com/avencera/speakrs) (upstream) —
+mirrored at [`attevon-llc/speakrs`](https://github.com/attevon-llc/speakrs) (our fork, Apache-2.0
+license unchanged) — matching the **pyannote
 `speaker-diarization-community-1`** pipeline's accuracy at a fraction of its wall time and
 deployment weight, with a clean path to **Triton Inference Server** and **AWS GPU** serving.
 
@@ -144,12 +146,16 @@ diar-native/
 │   └── Dockerfile.bench       ← self-contained speakrs CUDA build (xtask diarize CLI)
 ├── patches/0001-…patch        ← THE vendored speakrs diff (regenerate after any vendor edit)
 ├── upstream-work/             ← [gitignored] upstream-tip clone holding the 7 prepared PR
-│                                branches (see docs/pr_drafts.md); nothing pushed
+│                                branches (see docs/pr_drafts.md); pushed to attevon-llc/speakrs,
+│                                not yet opened as PRs against avencera/speakrs
 ├── triton/models/             ← Triton spike model repo (config.pbtxt per model)
 ├── refs/                      ← staged references (AMI test RTTM+UEM, Karpathy fixed RTTM)
 ├── models*/                   ← [gitignored] self-exported community-1 ONNX + PLDA (gated weights)
 │                                models_folded/=fast set (default), models_small/=laptop set
 ├── vendor/speakrs/            ← upstream clone @ pin b0756b1 + our working-tree patch set
+│                                (reproduce: clone attevon-llc/speakrs, checkout
+│                                attevon/production-0.2.0 for the patch pre-applied as commits,
+│                                or checkout b0756b1 + `git apply patches/0001-…patch`)
 └── results/                   ← RTTMs, timing JSONL, DER JSONs per run tag
 ```
 

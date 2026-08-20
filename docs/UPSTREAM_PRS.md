@@ -304,4 +304,14 @@ All branches compile warning-clean and pass the full 94-test suite in isolation
 
 Final PR/issue text: `docs/pr_drafts.md`. Remaining before submission: per-branch isolated
 E2E speed re-confirmation on a quiet machine (accuracy/bit-identity claims already verified),
-then operator approval to fork + push + open the intro issue.
+then operator approval to open the intro issue + PRs against avencera/speakrs.
+
+**Update 2026-08-20 — fork created, branches pushed, PRs still held.**
+Forked to [`attevon-llc/speakrs`](https://github.com/attevon-llc/speakrs) (public, Apache-2.0
+license carried over unchanged). All 7 branches above pushed there, plus a consolidated
+`attevon/production-0.2.0` branch (patch regenerated from the current `vendor/speakrs` tree —
+the previously-committed `patches/0001-...patch` was stale, missing 18 of 19 changed files;
+now fixed) with the full current production diff applied as a real commit for anyone building
+diar-native to check out directly, no manual patch-apply needed. `upstream-work/`'s `origin`
+now points at the fork; `upstream` stays `avencera/speakrs`. Opening the intro issue and PRs
+against avencera/speakrs is still gated on explicit operator approval — not done yet.

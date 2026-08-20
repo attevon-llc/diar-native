@@ -8,15 +8,22 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 ## Layout
 
 - `vendor/speakrs/` — upstream clone pinned at `b0756b1` + our patches as the WORKING TREE
-  diff. After ANY vendored edit: `cd vendor/speakrs && git diff > ../../patches/0001-cuda-performance-patch-set.patch`.
-  Never commit inside the vendored repo.
+  diff. After ANY vendored edit: `cd vendor/speakrs && git diff HEAD > ../../patches/0001-cuda-performance-patch-set.patch`
+  (use `git diff HEAD`, not bare `git diff` — staged changes are otherwise silently dropped).
+  Never commit inside the vendored repo (`vendor/` is fully gitignored; not a submodule).
+  Reproduce elsewhere: `git clone https://github.com/attevon-llc/speakrs.git` (our fork,
+  Apache-2.0 unchanged) and either checkout `attevon/production-0.2.0` (patch pre-applied as
+  a real commit, matches live `diar-server:0.2.0`) or checkout `b0756b1` and apply
+  `patches/0001-...patch` by hand. `avencera/speakrs` remains the canonical upstream for PRs.
 - `crates/diar-core` — engine wrapper: `DiarEngine::clone_shared()` per-request handles,
   centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode.
 - `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz`;
   `DIAR_MAX_INFLIGHT` bounds concurrency; requests run on cloned handles (no engine mutex).
 - `crates/diar-cli` — bench runner; `RUST_LOG=speakrs=trace` for engine stage timings.
 - `upstream-work/` (gitignored) — upstream-tip clone with the 7 prepared PR branches;
-  drafts in `docs/pr_drafts.md`. NO pushes without operator approval.
+  drafts in `docs/pr_drafts.md`. `origin` = `attevon-llc/speakrs` (our fork, branches pushed
+  2026-08-20), `upstream` = `avencera/speakrs`. Opening PRs/issues against avencera/speakrs
+  still needs explicit operator approval — nothing has been opened there.
 - `models_folded/` = fast model set (default), `models_small/` = laptop set — gitignored,
   gated community-1 derivatives, never commit or attach to public PRs.
 

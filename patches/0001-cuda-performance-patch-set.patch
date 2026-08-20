@@ -1,3 +1,1272 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 9578705..a87a6e0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -888,6 +888,12 @@ version = "0.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+ 
++[[package]]
++name = "hermit-abi"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
++
+ [[package]]
+ name = "hf-hub"
+ version = "0.5.0"
+@@ -1376,7 +1382,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
+ dependencies = [
+  "autocfg",
++ "num_cpus",
++ "once_cell",
+  "rawpointer",
++ "thread-tree",
+ ]
+ 
+ [[package]]
+@@ -1540,6 +1549,16 @@ dependencies = [
+  "autocfg",
+ ]
+ 
++[[package]]
++name = "num_cpus"
++version = "1.17.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
++dependencies = [
++ "hermit-abi",
++ "libc",
++]
++
+ [[package]]
+ name = "objc2"
+ version = "0.6.4"
+@@ -2582,6 +2601,15 @@ dependencies = [
+  "syn",
+ ]
+ 
++[[package]]
++name = "thread-tree"
++version = "0.3.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ffbd370cb847953a25954d9f63e14824a36113f8c72eecf6eccef5dc4b45d630"
++dependencies = [
++ "crossbeam-channel",
++]
++
+ [[package]]
+ name = "thread_local"
+ version = "1.1.9"
+diff --git a/Cargo.toml b/Cargo.toml
+index 46c765f..1ae14f9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -40,7 +40,7 @@ hf-hub = { version = "0.5", optional = true, default-features = false }
+ 
+ # math
+ kodama = "0.3.0"
+-ndarray = "0.17.2"
++ndarray = { version = "0.17.2", features = ["matrixmultiply-threading"] }
+ ndarray-linalg-mkl = { package = "ndarray-linalg", version = "0.18.1", features = ["intel-mkl-static"], optional = true }
+ ndarray-linalg-static = { package = "ndarray-linalg", version = "0.18.1", features = ["openblas-static"], optional = true }
+ ndarray-linalg-system = { package = "ndarray-linalg", version = "0.18.1", features = ["openblas-system"], optional = true }
+diff --git a/src/clustering/ahc.rs b/src/clustering/ahc.rs
+index 007ffb3..77a5f31 100644
+--- a/src/clustering/ahc.rs
++++ b/src/clustering/ahc.rs
+@@ -26,30 +26,83 @@ pub fn cluster(embeddings: &ArrayView2<f32>, config: AhcConfig) -> Vec<usize> {
+     }
+ 
+     let normalized = l2_normalize_rows(embeddings);
++    let t0 = std::time::Instant::now();
+     let mut condensed = condensed_euclidean(&normalized);
++    let pdist_ms = t0.elapsed().as_millis();
++    let t1 = std::time::Instant::now();
+     let dendrogram = linkage(&mut condensed, observations, Method::Centroid);
+-    flat_clusters(observations, dendrogram.steps(), config.threshold)
++    let linkage_ms = t1.elapsed().as_millis();
++    let t2 = std::time::Instant::now();
++    let labels = flat_clusters(observations, dendrogram.steps(), config.threshold);
++    tracing::debug!(
++        observations,
++        pdist_ms,
++        linkage_ms,
++        flat_ms = t2.elapsed().as_millis(),
++        "AHC stage timing"
++    );
++    labels
+ }
+ 
+ fn condensed_euclidean(embeddings: &Array2<f32>) -> Vec<f32> {
++    // diar-native patch: blocked Gram-matrix formulation with scoped threads.
++    // The original per-pair scalar loop cost 64.5 s at N=21k; dist^2 = |a|^2 + |b|^2 - 2ab
++    // via matmul blocks is ~20x faster and each block writes a disjoint contiguous
++    // range of the condensed vector, so blocks parallelize without locks.
+     let observations = embeddings.nrows();
+-    let mut condensed = Vec::with_capacity(observations * (observations - 1) / 2);
+-    for row in 0..observations.saturating_sub(1) {
+-        for col in row + 1..observations {
+-            let lhs = embeddings.row(row);
+-            let rhs = embeddings.row(col);
+-            let distance = lhs
+-                .iter()
+-                .zip(rhs.iter())
+-                .map(|(left, right)| {
+-                    let delta = left - right;
+-                    delta * delta
+-                })
+-                .sum::<f32>()
+-                .sqrt();
+-            condensed.push(distance);
++    if observations < 2 {
++        return Vec::new();
++    }
++    let total = observations * (observations - 1) / 2;
++    let mut condensed = vec![0f32; total];
++    let sq_norms: Vec<f32> = embeddings
++        .rows()
++        .into_iter()
++        .map(|row| row.dot(&row))
++        .collect();
++
++    const BLOCK: usize = 1024;
++    // start offset of row i's segment in the condensed vector:
++    // sum_{r<i}(n-1-r) = i*(n-1) - i*(i-1)/2
++    let seg_start = |i: usize| i * (observations - 1) - i * i.saturating_sub(1) / 2;
++
++    // hand each block its contiguous slice
++    let mut blocks: Vec<(usize, usize, &mut [f32])> = Vec::new();
++    {
++        let mut rest: &mut [f32] = &mut condensed;
++        let mut consumed = 0usize;
++        let mut bi = 0usize;
++        while bi < observations.saturating_sub(1) {
++            let bi_end = (bi + BLOCK).min(observations - 1);
++            let end_offset = seg_start(bi_end);
++            let (head, tail) = rest.split_at_mut(end_offset - consumed);
++            blocks.push((bi, bi_end, head));
++            consumed = end_offset;
++            rest = tail;
++            bi = bi_end;
+         }
+     }
++
++    std::thread::scope(|scope| {
++        for (bi, bi_end, slice) in blocks {
++            let emb = &embeddings;
++            let norms = &sq_norms;
++            scope.spawn(move || {
++                let a = emb.slice(ndarray::s![bi..bi_end, ..]);
++                let b = emb.slice(ndarray::s![bi.., ..]);
++                let gram = a.dot(&b.t()); // (bi_end-bi) x (observations-bi)
++                let mut offset = 0usize;
++                for (local, i) in (bi..bi_end).enumerate() {
++                    for j in (i + 1)..observations {
++                        let dot = gram[[local, j - bi]];
++                        let d2 = (norms[i] + norms[j] - 2.0 * dot).max(0.0);
++                        slice[offset] = d2.sqrt();
++                        offset += 1;
++                    }
++                }
++            });
++        }
++    });
+     condensed
+ }
+ 
+diff --git a/src/clustering/vbx.rs b/src/clustering/vbx.rs
+index 100b53a..1933960 100644
+--- a/src/clustering/vbx.rs
++++ b/src/clustering/vbx.rs
+@@ -76,65 +76,59 @@ pub fn vbx(
+         // m-step: compute speaker models
+         // invL[k,d] = 1.0 / (1 + Fa/Fb * N_k * Phi[d])
+         // alpha[k,d] = Fa/Fb * invL[k,d] * sum_t(gamma[t,k] * rho[t,d])
++        // diar-native patch: vectorized — the original per-element loops cost
++        // O(N*K*D) scalar work per iteration (305 s at N=21k, K=1.9k, D=128).
+         let n_k: Array1<f64> = gamma.sum_axis(Axis(0));
+ 
+-        let mut inv_l = Array2::zeros((n_speakers, dim));
+-        let mut alpha = Array2::zeros((n_speakers, dim));
+-
+-        for speaker_idx in 0..n_speakers {
+-            for dim_idx in 0..dim {
+-                inv_l[[speaker_idx, dim_idx]] =
+-                    1.0 / (1.0 + fa_over_fb * n_k[speaker_idx] * phi_f64[dim_idx]);
+-            }
+-
+-            // gamma.T @ rho for this speaker
+-            let mut f_k = Array1::<f64>::zeros(dim);
+-            for sample_idx in 0..n_samples {
+-                f_k.scaled_add(gamma[[sample_idx, speaker_idx]], &rho.row(sample_idx));
+-            }
+-
+-            for dim_idx in 0..dim {
+-                alpha[[speaker_idx, dim_idx]] =
+-                    fa_over_fb * inv_l[[speaker_idx, dim_idx]] * f_k[dim_idx];
+-            }
++        let mut inv_l = Array2::<f64>::zeros((n_speakers, dim));
++        for (speaker_idx, mut row) in inv_l.rows_mut().into_iter().enumerate() {
++            let scale = fa_over_fb * n_k[speaker_idx];
++            row.assign(&phi_f64.mapv(|p| 1.0 / (1.0 + scale * p)));
+         }
+ 
++        // f = gamma.T @ rho  (K x D), alpha = Fa/Fb * invL ⊙ f
++        let f = gamma.t().dot(&rho);
++        let mut alpha = &inv_l * &f;
++        alpha.mapv_inplace(|v| v * fa_over_fb);
++
+         // e-step
+         // log_p_[t,k] = Fa * (rho[t] . alpha[k] - 0.5 * (invL[k] + alpha[k]^2) . Phi + G[t])
+-        let mut log_p = Array2::<f64>::zeros((n_samples, n_speakers));
+-        for sample_idx in 0..n_samples {
+-            for speaker_idx in 0..n_speakers {
+-                let rho_dot_alpha: f64 = rho.row(sample_idx).dot(&alpha.row(speaker_idx));
+-                let penalty: f64 = (0..dim)
+-                    .map(|dim_idx| {
+-                        (inv_l[[speaker_idx, dim_idx]]
+-                            + alpha[[speaker_idx, dim_idx]] * alpha[[speaker_idx, dim_idx]])
+-                            * phi_f64[dim_idx]
+-                    })
+-                    .sum();
+-                log_p[[sample_idx, speaker_idx]] =
+-                    fa * (rho_dot_alpha - 0.5 * penalty + frame_constants[sample_idx]);
+-            }
++        // penalty depends only on k — compute once per iteration, not per sample.
++        let penalty: Array1<f64> = (0..n_speakers)
++            .map(|speaker_idx| {
++                inv_l
++                    .row(speaker_idx)
++                    .iter()
++                    .zip(alpha.row(speaker_idx).iter())
++                    .zip(phi_f64.iter())
++                    .map(|((&il, &a), &p)| (il + a * a) * p)
++                    .sum()
++            })
++            .collect();
++
++        let mut log_p = rho.dot(&alpha.t()); // N x K
++        for (sample_idx, mut row) in log_p.rows_mut().into_iter().enumerate() {
++            let g = frame_constants[sample_idx];
++            row.zip_mut_with(&penalty, |value, &pen| {
++                *value = fa * (*value - 0.5 * pen + g);
++            });
+         }
+ 
+-        // GMM-style update with pi priors
++        // GMM-style update with pi priors (single fused pass per row)
+         let lpi: Array1<f64> = pi.mapv(|p| (p + 1e-8).ln());
+ 
+-        // log_p_x[sample_idx] = logsumexp(log_p[sample_idx] + lpi)
+         let mut log_p_x = Array1::<f64>::zeros(n_samples);
+-        for sample_idx in 0..n_samples {
+-            scratch.assign(&log_p.row(sample_idx));
++        for ((log_p_row, mut gamma_row), log_p_x_slot) in log_p
++            .rows()
++            .into_iter()
++            .zip(gamma.rows_mut())
++            .zip(log_p_x.iter_mut())
++        {
++            scratch.assign(&log_p_row);
+             scratch += &lpi;
+-            log_p_x[sample_idx] = logsumexp_f64(&scratch.view());
+-        }
+-
+-        // gamma[sample_idx,speaker_idx] = exp(log_p[sample_idx,speaker_idx] + lpi[speaker_idx] - log_p_x[sample_idx])
+-        for sample_idx in 0..n_samples {
+-            for speaker_idx in 0..n_speakers {
+-                gamma[[sample_idx, speaker_idx]] =
+-                    (log_p[[sample_idx, speaker_idx]] + lpi[speaker_idx] - log_p_x[sample_idx])
+-                        .exp();
+-            }
++            let lse = logsumexp_f64(&scratch.view());
++            *log_p_x_slot = lse;
++            gamma_row.zip_mut_with(&scratch, |g, &s| *g = (s - lse).exp());
+         }
+ 
+         // update pi
+diff --git a/src/inference.rs b/src/inference.rs
+index 90d4908..8204194 100644
+--- a/src/inference.rs
++++ b/src/inference.rs
+@@ -10,15 +10,36 @@ use std::path::PathBuf;
+ #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
+ use std::sync::OnceLock;
+ 
+-pub use embedding::EmbeddingModel;
++pub use embedding::{EmbeddingModel, MaskedEmbeddingInput};
+ pub use segmentation::{SegmentationError, SegmentationModel};
+ 
+ #[cfg(feature = "coreml")]
+ pub(crate) mod coreml;
+ 
+ use ort::ep;
++use ort::session::Session;
+ use ort::session::builder::SessionBuilder;
+ 
++/// One ORT session shared across pipeline handles (diar-native patch, T9a).
++///
++/// `Session::run` takes `&mut self` in ort 2.0.0-rc.12 even though the ORT C API's `Run`
++/// is thread-safe, so cross-handle sharing goes through a mutex held for exactly one
++/// inference call. Weights and the session's arena are loaded once; every handle cloned
++/// via `clone_shared` re-uses them and pays only for its own scratch buffers.
++pub(crate) type SharedSession = std::sync::Arc<std::sync::Mutex<Session>>;
++
++pub(crate) fn share_session(session: Session) -> SharedSession {
++    std::sync::Arc::new(std::sync::Mutex::new(session))
++}
++
++pub(crate) fn lock_session(session: &SharedSession) -> std::sync::MutexGuard<'_, Session> {
++    // A poisoned lock means another handle panicked mid-run; the session itself has no
++    // torn state to protect (ORT `Run` is atomic at the C API level), so keep serving.
++    session
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++}
++
+ #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
+ static ORT_RUNTIME_INIT: OnceLock<Result<(), OrtRuntimeError>> = OnceLock::new();
+ 
+@@ -312,6 +333,23 @@ pub fn with_execution_mode(
+     }
+ }
+ 
++/// diar-native experiment (speed-handoff lever 4, the 4 GB tier): `SPEAKRS_ARENA_SHRINK=1`
++/// asks ORT to shrink the device arena back to its initial chunk after each run of the big
++/// batched sessions — those arenas (not weights or conv workspace, RESULTS §7.23) are what
++/// holds the ~4 GB idle floor. Costs a re-allocation on the next run; measure both.
++pub(crate) fn arena_shrink_run_options()
++-> Result<Option<ort::session::RunOptions>, ort::Error> {
++    let enabled = std::env::var("SPEAKRS_ARENA_SHRINK")
++        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
++        .unwrap_or(false);
++    if !enabled {
++        return Ok(None);
++    }
++    let mut options = ort::session::RunOptions::new()?;
++    options.add_config_entry("memory.enable_memory_arena_shrinkage", "gpu:0")?;
++    Ok(Some(options))
++}
++
+ pub(crate) fn ensure_ort_ready() -> Result<(), ModelLoadError> {
+     #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
+     {
+diff --git a/src/inference/embedding.rs b/src/inference/embedding.rs
+index 2fd9512..233a01c 100644
+--- a/src/inference/embedding.rs
++++ b/src/inference/embedding.rs
+@@ -5,11 +5,11 @@ use std::sync::Arc;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, CoreMlModel, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError};
++use crate::inference::{ExecutionMode, ModelLoadError, SharedSession};
+ use ndarray::{Array2, Array3, s};
+ #[cfg(feature = "coreml")]
+ use objc2_core_ml::MLComputeUnits;
+-use ort::session::{HasSelectedOutputs, RunOptions, Session};
++use ort::session::{HasSelectedOutputs, RunOptions};
+ 
+ mod batch;
+ #[cfg(feature = "coreml")]
+@@ -48,9 +48,13 @@ const FBANK_FRAMES: usize = 998;
+ const FBANK_FEATURES: usize = 80;
+ const MASK_FRAMES: usize = 589;
+ 
++/// One masked audio window for [`EmbeddingModel::embed_batch`]
+ pub struct MaskedEmbeddingInput<'a> {
++    /// 16 kHz mono samples (padded/truncated to the model window internally)
+     pub audio: &'a [f32],
++    /// Frame-level speaker weights over the segmentation mask grid
+     pub mask: &'a [f32],
++    /// Optional overlap-cleaned mask, preferred when it keeps enough weight
+     pub clean_mask: Option<&'a [f32]>,
+ }
+ 
+@@ -71,18 +75,39 @@ struct EmbeddingMeta {
+ }
+ 
+ struct OrtEmbeddingState {
+-    session: Session,
+-    primary_batched_session: Option<Session>,
+-    split_fbank_session: Option<Session>,
+-    split_fbank_batched_session: Option<Session>,
+-    split_tail_session: Option<Session>,
+-    split_tail_batched_session: Option<Session>,
+-    split_primary_tail_batched_session: Option<Session>,
+-    multi_mask_session: Option<Session>,
+-    multi_mask_batched_session: Option<Session>,
++    session: SharedSession,
++    primary_batched_session: Option<SharedSession>,
++    split_fbank_session: Option<SharedSession>,
++    split_fbank_pool: Vec<SharedSession>,
++    split_fbank_batched_session: Option<SharedSession>,
++    split_tail_session: Option<SharedSession>,
++    split_tail_batched_session: Option<SharedSession>,
++    split_primary_tail_batched_session: Option<SharedSession>,
++    multi_mask_session: Option<SharedSession>,
++    multi_mask_batched_session: Option<SharedSession>,
++    // Per-handle: carries a preallocated output tensor, so it must never be shared
++    // across concurrent runs (S-T9a).
+     primary_batch_run_options: Option<RunOptions<HasSelectedOutputs>>,
+ }
+ 
++impl OrtEmbeddingState {
++    fn fresh_primary_run_options(
++        has_primary_batched: bool,
++    ) -> Result<Option<RunOptions<HasSelectedOutputs>>, ort::Error> {
++        has_primary_batched
++            .then(|| {
++                let mut opts = preallocated_run_options(
++                    PRIMARY_BATCH_SIZE,
++                    256,
++                    "primary batched embedding output",
++                )?;
++                let _ = opts.disable_device_sync();
++                Ok::<RunOptions<HasSelectedOutputs>, ort::Error>(opts)
++            })
++            .transpose()
++    }
++}
++
+ #[cfg(feature = "coreml")]
+ struct CoreMlEmbeddingState {
+     #[cfg(feature = "coreml")]
+@@ -136,6 +161,40 @@ struct EmbeddingBuffers {
+     split_primary_weights_batch_buffer: Array2<f32>,
+ }
+ 
++impl EmbeddingBuffers {
++    fn fresh() -> Self {
++        Self {
++            multi_mask_fbank_buffer: Array3::zeros((
++                MULTI_MASK_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            multi_mask_masks_buffer: Array2::zeros((
++                MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS,
++                MASK_FRAMES,
++            )),
++            waveform_buffer: Array3::zeros((1, 1, 160_000)),
++            weights_buffer: Array2::zeros((1, 589)),
++            primary_batch_waveform_buffer: Array3::zeros((PRIMARY_BATCH_SIZE, 1, 160_000)),
++            primary_batch_weights_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
++            split_waveform_buffer: Array3::zeros((1, 1, 160_000)),
++            split_fbank_batch_buffer: Array3::zeros((FBANK_BATCH_SIZE, 1, 160_000)),
++            split_feature_batch_buffer: Array3::zeros((
++                CHUNK_SPEAKER_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            split_weights_batch_buffer: Array2::zeros((CHUNK_SPEAKER_BATCH_SIZE, 589)),
++            split_primary_feature_batch_buffer: Array3::zeros((
++                PRIMARY_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            split_primary_weights_batch_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
++        }
++    }
++}
++
+ /// WeSpeaker speaker embedding model with split-backend and chunk embedding support
+ pub struct EmbeddingModel {
+     meta: EmbeddingMeta,
+@@ -159,6 +218,47 @@ impl EmbeddingModel {
+         Self::with_mode_and_config(model_path, mode, &crate::pipeline::RuntimeConfig::default())
+     }
+ 
++    /// Cheap handle over the same ORT sessions with fresh scratch buffers
++    /// (diar-native patch, T9a).
++    ///
++    /// All 10 ORT sessions (weights + arenas — the VRAM) are shared through
++    /// [`SharedSession`]; the staging buffers and the preallocated-output
++    /// `RunOptions` are re-created per handle, so N handles cost N × scratch
++    /// (~130 MB host RAM), not N × engine. Handles may run concurrently — each
++    /// inference call serializes on its session's mutex for exactly one `Run`.
++    #[cfg(not(feature = "coreml"))]
++    pub fn clone_shared(&self) -> Result<Self, ort::Error> {
++        Ok(Self {
++            meta: EmbeddingMeta {
++                model_path: self.meta.model_path.clone(),
++                mode: self.meta.mode,
++                sample_rate: self.meta.sample_rate,
++                window_samples: self.meta.window_samples,
++                mask_frames: self.meta.mask_frames,
++                min_num_samples: self.meta.min_num_samples,
++            },
++            ort: OrtEmbeddingState {
++                session: std::sync::Arc::clone(&self.ort.session),
++                primary_batched_session: self.ort.primary_batched_session.clone(),
++                split_fbank_session: self.ort.split_fbank_session.clone(),
++                split_fbank_pool: self.ort.split_fbank_pool.clone(),
++                split_fbank_batched_session: self.ort.split_fbank_batched_session.clone(),
++                split_tail_session: self.ort.split_tail_session.clone(),
++                split_tail_batched_session: self.ort.split_tail_batched_session.clone(),
++                split_primary_tail_batched_session: self
++                    .ort
++                    .split_primary_tail_batched_session
++                    .clone(),
++                multi_mask_session: self.ort.multi_mask_session.clone(),
++                multi_mask_batched_session: self.ort.multi_mask_batched_session.clone(),
++                primary_batch_run_options: OrtEmbeddingState::fresh_primary_run_options(
++                    self.ort.primary_batched_session.is_some(),
++                )?,
++            },
++            buffers: EmbeddingBuffers::fresh(),
++        })
++    }
++
+     /// Audio sample rate in Hz (16000)
+     pub fn sample_rate(&self) -> usize {
+         self.meta.sample_rate
+diff --git a/src/inference/embedding/batch.rs b/src/inference/embedding/batch.rs
+index 3d68e0d..386fbc9 100644
+--- a/src/inference/embedding/batch.rs
++++ b/src/inference/embedding/batch.rs
+@@ -8,6 +8,7 @@ use super::{
+     NUM_SPEAKERS, PRIMARY_BATCH_SIZE, SplitTailInput, array2_from_shape_vec, array2_slice_mut,
+     array3_slice_mut, first_output, select_mask,
+ };
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract speaker embeddings for a batch of masked audio windows
+@@ -18,7 +19,7 @@ impl EmbeddingModel {
+         if let Some(sess) = self
+             .ort
+             .primary_batched_session
+-            .as_mut()
++            .as_ref()
+             .filter(|_| inputs.len() == PRIMARY_BATCH_SIZE)
+         {
+             for (batch_idx, input) in inputs.iter().enumerate() {
+@@ -48,6 +49,7 @@ impl EmbeddingModel {
+                 TensorRef::from_array_view(self.buffers.primary_batch_weights_buffer.view())?;
+             let ort_inputs =
+                 ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor];
++            let mut sess = lock_session(sess);
+             let outputs = if let Some(opts) = &self.ort.primary_batch_run_options {
+                 sess.run_with_options(ort_inputs, opts)?
+             } else {
+@@ -146,12 +148,18 @@ impl EmbeddingModel {
+                 TensorRef::from_array_view(self.buffers.multi_mask_fbank_buffer.view())?;
+             let masks_tensor =
+                 TensorRef::from_array_view(self.buffers.multi_mask_masks_buffer.view())?;
+-            let outputs = self
+-                .ort
+-                .multi_mask_batched_session
+-                .as_mut()
+-                .ok_or_else(|| ort::Error::new("missing multi-mask batched session"))?
+-                .run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
++            let mut session = lock_session(
++                self.ort
++                    .multi_mask_batched_session
++                    .as_ref()
++                    .ok_or_else(|| ort::Error::new("missing multi-mask batched session"))?,
++            );
++            let ort_inputs = ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor];
++            let shrink = crate::inference::arena_shrink_run_options()?;
++            let outputs = match &shrink {
++                Some(options) => session.run_with_options(ort_inputs, options)?,
++                None => session.run(ort_inputs)?,
++            };
+             let output = first_output(outputs.values(), "multi-mask batched output")?;
+             let (_shape, data) = output.try_extract_tensor::<f32>()?;
+             let batch = array2_from_shape_vec(
+@@ -177,12 +185,14 @@ impl EmbeddingModel {
+                     .slice(s![mask_start..mask_end, ..]);
+                 let fbank_tensor = TensorRef::from_array_view(fbank_slice.view())?;
+                 let masks_tensor = TensorRef::from_array_view(masks_slice.view())?;
+-                let outputs = self
+-                    .ort
+-                    .multi_mask_session
+-                    .as_mut()
+-                    .ok_or_else(|| ort::Error::new("missing multi-mask session"))?
+-                    .run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
++                let mut session = lock_session(
++                    self.ort
++                        .multi_mask_session
++                        .as_ref()
++                        .ok_or_else(|| ort::Error::new("missing multi-mask session"))?,
++                );
++                let outputs =
++                    session.run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
+                 let output = first_output(outputs.values(), "multi-mask output")?;
+                 let (_shape, data) = output.try_extract_tensor::<f32>()?;
+                 for (local_idx, row_idx) in (mask_start..mask_end).enumerate() {
+@@ -266,12 +276,14 @@ impl EmbeddingModel {
+             TensorRef::from_array_view(self.buffers.split_primary_feature_batch_buffer.view())?;
+         let weights_tensor =
+             TensorRef::from_array_view(self.buffers.split_primary_weights_batch_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_primary_tail_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing primary tail batched session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_primary_tail_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing primary tail batched session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "primary tail batched output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         let batch = array2_from_shape_vec(
+diff --git a/src/inference/embedding/fbank.rs b/src/inference/embedding/fbank.rs
+index 59c66fd..be39d39 100644
+--- a/src/inference/embedding/fbank.rs
++++ b/src/inference/embedding/fbank.rs
+@@ -4,6 +4,7 @@ use ort::value::TensorRef;
+ #[cfg(feature = "coreml")]
+ use super::tensor::array3_slice;
+ use super::{EmbeddingModel, FBANK_BATCH_SIZE, array2_from_shape_vec, first_output};
++use crate::inference::{SharedSession, lock_session};
+ 
+ impl EmbeddingModel {
+     /// Compute fbank features for a single audio chunk via the split fbank model
+@@ -40,12 +41,13 @@ impl EmbeddingModel {
+ 
+         let waveform_tensor =
+             TensorRef::from_array_view(self.buffers.split_waveform_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_fbank_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split fbank session"))?
+-            .run(ort::inputs!["waveform" => waveform_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_fbank_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split fbank session"))?,
++        );
++        let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
+         let output = first_output(outputs.values(), "chunk fbank output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+         let frames = shape[1] as usize;
+@@ -58,6 +60,44 @@ impl EmbeddingModel {
+         &mut self,
+         audios: &[&[f32]],
+     ) -> Result<Vec<Array2<f32>>, ort::Error> {
++        // diar-native patch: fan per-chunk fbank out across a pool of CPU sessions.
++        // fbank is otherwise ~76% of CUDA E2E wall time (intra-op threads don't scale it).
++        if audios.len() > 1 && !self.ort.split_fbank_pool.is_empty() {
++            let window_samples = self.meta.window_samples;
++            let pool = &self.ort.split_fbank_pool;
++            let per_worker = audios.len().div_ceil(pool.len());
++            let mut collected: Vec<Option<Vec<Array2<f32>>>> = Vec::new();
++            collected.resize_with(pool.len(), || None);
++            std::thread::scope(|scope| {
++                let mut handles = Vec::new();
++                for (worker_idx, session) in pool.iter().enumerate() {
++                    let start = worker_idx * per_worker;
++                    if start >= audios.len() {
++                        break;
++                    }
++                    let end = (start + per_worker).min(audios.len());
++                    let slice = &audios[start..end];
++                    handles.push((
++                        worker_idx,
++                        scope.spawn(move || -> Result<Vec<Array2<f32>>, ort::Error> {
++                            slice
++                                .iter()
++                                .map(|audio| fbank_via_session(session, audio, window_samples))
++                                .collect()
++                        }),
++                    ));
++                }
++                for (worker_idx, handle) in handles {
++                    let vals = handle
++                        .join()
++                        .map_err(|_| ort::Error::new("fbank pool worker panicked"))??;
++                    collected[worker_idx] = Some(vals);
++                }
++                Ok::<(), ort::Error>(())
++            })?;
++            return Ok(collected.into_iter().flatten().flatten().collect());
++        }
++
+         let has_batched = self.has_batched_fbank();
+         if !has_batched {
+             tracing::debug!(
+@@ -97,12 +137,13 @@ impl EmbeddingModel {
+ 
+             let waveform_tensor =
+                 TensorRef::from_array_view(self.buffers.split_fbank_batch_buffer.view())?;
+-            let outputs = self
+-                .ort
+-                .split_fbank_batched_session
+-                .as_mut()
+-                .ok_or_else(|| ort::Error::new("missing split fbank batched session"))?
+-                .run(ort::inputs!["waveform" => waveform_tensor])?;
++            let mut session = lock_session(
++                self.ort
++                    .split_fbank_batched_session
++                    .as_ref()
++                    .ok_or_else(|| ort::Error::new("missing split fbank batched session"))?,
++            );
++            let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
+             let output = first_output(outputs.values(), "batched chunk fbank output")?;
+             let (shape, data) = output.try_extract_tensor::<f32>()?;
+             Self::push_fbank_batch_results(
+@@ -171,3 +212,28 @@ impl EmbeddingModel {
+         Ok(true)
+     }
+ }
++
++// diar-native patch: session-local fbank for the parallel pool path (no shared buffers).
++// The pool sessions are shared across handles; the lock is held for one chunk's run so
++// concurrent jobs interleave on the pool instead of serializing behind whole slices.
++fn fbank_via_session(
++    session: &SharedSession,
++    audio: &[f32],
++    window_samples: usize,
++) -> Result<Array2<f32>, ort::Error> {
++    let mut buf = ndarray::Array3::<f32>::zeros((1, 1, window_samples));
++    let copy_len = audio.len().min(window_samples);
++    buf.slice_mut(s![0, 0, ..copy_len])
++        .assign(&ndarray::ArrayView1::from(&audio[..copy_len]));
++    let waveform_tensor = TensorRef::from_array_view(buf.view())?;
++    let mut session = lock_session(session);
++    let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
++    let output = first_output(outputs.values(), "pool chunk fbank output")?;
++    let (shape, data) = output.try_extract_tensor::<f32>()?;
++    array2_from_shape_vec(
++        shape[1] as usize,
++        shape[2] as usize,
++        data.to_vec(),
++        "pool chunk fbank output",
++    )
++}
+diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
+index ff5ae7f..00ebf06 100644
+--- a/src/inference/embedding/load/sessions.rs
++++ b/src/inference/embedding/load/sessions.rs
+@@ -3,21 +3,23 @@ use std::path::Path;
+ #[cfg(feature = "coreml")]
+ use std::sync::Arc;
+ 
+-use ndarray::{Array2, Array3};
+ #[cfg(feature = "coreml")]
+ use objc2_core_ml::MLComputeUnits;
+-use ort::session::{HasSelectedOutputs, RunOptions, Session};
++use ort::session::Session;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, CoreMlModel, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError};
++use crate::inference::{ExecutionMode, ModelLoadError, share_session};
+ 
++#[cfg(feature = "coreml")]
++use super::super::{
++    FBANK_BATCH_SIZE, FBANK_FEATURES, FBANK_FRAMES, MASK_FRAMES, MULTI_MASK_BATCH_SIZE,
++    NUM_SPEAKERS,
++};
+ use super::super::{
+-    CHUNK_SPEAKER_BATCH_SIZE, EmbeddingBuffers, EmbeddingMeta, EmbeddingModel, FBANK_BATCH_SIZE,
+-    FBANK_FEATURES, FBANK_FRAMES, MASK_FRAMES, MULTI_MASK_BATCH_SIZE, NUM_SPEAKERS,
+-    OrtEmbeddingState, PRIMARY_BATCH_SIZE, batched_model_path, multi_mask_model_path,
+-    preallocated_run_options, read_min_num_samples, split_fbank_batched_model_path,
+-    split_fbank_model_path, split_tail_model_path,
++    CHUNK_SPEAKER_BATCH_SIZE, EmbeddingBuffers, EmbeddingMeta, EmbeddingModel, OrtEmbeddingState,
++    PRIMARY_BATCH_SIZE, batched_model_path, multi_mask_model_path, read_min_num_samples,
++    split_fbank_batched_model_path, split_fbank_model_path, split_tail_model_path,
+ };
+ #[cfg(feature = "coreml")]
+ use super::super::{ChunkEmbeddingSession, ChunkSessionSpec, CoreMlEmbeddingState};
+@@ -26,6 +28,7 @@ pub(super) struct LoadedOrtSessions {
+     session: Session,
+     primary_batched_session: Option<Session>,
+     split_fbank_session: Option<Session>,
++    split_fbank_pool: Vec<Session>,
+     split_fbank_batched_session: Option<Session>,
+     split_tail_session: Option<Session>,
+     split_tail_batched_session: Option<Session>,
+@@ -84,13 +87,21 @@ impl LoadedSessions {
+             }};
+         }
+ 
++        // diar-native patch: SPEAKRS_LAZY_SESSIONS=1 skips the heavy batched sessions the
++        // CUDA multimask pipeline never executes (fused-b64 primary + batched split tails) —
++        // each idle session pins its own ORT arena (~GBs of VRAM at batch-64 activations).
++        // embed_batch degrades gracefully (per-item path) when primary_batched is absent.
++        let lazy_sessions = std::env::var("SPEAKRS_LAZY_SESSIONS")
++            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
++            .unwrap_or(false);
++
+         let (session, session_elapsed) = timed!(EmbeddingModel::build_session(
+             model_path,
+             EmbeddingModel::single_execution_mode(mode)
+         )?);
+         let (primary_batched_session, primary_batched_elapsed) = timed!(
+             batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path| EmbeddingModel::build_batched_session(&path, mode))
+                 .transpose()?
+         );
+@@ -116,14 +127,14 @@ impl LoadedSessions {
+         let (split_tail_batched_session, split_tail_batched_elapsed) = timed!(
+             use_split_backend
+                 .then_some(split_tail_batched_path)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
+                 .transpose()?
+         );
+         let (split_primary_tail_batched_session, split_primary_tail_batched_elapsed) = timed!(
+             use_split_backend
+                 .then_some(split_primary_tail_batched_path)
+-                .filter(|path| path.exists())
++                .filter(|path| !lazy_sessions && path.exists())
+                 .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
+                 .transpose()?
+         );
+@@ -236,10 +247,29 @@ impl LoadedSessions {
+             );
+         }
+ 
++        // diar-native patch: pool of extra CPU fbank sessions for parallel per-chunk fbank
++        // (single-session fbank measured at ~76% of CUDA E2E wall on many-core hosts).
++        let split_fbank_pool: Vec<Session> = if use_split_backend {
++            let pool_size = std::env::var("SPEAKRS_FBANK_POOL")
++                .ok()
++                .and_then(|v| v.parse::<usize>().ok())
++                .unwrap_or_else(|| {
++                    std::thread::available_parallelism()
++                        .map(|c| (c.get() / 4).clamp(1, 8))
++                        .unwrap_or(1)
++                });
++            (0..pool_size)
++                .map(|_| EmbeddingModel::build_fbank_session(&split_fbank_path, ExecutionMode::Cpu))
++                .collect::<Result<Vec<_>, _>>()?
++        } else {
++            Vec::new()
++        };
++
+         let ort = LoadedOrtSessions {
+             session,
+             primary_batched_session,
+             split_fbank_session,
++            split_fbank_pool,
+             split_fbank_batched_session,
+             split_tail_session,
+             split_tail_batched_session,
+@@ -275,6 +305,7 @@ impl LoadedSessions {
+     ) -> Result<EmbeddingModel, ModelLoadError> {
+         let metadata_path = model_path.with_extension("min_num_samples.txt");
+ 
++        let has_primary_batched = self.ort.primary_batched_session.is_some();
+         Ok(EmbeddingModel {
+             meta: EmbeddingMeta {
+                 model_path: model_path.to_path_buf(),
+@@ -285,27 +316,30 @@ impl LoadedSessions {
+                 min_num_samples: read_min_num_samples(&metadata_path).unwrap_or(400),
+             },
+             ort: OrtEmbeddingState {
+-                session: self.ort.session,
+-                primary_batched_session: self.ort.primary_batched_session,
+-                split_fbank_session: self.ort.split_fbank_session,
+-                split_fbank_batched_session: self.ort.split_fbank_batched_session,
+-                split_tail_session: self.ort.split_tail_session,
+-                split_tail_batched_session: self.ort.split_tail_batched_session,
+-                split_primary_tail_batched_session: self.ort.split_primary_tail_batched_session,
+-                multi_mask_session: self.ort.multi_mask_session,
+-                multi_mask_batched_session: self.ort.multi_mask_batched_session,
+-                primary_batch_run_options: batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+-                    .filter(|path| path.exists())
+-                    .map(|_| {
+-                        let mut opts = preallocated_run_options(
+-                            PRIMARY_BATCH_SIZE,
+-                            256,
+-                            "primary batched embedding output",
+-                        )?;
+-                        let _ = opts.disable_device_sync();
+-                        Ok::<RunOptions<HasSelectedOutputs>, ort::Error>(opts)
+-                    })
+-                    .transpose()?,
++                session: share_session(self.ort.session),
++                primary_batched_session: self.ort.primary_batched_session.map(share_session),
++                split_fbank_session: self.ort.split_fbank_session.map(share_session),
++                split_fbank_pool: self
++                    .ort
++                    .split_fbank_pool
++                    .into_iter()
++                    .map(share_session)
++                    .collect(),
++                split_fbank_batched_session: self
++                    .ort
++                    .split_fbank_batched_session
++                    .map(share_session),
++                split_tail_session: self.ort.split_tail_session.map(share_session),
++                split_tail_batched_session: self.ort.split_tail_batched_session.map(share_session),
++                split_primary_tail_batched_session: self
++                    .ort
++                    .split_primary_tail_batched_session
++                    .map(share_session),
++                multi_mask_session: self.ort.multi_mask_session.map(share_session),
++                multi_mask_batched_session: self.ort.multi_mask_batched_session.map(share_session),
++                primary_batch_run_options: OrtEmbeddingState::fresh_primary_run_options(
++                    has_primary_batched,
++                )?,
+             },
+             #[cfg(feature = "coreml")]
+             coreml: CoreMlEmbeddingState {
+@@ -344,35 +378,7 @@ impl LoadedSessions {
+                     &[MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS, MASK_FRAMES],
+                 ),
+             },
+-            buffers: EmbeddingBuffers {
+-                multi_mask_fbank_buffer: Array3::zeros((
+-                    MULTI_MASK_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                multi_mask_masks_buffer: Array2::zeros((
+-                    MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS,
+-                    MASK_FRAMES,
+-                )),
+-                waveform_buffer: Array3::zeros((1, 1, 160_000)),
+-                weights_buffer: Array2::zeros((1, 589)),
+-                primary_batch_waveform_buffer: Array3::zeros((PRIMARY_BATCH_SIZE, 1, 160_000)),
+-                primary_batch_weights_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
+-                split_waveform_buffer: Array3::zeros((1, 1, 160_000)),
+-                split_fbank_batch_buffer: Array3::zeros((FBANK_BATCH_SIZE, 1, 160_000)),
+-                split_feature_batch_buffer: Array3::zeros((
+-                    CHUNK_SPEAKER_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                split_weights_batch_buffer: Array2::zeros((CHUNK_SPEAKER_BATCH_SIZE, 589)),
+-                split_primary_feature_batch_buffer: Array3::zeros((
+-                    PRIMARY_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                split_primary_weights_batch_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
+-            },
++            buffers: EmbeddingBuffers::fresh(),
+         })
+     }
+ }
+diff --git a/src/inference/embedding/run.rs b/src/inference/embedding/run.rs
+index eabadde..9d56843 100644
+--- a/src/inference/embedding/run.rs
++++ b/src/inference/embedding/run.rs
+@@ -2,6 +2,7 @@ use ndarray::{Array1, s};
+ use ort::value::TensorRef;
+ 
+ use super::{EmbeddingModel, first_output, select_mask};
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract a speaker embedding from raw audio with a uniform mask
+@@ -37,10 +38,9 @@ impl EmbeddingModel {
+ 
+         let waveform_tensor = TensorRef::from_array_view(self.buffers.waveform_buffer.view())?;
+         let weights_tensor = TensorRef::from_array_view(self.buffers.weights_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .session
+-            .run(ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(&self.ort.session);
++        let outputs =
++            session.run(ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "masked embedding output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         Ok(Array1::from_vec(data.to_vec()))
+diff --git a/src/inference/embedding/session.rs b/src/inference/embedding/session.rs
+index 751dd24..c38f29d 100644
+--- a/src/inference/embedding/session.rs
++++ b/src/inference/embedding/session.rs
+@@ -62,9 +62,16 @@ impl EmbeddingModel {
+         model_path: &Path,
+         mode: ExecutionMode,
+     ) -> Result<Session, ort::Error> {
+-        let threads = std::thread::available_parallelism()
+-            .map(|count| count.get().min(4))
+-            .unwrap_or(1);
++        // diar-native patch: default cap of 4 intra-op threads leaves fbank as ~76% of
++        // CUDA E2E wall time on many-core hosts; allow override via SPEAKRS_FBANK_THREADS.
++        let threads = std::env::var("SPEAKRS_FBANK_THREADS")
++            .ok()
++            .and_then(|v| v.parse::<usize>().ok())
++            .unwrap_or_else(|| {
++                std::thread::available_parallelism()
++                    .map(|count| count.get().min(4))
++                    .unwrap_or(1)
++            });
+         let builder = Session::builder()?
+             .with_independent_thread_pool()?
+             .with_intra_threads(threads)?
+diff --git a/src/inference/embedding/tail.rs b/src/inference/embedding/tail.rs
+index 2565f0a..7dfef0a 100644
+--- a/src/inference/embedding/tail.rs
++++ b/src/inference/embedding/tail.rs
+@@ -7,6 +7,7 @@ use super::{
+     CHUNK_SPEAKER_BATCH_SIZE, EmbeddingModel, FBANK_FEATURES, FBANK_FRAMES, array1_slice,
+     array2_from_shape_vec, array3_slice_mut, first_output, select_mask, should_use_clean_mask,
+ };
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract per-speaker embeddings for one audio chunk using segmentation masks
+@@ -119,12 +120,14 @@ impl EmbeddingModel {
+         let weight_slice = self.buffers.split_weights_batch_buffer.slice(s![0..1, ..]);
+         let fbank_tensor = TensorRef::from_array_view(feature_slice.view())?;
+         let weights_tensor = TensorRef::from_array_view(weight_slice.view())?;
+-        let outputs = self
+-            .ort
+-            .split_tail_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split tail session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_tail_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split tail session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "split tail output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         Ok(Array1::from_vec(data.to_vec()))
+@@ -206,12 +209,14 @@ impl EmbeddingModel {
+             TensorRef::from_array_view(self.buffers.split_feature_batch_buffer.view())?;
+         let weights_tensor =
+             TensorRef::from_array_view(self.buffers.split_weights_batch_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_tail_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split tail batched session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_tail_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split tail batched session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "tail batch output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         array2_from_shape_vec(
+diff --git a/src/inference/segmentation.rs b/src/inference/segmentation.rs
+index a9c6627..7fbd60c 100644
+--- a/src/inference/segmentation.rs
++++ b/src/inference/segmentation.rs
+@@ -5,7 +5,10 @@ use ort::session::Session;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError, ensure_ort_ready, with_execution_mode};
++use crate::inference::{
++    ExecutionMode, ModelLoadError, SharedSession, ensure_ort_ready, share_session,
++    with_execution_mode,
++};
+ #[cfg(feature = "coreml")]
+ mod native;
+ #[cfg(feature = "coreml")]
+@@ -55,8 +58,8 @@ const LARGE_BATCH_SIZE: usize = 64;
+ /// Sliding-window segmentation model (pyannote segmentation-3.0)
+ pub struct SegmentationModel {
+     mode: ExecutionMode,
+-    session: Session,
+-    primary_batched_session: Option<Session>,
++    session: SharedSession,
++    primary_batched_session: Option<SharedSession>,
+     #[cfg(feature = "coreml")]
+     native_session: Option<SharedCoreMlModel>,
+     #[cfg(feature = "coreml")]
+@@ -114,11 +117,11 @@ impl SegmentationModel {
+             }};
+         }
+ 
+-        let (session, session_elapsed) = timed!(Self::build_session(model_path, mode)?);
++        let (session, session_elapsed) = timed!(share_session(Self::build_session(model_path, mode)?));
+         let (primary_batched_session, primary_batched_elapsed) = timed!(
+             batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+                 .filter(|path| path.exists())
+-                .map(|path| Self::build_session(&path, mode))
++                .map(|path| Self::build_session(&path, mode).map(share_session))
+                 .transpose()?
+         );
+         #[cfg(feature = "coreml")]
+@@ -254,6 +257,31 @@ impl SegmentationModel {
+     pub fn mode(&self) -> ExecutionMode {
+         self.mode
+     }
++
++    /// Cheap handle over the same ORT sessions with fresh scratch buffers
++    /// (diar-native patch, T9a).
++    ///
++    /// Weights and per-session arenas are shared through [`SharedSession`]; only the
++    /// input staging buffers are re-allocated, so N handles cost N × scratch, not
++    /// N × model. Handles may run concurrently — each inference call serializes on
++    /// its session's mutex for exactly one `Run`.
++    #[cfg(not(feature = "coreml"))]
++    pub fn clone_shared(&self) -> Self {
++        Self {
++            mode: self.mode,
++            session: std::sync::Arc::clone(&self.session),
++            primary_batched_session: self.primary_batched_session.clone(),
++            input_buffer: ndarray::Array3::zeros((1, 1, self.window_samples)),
++            primary_batch_input_buffer: ndarray::Array3::zeros((
++                PRIMARY_BATCH_SIZE,
++                1,
++                self.window_samples,
++            )),
++            window_samples: self.window_samples,
++            step_samples: self.step_samples,
++            sample_rate: self.sample_rate,
++        }
++    }
+ }
+ 
+ fn batched_model_path(model_path: &Path, batch_size: usize) -> Option<PathBuf> {
+diff --git a/src/inference/segmentation/run.rs b/src/inference/segmentation/run.rs
+index b0661ae..ab7d8c9 100644
+--- a/src/inference/segmentation/run.rs
++++ b/src/inference/segmentation/run.rs
+@@ -4,6 +4,7 @@ use ort::value::TensorRef;
+ use tracing::debug;
+ 
+ use super::{PRIMARY_BATCH_SIZE, SegmentationError, SegmentationModel};
++use crate::inference::lock_session;
+ use crate::inference::segmentation::tensor::{SegmentationWindows, first_output, output_shape3};
+ 
+ impl SegmentationModel {
+@@ -145,7 +146,8 @@ impl SegmentationModel {
+             .assign(&ndarray::ArrayView1::from(window));
+         let input_tensor = TensorRef::from_array_view(self.input_buffer.view())?;
+ 
+-        let outputs = self.session.run(ort::inputs![input_tensor])?;
++        let mut session = lock_session(&self.session);
++        let outputs = session.run(ort::inputs![input_tensor])?;
+         let output = first_output(outputs.values(), "segmentation window output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+ 
+@@ -179,11 +181,18 @@ impl SegmentationModel {
+         }
+         let input_tensor = TensorRef::from_array_view(self.primary_batch_input_buffer.view())?;
+ 
+-        let outputs = self
+-            .primary_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing primary batched segmentation session"))?
+-            .run(ort::inputs![input_tensor])?;
++        let mut session = lock_session(
++            self.primary_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing primary batched segmentation session"))?,
++        );
++        let ort_inputs = ort::inputs![input_tensor];
++        let shrink =
++            crate::inference::arena_shrink_run_options().map_err(SegmentationError::Ort)?;
++        let outputs = match &shrink {
++            Some(options) => session.run_with_options(ort_inputs, options)?,
++            None => session.run(ort_inputs)?,
++        };
+         let output = first_output(outputs.values(), "segmentation batch output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+ 
+diff --git a/src/pipeline/chunk_embedding.rs b/src/pipeline/chunk_embedding.rs
+index 17a8555..b8632f6 100644
+--- a/src/pipeline/chunk_embedding.rs
++++ b/src/pipeline/chunk_embedding.rs
+@@ -408,6 +408,8 @@ pub(super) fn try_batch_chunk_embedding(
+                     hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
+                     discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
+                     segments: Vec::new(),
++                    exclusive_segments: Vec::new(),
++                    centroids: Array2::zeros((0, 256)),
+                 })
+             })
+             .collect())
+diff --git a/src/pipeline/clustering.rs b/src/pipeline/clustering.rs
+index 3c941e6..f09b33f 100644
+--- a/src/pipeline/clustering.rs
++++ b/src/pipeline/clustering.rs
+@@ -62,15 +62,21 @@ impl TrainingEmbeddings {
+         embeddings: &ChunkEmbeddings,
+         plda: &PldaTransform,
+         config: &PipelineConfig,
+-    ) -> ChunkSpeakerClusters {
++    ) -> (ChunkSpeakerClusters, Array2<f32>) {
+         if self.0.nrows() < 2 {
+             let mut clusters =
+                 Array2::<i32>::zeros((segmentations.0.shape()[0], segmentations.0.shape()[2]));
+             mark_inactive_speakers(&segmentations.0, &mut clusters);
+-            return ChunkSpeakerClusters(clusters);
++            let embedding_dim = self.0.shape().get(1).copied().unwrap_or(256);
++            return (
++                ChunkSpeakerClusters(clusters),
++                Array2::<f32>::zeros((0, embedding_dim)),
++            );
+         }
+ 
++        let stage_t0 = std::time::Instant::now();
+         let ahc_labels = cluster_ahc(&self.0.view(), config.ahc);
++        let ahc_ms = stage_t0.elapsed().as_millis();
+         debug!(
+             rows = self.0.nrows(),
+             cols = self.0.ncols(),
+@@ -85,14 +91,18 @@ impl TrainingEmbeddings {
+             }
+         }
+ 
++        let stage_t1 = std::time::Instant::now();
+         let plda_features = plda.transform(&self.0.view(), 128);
++        let plda_ms = stage_t1.elapsed().as_millis();
+         let phi = plda.phi();
++        let stage_t2 = std::time::Instant::now();
+         let (gamma, pi): (Array2<f32>, ndarray::Array1<f32>) = cluster_vbx(
+             &ahc_labels,
+             &plda_features.view(),
+             &phi.slice(s![..128]),
+             &config.vbx,
+         );
++        let vbx_ms = stage_t2.elapsed().as_millis();
+ 
+         debug!(?pi, "VBx speaker priors");
+ 
+@@ -123,15 +133,26 @@ impl TrainingEmbeddings {
+             debug!(cluster = cluster_idx, norm, "centroid");
+         }
+ 
++        let stage_t3 = std::time::Instant::now();
+         let mut clusters = assign_chunk_embeddings(segmentations, embeddings, &centroids);
+         mark_inactive_speakers(&segmentations.0, &mut clusters);
++        tracing::debug!(
++            ahc_ms,
++            plda_ms,
++            vbx_ms,
++            assign_ms = stage_t3.elapsed().as_millis(),
++            "clustering stage timing"
++        );
+         debug!(
+             rows = clusters.nrows(),
+             cols = clusters.ncols(),
+             "hard_clusters shape"
+         );
+ 
+-        ChunkSpeakerClusters(clusters)
++        // diar-native patch: return the gamma-weighted (un-normalized) centroids —
++        // row index == cluster id used in hard_clusters — for speaker-identification
++        // consumers (e.g. cross-file speaker matching via vector search).
++        (ChunkSpeakerClusters(clusters), centroids)
+     }
+ }
+ 
 diff --git a/src/pipeline/concurrent.rs b/src/pipeline/concurrent.rs
 index 309c2a9..e78ec1e 100644
 --- a/src/pipeline/concurrent.rs
@@ -280,3 +1549,194 @@ index 309c2a9..e78ec1e 100644
      fn require_num_frames(
          &self,
          num_frames: Option<usize>,
+diff --git a/src/pipeline/post_inference.rs b/src/pipeline/post_inference.rs
+index b869ea5..5549a74 100644
+--- a/src/pipeline/post_inference.rs
++++ b/src/pipeline/post_inference.rs
+@@ -3,7 +3,7 @@ use tracing::debug;
+ 
+ use crate::binarize::binarize;
+ use crate::clustering::plda::PldaTransform;
+-use crate::reconstruct::Reconstructor;
++use crate::reconstruct::{Reconstructor, exclusive_from};
+ use crate::segment::merge_segments;
+ 
+ use super::config::{PipelineConfig, ReconstructMethod};
+@@ -36,32 +36,46 @@ pub fn post_inference(
+             hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
+             discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
+             segments: Vec::new(),
++            exclusive_segments: Vec::new(),
++            centroids: Array2::zeros((0, 256)),
+         });
+     }
+ 
+     let training_embeddings = embeddings.training_set(&segmentations);
+-    let hard_clusters = training_embeddings.cluster(&segmentations, &embeddings, plda, config);
++    let (hard_clusters, centroids) =
++        training_embeddings.cluster(&segmentations, &embeddings, plda, config);
+ 
+     let reconstructor =
+         Reconstructor::with_clusters(&segmentations, &hard_clusters, &layout.start_frames, 0);
++    // One activation pass feeds both reconstructions; the exclusive variant needs the
++    // continuous scores, which a reconstruction has already flattened to 1.0.
++    let activations = reconstructor.frame_activations(&speaker_count);
+     let discrete_diarization = match config.reconstruct_method {
+         ReconstructMethod::Smoothed { epsilon } => {
+-            reconstructor.reconstruct_smoothed(&speaker_count, epsilon)
++            reconstructor.reconstruct_smoothed_with(&activations, &speaker_count, epsilon)
++        }
++        ReconstructMethod::Standard => {
++            reconstructor.reconstruct_with(&activations, &speaker_count)
+         }
+-        ReconstructMethod::Standard => reconstructor.reconstruct(&speaker_count),
+     };
++    let exclusive_diarization = exclusive_from(&discrete_diarization, &activations);
+ 
+     // apply min-duration filtering to remove single-frame speaker flickers
+     let has_duration_filter =
+         config.binarize.min_duration_on > 0 || config.binarize.min_duration_off > 0;
+-    let discrete_diarization = if has_duration_filter {
+-        DiscreteDiarization(binarize(&discrete_diarization, &config.binarize))
++    let (discrete_diarization, exclusive_diarization) = if has_duration_filter {
++        (
++            DiscreteDiarization(binarize(&discrete_diarization, &config.binarize)),
++            DiscreteDiarization(binarize(&exclusive_diarization, &config.binarize)),
++        )
+     } else {
+-        discrete_diarization
++        (discrete_diarization, exclusive_diarization)
+     };
+ 
+     let segments = discrete_diarization.to_segments();
+     let segments = merge_segments(&segments, config.merge_gap);
++    let exclusive_segments = exclusive_diarization.to_segments();
++    let exclusive_segments = merge_segments(&exclusive_segments, config.merge_gap);
+ 
+     debug!(
+         post_inference_ms = post_start.elapsed().as_millis(),
+@@ -75,5 +89,7 @@ pub fn post_inference(
+         hard_clusters,
+         discrete_diarization,
+         segments,
++        exclusive_segments,
++        centroids,
+     })
+ }
+diff --git a/src/pipeline/types/data.rs b/src/pipeline/types/data.rs
+index 6ca4c04..091d83b 100644
+--- a/src/pipeline/types/data.rs
++++ b/src/pipeline/types/data.rs
+@@ -172,6 +172,14 @@ pub struct DiarizationResult {
+     pub discrete_diarization: DiscreteDiarization,
+     /// Merged speaker segments (time-stamped speaker turns)
+     pub segments: Vec<crate::segment::Segment>,
++    /// Merged speaker segments with at most one speaker at any instant — the
++    /// `exclusive_speaker_diarization` equivalent. Overlapped frames go to the speaker with
++    /// the highest activation score, so the speech is kept rather than split or dropped.
++    pub exclusive_segments: Vec<crate::segment::Segment>,
++    /// Gamma-weighted (un-normalized) speaker centroids from VBx clustering.
++    /// Row index == cluster id used in `hard_clusters` / segment speaker ids.
++    /// Empty (0 rows) when clustering was skipped (no speech / <2 embeddings).
++    pub centroids: Array2<f32>,
+ }
+ 
+ impl DiarizationResult {
+diff --git a/src/reconstruct.rs b/src/reconstruct.rs
+index ce401c3..332d7c5 100644
+--- a/src/reconstruct.rs
++++ b/src/reconstruct.rs
+@@ -135,10 +135,19 @@ impl<'a> Reconstructor<'a> {
+     }
+ 
+     pub fn reconstruct(&self, speaker_count: &SpeakerCountTrack) -> DiscreteDiarization {
+-        let activations = self.frame_activations(speaker_count);
++        self.reconstruct_with(&self.frame_activations(speaker_count), speaker_count)
++    }
++
++    /// [`reconstruct`](Self::reconstruct) over activations the caller already computed —
++    /// so a caller that also needs the exclusive variant pays for one activation pass.
++    pub(crate) fn reconstruct_with(
++        &self,
++        activations: &FrameActivations,
++        speaker_count: &SpeakerCountTrack,
++    ) -> DiscreteDiarization {
+         let mut discrete = Array2::<f32>::zeros(activations.raw_dim());
+         for (frame_idx, &count) in speaker_count.iter().enumerate() {
+-            for speaker_idx in top_k_indices(&activations, frame_idx, count) {
++            for speaker_idx in top_k_indices(activations, frame_idx, count) {
+                 discrete[[frame_idx, speaker_idx]] = 1.0;
+             }
+         }
+@@ -150,13 +159,26 @@ impl<'a> Reconstructor<'a> {
+         speaker_count: &SpeakerCountTrack,
+         epsilon: f32,
+     ) -> DiscreteDiarization {
+-        let activations = self.frame_activations(speaker_count);
++        self.reconstruct_smoothed_with(
++            &self.frame_activations(speaker_count),
++            speaker_count,
++            epsilon,
++        )
++    }
++
++    /// [`reconstruct_smoothed`](Self::reconstruct_smoothed) over caller-supplied activations.
++    pub(crate) fn reconstruct_smoothed_with(
++        &self,
++        activations: &FrameActivations,
++        speaker_count: &SpeakerCountTrack,
++        epsilon: f32,
++    ) -> DiscreteDiarization {
+         let mut discrete = Array2::<f32>::zeros(activations.raw_dim());
+         let mut previous_speakers: Vec<usize> = Vec::new();
+ 
+         for (frame_idx, &count) in speaker_count.iter().enumerate() {
+             let current_speakers =
+-                top_k_indices_smoothed(&activations, frame_idx, count, &previous_speakers, epsilon);
++                top_k_indices_smoothed(activations, frame_idx, count, &previous_speakers, epsilon);
+             for &speaker_idx in &current_speakers {
+                 discrete[[frame_idx, speaker_idx]] = 1.0;
+             }
+@@ -167,6 +189,42 @@ impl<'a> Reconstructor<'a> {
+     }
+ }
+ 
++/// Collapse a reconstruction to one speaker per frame, keeping the speaker whose *activation
++/// score* is highest among those the reconstruction marked active.
++///
++/// This is the `exclusive_speaker_diarization` equivalent, and it has to read the continuous
++/// activations to mean anything: a reconstruction stores 1.0 for every active speaker, so an
++/// argmax taken over it is a tie that resolves to whichever cluster index the comparator
++/// happens to favour — the choice ends up made by cluster numbering rather than by acoustics.
++///
++/// Speech is never invented or lost: a frame with at least one active speaker keeps exactly
++/// one, and a frame with none stays empty.
++pub(crate) fn exclusive_from(
++    full: &DiscreteDiarization,
++    activations: &FrameActivations,
++) -> DiscreteDiarization {
++    let mut discrete = Array2::<f32>::zeros(full.raw_dim());
++    for (frame_idx, row) in full.rows().into_iter().enumerate() {
++        let mut best: Option<(usize, f32)> = None;
++        for (speaker_idx, &value) in row.iter().enumerate() {
++            if value <= 0.0 {
++                continue;
++            }
++            let score = activations
++                .get([frame_idx, speaker_idx])
++                .copied()
++                .unwrap_or(0.0);
++            if best.is_none_or(|(_, best_score)| score > best_score) {
++                best = Some((speaker_idx, score));
++            }
++        }
++        if let Some((speaker_idx, _)) = best {
++            discrete[[frame_idx, speaker_idx]] = 1.0;
++        }
++    }
++    DiscreteDiarization(discrete)
++}
++
+ /// Zero out all but the highest-scoring speaker in each frame, making activations exclusive
+ pub fn make_exclusive(activations: &mut Array2<f32>) {
+     for mut row in activations.rows_mut() {
