@@ -75,8 +75,10 @@ crates/diar-ffi/     # C-ABI cdylib → T2 Triton custom backend (Triton backend
 Milestones:
 - **M1 diar-core: CORE LANDED 2026-08-19** (crates/diar-{core,cli,server} built + gate passed:
   AMI 13.101% identical, 16/16 content-identical RTTMs, centroids/embed_window/exclusive verified,
-  31 MB binaries — RESULTS §4.26). Remaining M1: speaker-count constraints, Arc-shared sessions,
-  lazy session loading, server supervisor. + upstream PRs (list below). **T1 SHIP-GATE: CLEARED 2026-08-19** —
+  31 MB binaries — RESULTS §4.26). **Arc-shared sessions (T9a): LANDED 2026-08-19** — all 13
+  ORT sessions shared, per-request scratch handles, N=4 concurrent outputs identical to serial
+  at one engine's VRAM (RESULTS §7.25; app-level flip + quiet-machine throughput leg pending).
+  Remaining M1: speaker-count constraints (T9b), lazy session loading, server supervisor. + upstream PRs (list below). **T1 SHIP-GATE: CLEARED 2026-08-19** —
   clustering optimization (VBx vectorization + threaded pdist) makes speakrs 2.03× faster than
   the fork on the 4.7h file (RESULTS §4.22-4.24); G4 = clean sweep on all files. Remaining M1
   gate: re-run full Phase-B suite after diar-core wrapper lands — DER ≤ 0.3%, determinism,

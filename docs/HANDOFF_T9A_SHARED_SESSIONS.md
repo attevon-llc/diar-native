@@ -1,7 +1,10 @@
 # Handoff — T9a: shared sessions so diarization stops serialising
 
-**Status:** not started. Justified by measurement, scoped by reading the code, deliberately not
-begun as a tail-end change (see "Why this is a dedicated task").
+**Status: IMPLEMENTED 2026-08-19 — see RESULTS §7.25.** Engine-level gates passed (determinism,
+DER parity full+exclusive, N=4 concurrency identity, VRAM flat); throughput leg needs a quiet
+machine; app-level flip + §1 re-measurement pending. NOTE: the §5 Karpathy exclusive gate value
+6.545 % below is the pre-§7.7-fix number — post-fix output scores 6.188 % and is bit-identical
+to `results/exclusive_study/exclusive_fixed`.
 **Repos:** `diar-native` (this repo) — vendored crate at `vendor/speakrs`, wrapper at
 `crates/diar-core`, server at `crates/diar-server`. `transcribe-app` is *not* touched by this task.
 **Corpora, file paths and every baseline number:** `docs/TEST_CORPORA_AND_BASELINES.md`.

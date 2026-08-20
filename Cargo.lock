@@ -375,8 +375,11 @@ name = "diar-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ndarray",
+ "ort",
  "serde",
  "speakrs",
+ "tracing",
 ]
 
 [[package]]

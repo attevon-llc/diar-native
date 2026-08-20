@@ -14,6 +14,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Model filename in the models dir; absence disables the feature.
 pub const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
@@ -42,7 +43,8 @@ fn max_samples(sample_rate: usize) -> usize {
 }
 
 pub struct GenderModel {
-    session: Session,
+    /// Shared across engine handles (T9a): weights + arena load once, `run` locks per window.
+    session: Arc<Mutex<Session>>,
     /// Reused across windows so classification allocates once per engine, not once per clip.
     scratch: Vec<f32>,
 }
@@ -80,9 +82,17 @@ impl GenderModel {
             .map_err(|e| anyhow::anyhow!("gender session commit: {e}"))
             .with_context(|| format!("loading gender model from {}", path.display()))?;
         Ok(Some(Self {
-            session,
+            session: Arc::new(Mutex::new(session)),
             scratch: Vec::new(),
         }))
+    }
+
+    /// Cheap handle over the same session with a fresh scratch buffer (T9a).
+    pub fn clone_shared(&self) -> Self {
+        Self {
+            session: Arc::clone(&self.session),
+            scratch: Vec::new(),
+        }
     }
 
     /// Classify one clip, borrowed from the caller's decoded audio.
@@ -107,8 +117,11 @@ impl GenderModel {
         let input = Array2::from_shape_vec((1, n), self.scratch.clone())?;
         let tensor =
             Tensor::from_array(input).map_err(|e| anyhow::anyhow!("gender input tensor: {e}"))?;
-        let outputs = self
+        let mut session = self
             .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outputs = session
             .run(ort::inputs!["input_values" => tensor])
             .map_err(|e| anyhow::anyhow!("gender inference: {e}"))?;
         let (_, logits) = outputs["logits"]

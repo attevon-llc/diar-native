@@ -1209,3 +1209,51 @@ So ~13 ORT sessions to Arc-share and ~14 buffers to move into a per-request `Scr
 through every inference call site in speakrs, behind DER-parity and determinism gates. That is
 the "vendored-crate surgery" the plan reserved for a dedicated session, and it is the honest
 reason not to start it as a tail-end change.
+
+### 7.25 T9a LANDED — shared sessions; the sidecar no longer serialises (engine-level gates)
+
+**What changed.** All 13 ORT sessions (3 segmentation + 10 embedding) became
+`Arc<Mutex<Session>>` (`SharedSession`, `vendor/speakrs/src/inference.rs`), locked for exactly
+one `run()` per inference call. The model structs themselves are now the per-request scratch:
+`SegmentationModel::clone_shared()` / `EmbeddingModel::clone_shared()` Arc-clone the sessions
+and re-allocate the ~14 staging buffers (~130 MB host RAM) plus a fresh
+`primary_batch_run_options` (its preallocated output tensor is per-handle). diar-core gains
+`DiarEngine::clone_shared()` (seg + emb + gender handles); diar-server keeps one prototype
+engine and clones a handle per request — the engine mutex from §7.24 is gone. No speakrs
+method signatures changed; the pipeline code is untouched. The spec's option 1 as written
+could not work (per-model locks are held for the whole pipeline lifetime) — S-T9a corrected.
+
+**Gates (engine level):**
+
+| gate | bar | result |
+|---|---|---|
+| speakrs test suite | 94 tests | **94 pass** (74+5+8+7, container, openblas-system+online) |
+| determinism | Karpathy ×3 byte-identical | **PASS** (one md5 across 3 runs) |
+| AMI-16 full DER | 13.10 ± 0.01 | **13.101%**, 16/16 RTTMs content-identical to `results/rttm/diarcli_ami` |
+| AMI-16 exclusive DER | 17.81 | **17.813%** exactly; exclusive RTTMs content-identical to `results/exclusive_study/exclusive_fixed` (8/8 sampled) |
+| Karpathy full DER | 8.219 | **8.219%**, content-identical to `results/rttm/diarcli_karpathy` |
+| Karpathy exclusive DER | (see below) | **6.188%** |
+| concurrency correctness | N=4 concurrent ≡ serial | **PASS 4/4, three separate runs** (rttm, segments, exclusive, centroids all equal) |
+| VRAM | 1 engine + N×scratch | **PASS**: 4 510 MiB peak DURING 4 concurrent jobs ≈ one warm engine; zero per-job VRAM growth |
+| throughput | ≥ 2× serial, 4 short files, quiet machine | **1.51× — machine NOT quiet** (load 10-13, dsva-postprocess at 8+ cores, sibling session active); GPU util 46%→66% serial→concurrent. `SPEAKRS_FBANK_POOL=16` changed nothing → pool size is not the residual. RE-MEASURE QUIET before judging; harness `validation/t9a_concurrency.sh` |
+
+Accuracy/determinism runs on GPU 2 (A6000, idle; same sm_86 as the 3080 Ti) because GPU 1 had
+only ~4.2 GiB free beside the live stack; concurrency/VRAM legs ran on GPU 1 with a standalone
+`diar-server:t9a`. Known ORT-CUDA teardown crash (§5) still fires at diar-cli exit, after
+results flush — unchanged by this work.
+
+**Correction to the handoff gate table:** `HANDOFF_T9A_SHARED_SESSIONS.md` §5 lists Karpathy
+exclusive 6.545% — that is the **pre-§7.7-fix** number (§7.4, 660 segments). The post-fix
+exclusive path produces 766 segments and scores **6.188%** (better than the fork's 6.161%
+pre-fix protocol equivalent), and T9a's exclusive output is bit-identical to the recorded
+post-fix artifacts, so the exclusive path is unchanged by this refactor.
+
+**Vendored-tree regression found and fixed:** the working tree had lost the
+`MaskedEmbeddingInput` re-export (`inference.rs`) relative to
+`patches/0001-cuda-performance-patch-set.patch` — diar-core would no longer compile against
+the vendored crate as checked out. Restored (with doc comments), patch regenerated; the rest
+of the tree matched the patch hunk-for-hunk.
+
+**Pending to close T9a:** app-level flip (compose recreate of `diar-native` onto the T9a
+image — needs operator action) + re-run of the §7.24 two-concurrent-file measurement, and a
+quiet-machine throughput leg.

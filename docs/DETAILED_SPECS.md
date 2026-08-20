@@ -61,21 +61,31 @@ before/after; LLM speaker-ID dispatch time improves.
 
 ## S-T9a: Arc-shared sessions in speakrs (concurrency without N× VRAM)
 
-Reality check encoded: in ort 2.0.0-rc.12 `Session::run` takes `&mut self`, although the ORT
-C API is thread-safe for concurrent Run. Two implementation options, DO (1) FIRST:
-1. **Mutex-per-session** (safe, simple): change `OrtEmbeddingState`/segmentation holders to
-   `Arc<Mutex<Session>>`; split `EmbeddingModel` into `SharedModels` (Arc sessions + meta,
-   Clone) and per-request `Scratch` (ALL buffers: the `buffers` struct moves here). Engine API:
-   `DiarEngine::clone_shared()` → cheap handle; `diarize(&shared, &mut scratch, ...)`.
-   Contention profile: seg and emb sessions lock independently → transcribe-time overlap and
-   multi-job pipelining still parallelize across sessions; same-session concurrent jobs
-   serialize per-batch (lock hold = one batch inference) — measure before optimizing further.
-2. **Unsafe Sync wrapper** (only if (1) measures as bottleneck): `struct SyncSession(UnsafeCell
-   <Session>); unsafe impl Sync` + documented invariant (ORT Run is thread-safe; no session
-   mutation after init). Requires upstream discussion if PR'd.
-`primary_batch_run_options` (RunOptions) is NOT thread-safe-shareable — move into Scratch.
-**Gate:** N=4 concurrent diarize jobs on one engine: outputs identical to serial; VRAM ≈ single
-engine + N×scratch (scratch ≈ tens of MB); throughput ≥ 2× serial on 4 short files.
+**IMPLEMENTED 2026-08-19 (RESULTS §7.25). CORRECTION:** option 1 as originally written
+("mutex per session, buffers stay put") **cannot deliver concurrency on this code shape** —
+`DiarizationPipeline` borrows `&'a mut SegmentationModel`/`&'a mut EmbeddingModel` for its
+whole lifetime (pipeline.rs:197), so locks acquired through those borrows are held per-job and
+two jobs serialize exactly as before. The weights/scratch split is not an escalation, it is
+the precondition for any sharing at all.
+
+What landed (same effect as the SharedModels/Scratch split, smaller blast radius): sessions
+become `Arc<Mutex<Session>>` (`SharedSession`, `inference.rs`), locked for exactly one `run()`
+per inference call; the model STRUCTS themselves become the per-request scratch. Each model
+gains `clone_shared()` — Arc-clones the 13 sessions, re-allocates the ~14 staging buffers
+(~130 MB host RAM) and a fresh `primary_batch_run_options` (its preallocated output tensor
+makes RunOptions per-handle by construction — the original warning stands).
+`DiarEngine::clone_shared()` composes seg+emb+gender handles; diar-server keeps a prototype
+engine under a mutex it locks only long enough to clone a handle per request. No method
+signature changes; pipeline code untouched.
+Contention profile (measured): same-session jobs serialize per batch; cross-session work
+overlaps. The unsafe `Sync` wrapper (concurrent `Run` on one session; ORT C API allows it)
+remains the escalation if per-batch locking measures as the binding constraint on a QUIET
+machine.
+**Gate:** N=4 concurrent diarize jobs on one engine: outputs identical to serial — **PASSED
+4/4, three separate runs**; VRAM ≈ single engine + N×scratch — **PASSED, 4 510 MiB peak under
+4 jobs ≈ one engine, zero per-job VRAM growth**; throughput ≥ 2× serial on 4 short files —
+**1.51× measured on a non-quiet machine (load 10-13), re-measure quiet before judging**;
+harness: `validation/t9a_concurrency.sh`.
 
 ## S-T9b: speaker-count constraints (pyannote parity)
 

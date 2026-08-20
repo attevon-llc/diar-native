@@ -288,10 +288,10 @@ index 100b53a..1933960 100644
  
          // update pi
 diff --git a/src/inference.rs b/src/inference.rs
-index 90d4908..591744e 100644
+index 90d4908..808a82f 100644
 --- a/src/inference.rs
 +++ b/src/inference.rs
-@@ -10,7 +10,7 @@ use std::path::PathBuf;
+@@ -10,15 +10,36 @@ use std::path::PathBuf;
  #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
  use std::sync::OnceLock;
  
@@ -300,23 +300,330 @@ index 90d4908..591744e 100644
  pub use segmentation::{SegmentationError, SegmentationModel};
  
  #[cfg(feature = "coreml")]
+ pub(crate) mod coreml;
+ 
+ use ort::ep;
++use ort::session::Session;
+ use ort::session::builder::SessionBuilder;
+ 
++/// One ORT session shared across pipeline handles (diar-native patch, T9a).
++///
++/// `Session::run` takes `&mut self` in ort 2.0.0-rc.12 even though the ORT C API's `Run`
++/// is thread-safe, so cross-handle sharing goes through a mutex held for exactly one
++/// inference call. Weights and the session's arena are loaded once; every handle cloned
++/// via `clone_shared` re-uses them and pays only for its own scratch buffers.
++pub(crate) type SharedSession = std::sync::Arc<std::sync::Mutex<Session>>;
++
++pub(crate) fn share_session(session: Session) -> SharedSession {
++    std::sync::Arc::new(std::sync::Mutex::new(session))
++}
++
++pub(crate) fn lock_session(session: &SharedSession) -> std::sync::MutexGuard<'_, Session> {
++    // A poisoned lock means another handle panicked mid-run; the session itself has no
++    // torn state to protect (ORT `Run` is atomic at the C API level), so keep serving.
++    session
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++}
++
+ #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
+ static ORT_RUNTIME_INIT: OnceLock<Result<(), OrtRuntimeError>> = OnceLock::new();
+ 
 diff --git a/src/inference/embedding.rs b/src/inference/embedding.rs
-index 2fd9512..ba5dd87 100644
+index 2fd9512..233a01c 100644
 --- a/src/inference/embedding.rs
 +++ b/src/inference/embedding.rs
-@@ -74,6 +74,7 @@ struct OrtEmbeddingState {
-     session: Session,
-     primary_batched_session: Option<Session>,
-     split_fbank_session: Option<Session>,
-+    split_fbank_pool: Vec<Session>,
-     split_fbank_batched_session: Option<Session>,
-     split_tail_session: Option<Session>,
-     split_tail_batched_session: Option<Session>,
+@@ -5,11 +5,11 @@ use std::sync::Arc;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, CoreMlModel, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError};
++use crate::inference::{ExecutionMode, ModelLoadError, SharedSession};
+ use ndarray::{Array2, Array3, s};
+ #[cfg(feature = "coreml")]
+ use objc2_core_ml::MLComputeUnits;
+-use ort::session::{HasSelectedOutputs, RunOptions, Session};
++use ort::session::{HasSelectedOutputs, RunOptions};
+ 
+ mod batch;
+ #[cfg(feature = "coreml")]
+@@ -48,9 +48,13 @@ const FBANK_FRAMES: usize = 998;
+ const FBANK_FEATURES: usize = 80;
+ const MASK_FRAMES: usize = 589;
+ 
++/// One masked audio window for [`EmbeddingModel::embed_batch`]
+ pub struct MaskedEmbeddingInput<'a> {
++    /// 16 kHz mono samples (padded/truncated to the model window internally)
+     pub audio: &'a [f32],
++    /// Frame-level speaker weights over the segmentation mask grid
+     pub mask: &'a [f32],
++    /// Optional overlap-cleaned mask, preferred when it keeps enough weight
+     pub clean_mask: Option<&'a [f32]>,
+ }
+ 
+@@ -71,18 +75,39 @@ struct EmbeddingMeta {
+ }
+ 
+ struct OrtEmbeddingState {
+-    session: Session,
+-    primary_batched_session: Option<Session>,
+-    split_fbank_session: Option<Session>,
+-    split_fbank_batched_session: Option<Session>,
+-    split_tail_session: Option<Session>,
+-    split_tail_batched_session: Option<Session>,
+-    split_primary_tail_batched_session: Option<Session>,
+-    multi_mask_session: Option<Session>,
+-    multi_mask_batched_session: Option<Session>,
++    session: SharedSession,
++    primary_batched_session: Option<SharedSession>,
++    split_fbank_session: Option<SharedSession>,
++    split_fbank_pool: Vec<SharedSession>,
++    split_fbank_batched_session: Option<SharedSession>,
++    split_tail_session: Option<SharedSession>,
++    split_tail_batched_session: Option<SharedSession>,
++    split_primary_tail_batched_session: Option<SharedSession>,
++    multi_mask_session: Option<SharedSession>,
++    multi_mask_batched_session: Option<SharedSession>,
++    // Per-handle: carries a preallocated output tensor, so it must never be shared
++    // across concurrent runs (S-T9a).
+     primary_batch_run_options: Option<RunOptions<HasSelectedOutputs>>,
+ }
+ 
++impl OrtEmbeddingState {
++    fn fresh_primary_run_options(
++        has_primary_batched: bool,
++    ) -> Result<Option<RunOptions<HasSelectedOutputs>>, ort::Error> {
++        has_primary_batched
++            .then(|| {
++                let mut opts = preallocated_run_options(
++                    PRIMARY_BATCH_SIZE,
++                    256,
++                    "primary batched embedding output",
++                )?;
++                let _ = opts.disable_device_sync();
++                Ok::<RunOptions<HasSelectedOutputs>, ort::Error>(opts)
++            })
++            .transpose()
++    }
++}
++
+ #[cfg(feature = "coreml")]
+ struct CoreMlEmbeddingState {
+     #[cfg(feature = "coreml")]
+@@ -136,6 +161,40 @@ struct EmbeddingBuffers {
+     split_primary_weights_batch_buffer: Array2<f32>,
+ }
+ 
++impl EmbeddingBuffers {
++    fn fresh() -> Self {
++        Self {
++            multi_mask_fbank_buffer: Array3::zeros((
++                MULTI_MASK_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            multi_mask_masks_buffer: Array2::zeros((
++                MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS,
++                MASK_FRAMES,
++            )),
++            waveform_buffer: Array3::zeros((1, 1, 160_000)),
++            weights_buffer: Array2::zeros((1, 589)),
++            primary_batch_waveform_buffer: Array3::zeros((PRIMARY_BATCH_SIZE, 1, 160_000)),
++            primary_batch_weights_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
++            split_waveform_buffer: Array3::zeros((1, 1, 160_000)),
++            split_fbank_batch_buffer: Array3::zeros((FBANK_BATCH_SIZE, 1, 160_000)),
++            split_feature_batch_buffer: Array3::zeros((
++                CHUNK_SPEAKER_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            split_weights_batch_buffer: Array2::zeros((CHUNK_SPEAKER_BATCH_SIZE, 589)),
++            split_primary_feature_batch_buffer: Array3::zeros((
++                PRIMARY_BATCH_SIZE,
++                FBANK_FRAMES,
++                FBANK_FEATURES,
++            )),
++            split_primary_weights_batch_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
++        }
++    }
++}
++
+ /// WeSpeaker speaker embedding model with split-backend and chunk embedding support
+ pub struct EmbeddingModel {
+     meta: EmbeddingMeta,
+@@ -159,6 +218,47 @@ impl EmbeddingModel {
+         Self::with_mode_and_config(model_path, mode, &crate::pipeline::RuntimeConfig::default())
+     }
+ 
++    /// Cheap handle over the same ORT sessions with fresh scratch buffers
++    /// (diar-native patch, T9a).
++    ///
++    /// All 10 ORT sessions (weights + arenas — the VRAM) are shared through
++    /// [`SharedSession`]; the staging buffers and the preallocated-output
++    /// `RunOptions` are re-created per handle, so N handles cost N × scratch
++    /// (~130 MB host RAM), not N × engine. Handles may run concurrently — each
++    /// inference call serializes on its session's mutex for exactly one `Run`.
++    #[cfg(not(feature = "coreml"))]
++    pub fn clone_shared(&self) -> Result<Self, ort::Error> {
++        Ok(Self {
++            meta: EmbeddingMeta {
++                model_path: self.meta.model_path.clone(),
++                mode: self.meta.mode,
++                sample_rate: self.meta.sample_rate,
++                window_samples: self.meta.window_samples,
++                mask_frames: self.meta.mask_frames,
++                min_num_samples: self.meta.min_num_samples,
++            },
++            ort: OrtEmbeddingState {
++                session: std::sync::Arc::clone(&self.ort.session),
++                primary_batched_session: self.ort.primary_batched_session.clone(),
++                split_fbank_session: self.ort.split_fbank_session.clone(),
++                split_fbank_pool: self.ort.split_fbank_pool.clone(),
++                split_fbank_batched_session: self.ort.split_fbank_batched_session.clone(),
++                split_tail_session: self.ort.split_tail_session.clone(),
++                split_tail_batched_session: self.ort.split_tail_batched_session.clone(),
++                split_primary_tail_batched_session: self
++                    .ort
++                    .split_primary_tail_batched_session
++                    .clone(),
++                multi_mask_session: self.ort.multi_mask_session.clone(),
++                multi_mask_batched_session: self.ort.multi_mask_batched_session.clone(),
++                primary_batch_run_options: OrtEmbeddingState::fresh_primary_run_options(
++                    self.ort.primary_batched_session.is_some(),
++                )?,
++            },
++            buffers: EmbeddingBuffers::fresh(),
++        })
++    }
++
+     /// Audio sample rate in Hz (16000)
+     pub fn sample_rate(&self) -> usize {
+         self.meta.sample_rate
+diff --git a/src/inference/embedding/batch.rs b/src/inference/embedding/batch.rs
+index 3d68e0d..5f22e10 100644
+--- a/src/inference/embedding/batch.rs
++++ b/src/inference/embedding/batch.rs
+@@ -8,6 +8,7 @@ use super::{
+     NUM_SPEAKERS, PRIMARY_BATCH_SIZE, SplitTailInput, array2_from_shape_vec, array2_slice_mut,
+     array3_slice_mut, first_output, select_mask,
+ };
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract speaker embeddings for a batch of masked audio windows
+@@ -18,7 +19,7 @@ impl EmbeddingModel {
+         if let Some(sess) = self
+             .ort
+             .primary_batched_session
+-            .as_mut()
++            .as_ref()
+             .filter(|_| inputs.len() == PRIMARY_BATCH_SIZE)
+         {
+             for (batch_idx, input) in inputs.iter().enumerate() {
+@@ -48,6 +49,7 @@ impl EmbeddingModel {
+                 TensorRef::from_array_view(self.buffers.primary_batch_weights_buffer.view())?;
+             let ort_inputs =
+                 ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor];
++            let mut sess = lock_session(sess);
+             let outputs = if let Some(opts) = &self.ort.primary_batch_run_options {
+                 sess.run_with_options(ort_inputs, opts)?
+             } else {
+@@ -146,12 +148,14 @@ impl EmbeddingModel {
+                 TensorRef::from_array_view(self.buffers.multi_mask_fbank_buffer.view())?;
+             let masks_tensor =
+                 TensorRef::from_array_view(self.buffers.multi_mask_masks_buffer.view())?;
+-            let outputs = self
+-                .ort
+-                .multi_mask_batched_session
+-                .as_mut()
+-                .ok_or_else(|| ort::Error::new("missing multi-mask batched session"))?
+-                .run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
++            let mut session = lock_session(
++                self.ort
++                    .multi_mask_batched_session
++                    .as_ref()
++                    .ok_or_else(|| ort::Error::new("missing multi-mask batched session"))?,
++            );
++            let outputs =
++                session.run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
+             let output = first_output(outputs.values(), "multi-mask batched output")?;
+             let (_shape, data) = output.try_extract_tensor::<f32>()?;
+             let batch = array2_from_shape_vec(
+@@ -177,12 +181,14 @@ impl EmbeddingModel {
+                     .slice(s![mask_start..mask_end, ..]);
+                 let fbank_tensor = TensorRef::from_array_view(fbank_slice.view())?;
+                 let masks_tensor = TensorRef::from_array_view(masks_slice.view())?;
+-                let outputs = self
+-                    .ort
+-                    .multi_mask_session
+-                    .as_mut()
+-                    .ok_or_else(|| ort::Error::new("missing multi-mask session"))?
+-                    .run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
++                let mut session = lock_session(
++                    self.ort
++                        .multi_mask_session
++                        .as_ref()
++                        .ok_or_else(|| ort::Error::new("missing multi-mask session"))?,
++                );
++                let outputs =
++                    session.run(ort::inputs!["fbank" => fbank_tensor, "masks" => masks_tensor])?;
+                 let output = first_output(outputs.values(), "multi-mask output")?;
+                 let (_shape, data) = output.try_extract_tensor::<f32>()?;
+                 for (local_idx, row_idx) in (mask_start..mask_end).enumerate() {
+@@ -266,12 +272,14 @@ impl EmbeddingModel {
+             TensorRef::from_array_view(self.buffers.split_primary_feature_batch_buffer.view())?;
+         let weights_tensor =
+             TensorRef::from_array_view(self.buffers.split_primary_weights_batch_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_primary_tail_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing primary tail batched session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_primary_tail_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing primary tail batched session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "primary tail batched output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         let batch = array2_from_shape_vec(
 diff --git a/src/inference/embedding/fbank.rs b/src/inference/embedding/fbank.rs
-index 59c66fd..ef5b335 100644
+index 59c66fd..be39d39 100644
 --- a/src/inference/embedding/fbank.rs
 +++ b/src/inference/embedding/fbank.rs
-@@ -58,6 +58,44 @@ impl EmbeddingModel {
+@@ -4,6 +4,7 @@ use ort::value::TensorRef;
+ #[cfg(feature = "coreml")]
+ use super::tensor::array3_slice;
+ use super::{EmbeddingModel, FBANK_BATCH_SIZE, array2_from_shape_vec, first_output};
++use crate::inference::{SharedSession, lock_session};
+ 
+ impl EmbeddingModel {
+     /// Compute fbank features for a single audio chunk via the split fbank model
+@@ -40,12 +41,13 @@ impl EmbeddingModel {
+ 
+         let waveform_tensor =
+             TensorRef::from_array_view(self.buffers.split_waveform_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_fbank_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split fbank session"))?
+-            .run(ort::inputs!["waveform" => waveform_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_fbank_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split fbank session"))?,
++        );
++        let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
+         let output = first_output(outputs.values(), "chunk fbank output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+         let frames = shape[1] as usize;
+@@ -58,6 +60,44 @@ impl EmbeddingModel {
          &mut self,
          audios: &[&[f32]],
      ) -> Result<Vec<Array2<f32>>, ort::Error> {
@@ -324,13 +631,13 @@ index 59c66fd..ef5b335 100644
 +        // fbank is otherwise ~76% of CUDA E2E wall time (intra-op threads don't scale it).
 +        if audios.len() > 1 && !self.ort.split_fbank_pool.is_empty() {
 +            let window_samples = self.meta.window_samples;
-+            let pool = &mut self.ort.split_fbank_pool;
++            let pool = &self.ort.split_fbank_pool;
 +            let per_worker = audios.len().div_ceil(pool.len());
 +            let mut collected: Vec<Option<Vec<Array2<f32>>>> = Vec::new();
 +            collected.resize_with(pool.len(), || None);
 +            std::thread::scope(|scope| {
 +                let mut handles = Vec::new();
-+                for (worker_idx, session) in pool.iter_mut().enumerate() {
++                for (worker_idx, session) in pool.iter().enumerate() {
 +                    let start = worker_idx * per_worker;
 +                    if start >= audios.len() {
 +                        break;
@@ -361,14 +668,36 @@ index 59c66fd..ef5b335 100644
          let has_batched = self.has_batched_fbank();
          if !has_batched {
              tracing::debug!(
-@@ -171,3 +209,25 @@ impl EmbeddingModel {
+@@ -97,12 +137,13 @@ impl EmbeddingModel {
+ 
+             let waveform_tensor =
+                 TensorRef::from_array_view(self.buffers.split_fbank_batch_buffer.view())?;
+-            let outputs = self
+-                .ort
+-                .split_fbank_batched_session
+-                .as_mut()
+-                .ok_or_else(|| ort::Error::new("missing split fbank batched session"))?
+-                .run(ort::inputs!["waveform" => waveform_tensor])?;
++            let mut session = lock_session(
++                self.ort
++                    .split_fbank_batched_session
++                    .as_ref()
++                    .ok_or_else(|| ort::Error::new("missing split fbank batched session"))?,
++            );
++            let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
+             let output = first_output(outputs.values(), "batched chunk fbank output")?;
+             let (shape, data) = output.try_extract_tensor::<f32>()?;
+             Self::push_fbank_batch_results(
+@@ -171,3 +212,28 @@ impl EmbeddingModel {
          Ok(true)
      }
  }
 +
 +// diar-native patch: session-local fbank for the parallel pool path (no shared buffers).
++// The pool sessions are shared across handles; the lock is held for one chunk's run so
++// concurrent jobs interleave on the pool instead of serializing behind whole slices.
 +fn fbank_via_session(
-+    session: &mut ort::session::Session,
++    session: &SharedSession,
 +    audio: &[f32],
 +    window_samples: usize,
 +) -> Result<Array2<f32>, ort::Error> {
@@ -377,6 +706,7 @@ index 59c66fd..ef5b335 100644
 +    buf.slice_mut(s![0, 0, ..copy_len])
 +        .assign(&ndarray::ArrayView1::from(&audio[..copy_len]));
 +    let waveform_tensor = TensorRef::from_array_view(buf.view())?;
++    let mut session = lock_session(session);
 +    let outputs = session.run(ort::inputs!["waveform" => waveform_tensor])?;
 +    let output = first_output(outputs.values(), "pool chunk fbank output")?;
 +    let (shape, data) = output.try_extract_tensor::<f32>()?;
@@ -388,10 +718,42 @@ index 59c66fd..ef5b335 100644
 +    )
 +}
 diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
-index ff5ae7f..7e10572 100644
+index ff5ae7f..00ebf06 100644
 --- a/src/inference/embedding/load/sessions.rs
 +++ b/src/inference/embedding/load/sessions.rs
-@@ -26,6 +26,7 @@ pub(super) struct LoadedOrtSessions {
+@@ -3,21 +3,23 @@ use std::path::Path;
+ #[cfg(feature = "coreml")]
+ use std::sync::Arc;
+ 
+-use ndarray::{Array2, Array3};
+ #[cfg(feature = "coreml")]
+ use objc2_core_ml::MLComputeUnits;
+-use ort::session::{HasSelectedOutputs, RunOptions, Session};
++use ort::session::Session;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, CoreMlModel, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError};
++use crate::inference::{ExecutionMode, ModelLoadError, share_session};
+ 
++#[cfg(feature = "coreml")]
++use super::super::{
++    FBANK_BATCH_SIZE, FBANK_FEATURES, FBANK_FRAMES, MASK_FRAMES, MULTI_MASK_BATCH_SIZE,
++    NUM_SPEAKERS,
++};
+ use super::super::{
+-    CHUNK_SPEAKER_BATCH_SIZE, EmbeddingBuffers, EmbeddingMeta, EmbeddingModel, FBANK_BATCH_SIZE,
+-    FBANK_FEATURES, FBANK_FRAMES, MASK_FRAMES, MULTI_MASK_BATCH_SIZE, NUM_SPEAKERS,
+-    OrtEmbeddingState, PRIMARY_BATCH_SIZE, batched_model_path, multi_mask_model_path,
+-    preallocated_run_options, read_min_num_samples, split_fbank_batched_model_path,
+-    split_fbank_model_path, split_tail_model_path,
++    CHUNK_SPEAKER_BATCH_SIZE, EmbeddingBuffers, EmbeddingMeta, EmbeddingModel, OrtEmbeddingState,
++    PRIMARY_BATCH_SIZE, batched_model_path, multi_mask_model_path, read_min_num_samples,
++    split_fbank_batched_model_path, split_fbank_model_path, split_tail_model_path,
+ };
+ #[cfg(feature = "coreml")]
+ use super::super::{ChunkEmbeddingSession, ChunkSessionSpec, CoreMlEmbeddingState};
+@@ -26,6 +28,7 @@ pub(super) struct LoadedOrtSessions {
      session: Session,
      primary_batched_session: Option<Session>,
      split_fbank_session: Option<Session>,
@@ -399,7 +761,7 @@ index ff5ae7f..7e10572 100644
      split_fbank_batched_session: Option<Session>,
      split_tail_session: Option<Session>,
      split_tail_batched_session: Option<Session>,
-@@ -84,13 +85,21 @@ impl LoadedSessions {
+@@ -84,13 +87,21 @@ impl LoadedSessions {
              }};
          }
  
@@ -422,7 +784,7 @@ index ff5ae7f..7e10572 100644
                  .map(|path| EmbeddingModel::build_batched_session(&path, mode))
                  .transpose()?
          );
-@@ -116,14 +125,14 @@ impl LoadedSessions {
+@@ -116,14 +127,14 @@ impl LoadedSessions {
          let (split_tail_batched_session, split_tail_batched_elapsed) = timed!(
              use_split_backend
                  .then_some(split_tail_batched_path)
@@ -439,7 +801,7 @@ index ff5ae7f..7e10572 100644
                  .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
                  .transpose()?
          );
-@@ -236,10 +245,29 @@ impl LoadedSessions {
+@@ -236,10 +247,29 @@ impl LoadedSessions {
              );
          }
  
@@ -469,14 +831,129 @@ index ff5ae7f..7e10572 100644
              split_fbank_batched_session,
              split_tail_session,
              split_tail_batched_session,
-@@ -288,6 +316,7 @@ impl LoadedSessions {
-                 session: self.ort.session,
-                 primary_batched_session: self.ort.primary_batched_session,
-                 split_fbank_session: self.ort.split_fbank_session,
-+                split_fbank_pool: self.ort.split_fbank_pool,
-                 split_fbank_batched_session: self.ort.split_fbank_batched_session,
-                 split_tail_session: self.ort.split_tail_session,
-                 split_tail_batched_session: self.ort.split_tail_batched_session,
+@@ -275,6 +305,7 @@ impl LoadedSessions {
+     ) -> Result<EmbeddingModel, ModelLoadError> {
+         let metadata_path = model_path.with_extension("min_num_samples.txt");
+ 
++        let has_primary_batched = self.ort.primary_batched_session.is_some();
+         Ok(EmbeddingModel {
+             meta: EmbeddingMeta {
+                 model_path: model_path.to_path_buf(),
+@@ -285,27 +316,30 @@ impl LoadedSessions {
+                 min_num_samples: read_min_num_samples(&metadata_path).unwrap_or(400),
+             },
+             ort: OrtEmbeddingState {
+-                session: self.ort.session,
+-                primary_batched_session: self.ort.primary_batched_session,
+-                split_fbank_session: self.ort.split_fbank_session,
+-                split_fbank_batched_session: self.ort.split_fbank_batched_session,
+-                split_tail_session: self.ort.split_tail_session,
+-                split_tail_batched_session: self.ort.split_tail_batched_session,
+-                split_primary_tail_batched_session: self.ort.split_primary_tail_batched_session,
+-                multi_mask_session: self.ort.multi_mask_session,
+-                multi_mask_batched_session: self.ort.multi_mask_batched_session,
+-                primary_batch_run_options: batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+-                    .filter(|path| path.exists())
+-                    .map(|_| {
+-                        let mut opts = preallocated_run_options(
+-                            PRIMARY_BATCH_SIZE,
+-                            256,
+-                            "primary batched embedding output",
+-                        )?;
+-                        let _ = opts.disable_device_sync();
+-                        Ok::<RunOptions<HasSelectedOutputs>, ort::Error>(opts)
+-                    })
+-                    .transpose()?,
++                session: share_session(self.ort.session),
++                primary_batched_session: self.ort.primary_batched_session.map(share_session),
++                split_fbank_session: self.ort.split_fbank_session.map(share_session),
++                split_fbank_pool: self
++                    .ort
++                    .split_fbank_pool
++                    .into_iter()
++                    .map(share_session)
++                    .collect(),
++                split_fbank_batched_session: self
++                    .ort
++                    .split_fbank_batched_session
++                    .map(share_session),
++                split_tail_session: self.ort.split_tail_session.map(share_session),
++                split_tail_batched_session: self.ort.split_tail_batched_session.map(share_session),
++                split_primary_tail_batched_session: self
++                    .ort
++                    .split_primary_tail_batched_session
++                    .map(share_session),
++                multi_mask_session: self.ort.multi_mask_session.map(share_session),
++                multi_mask_batched_session: self.ort.multi_mask_batched_session.map(share_session),
++                primary_batch_run_options: OrtEmbeddingState::fresh_primary_run_options(
++                    has_primary_batched,
++                )?,
+             },
+             #[cfg(feature = "coreml")]
+             coreml: CoreMlEmbeddingState {
+@@ -344,35 +378,7 @@ impl LoadedSessions {
+                     &[MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS, MASK_FRAMES],
+                 ),
+             },
+-            buffers: EmbeddingBuffers {
+-                multi_mask_fbank_buffer: Array3::zeros((
+-                    MULTI_MASK_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                multi_mask_masks_buffer: Array2::zeros((
+-                    MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS,
+-                    MASK_FRAMES,
+-                )),
+-                waveform_buffer: Array3::zeros((1, 1, 160_000)),
+-                weights_buffer: Array2::zeros((1, 589)),
+-                primary_batch_waveform_buffer: Array3::zeros((PRIMARY_BATCH_SIZE, 1, 160_000)),
+-                primary_batch_weights_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
+-                split_waveform_buffer: Array3::zeros((1, 1, 160_000)),
+-                split_fbank_batch_buffer: Array3::zeros((FBANK_BATCH_SIZE, 1, 160_000)),
+-                split_feature_batch_buffer: Array3::zeros((
+-                    CHUNK_SPEAKER_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                split_weights_batch_buffer: Array2::zeros((CHUNK_SPEAKER_BATCH_SIZE, 589)),
+-                split_primary_feature_batch_buffer: Array3::zeros((
+-                    PRIMARY_BATCH_SIZE,
+-                    FBANK_FRAMES,
+-                    FBANK_FEATURES,
+-                )),
+-                split_primary_weights_batch_buffer: Array2::zeros((PRIMARY_BATCH_SIZE, 589)),
+-            },
++            buffers: EmbeddingBuffers::fresh(),
+         })
+     }
+ }
+diff --git a/src/inference/embedding/run.rs b/src/inference/embedding/run.rs
+index eabadde..9d56843 100644
+--- a/src/inference/embedding/run.rs
++++ b/src/inference/embedding/run.rs
+@@ -2,6 +2,7 @@ use ndarray::{Array1, s};
+ use ort::value::TensorRef;
+ 
+ use super::{EmbeddingModel, first_output, select_mask};
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract a speaker embedding from raw audio with a uniform mask
+@@ -37,10 +38,9 @@ impl EmbeddingModel {
+ 
+         let waveform_tensor = TensorRef::from_array_view(self.buffers.waveform_buffer.view())?;
+         let weights_tensor = TensorRef::from_array_view(self.buffers.weights_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .session
+-            .run(ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(&self.ort.session);
++        let outputs =
++            session.run(ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "masked embedding output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         Ok(Array1::from_vec(data.to_vec()))
 diff --git a/src/inference/embedding/session.rs b/src/inference/embedding/session.rs
 index 751dd24..c38f29d 100644
 --- a/src/inference/embedding/session.rs
@@ -501,6 +978,173 @@ index 751dd24..c38f29d 100644
          let builder = Session::builder()?
              .with_independent_thread_pool()?
              .with_intra_threads(threads)?
+diff --git a/src/inference/embedding/tail.rs b/src/inference/embedding/tail.rs
+index 2565f0a..7dfef0a 100644
+--- a/src/inference/embedding/tail.rs
++++ b/src/inference/embedding/tail.rs
+@@ -7,6 +7,7 @@ use super::{
+     CHUNK_SPEAKER_BATCH_SIZE, EmbeddingModel, FBANK_FEATURES, FBANK_FRAMES, array1_slice,
+     array2_from_shape_vec, array3_slice_mut, first_output, select_mask, should_use_clean_mask,
+ };
++use crate::inference::lock_session;
+ 
+ impl EmbeddingModel {
+     /// Extract per-speaker embeddings for one audio chunk using segmentation masks
+@@ -119,12 +120,14 @@ impl EmbeddingModel {
+         let weight_slice = self.buffers.split_weights_batch_buffer.slice(s![0..1, ..]);
+         let fbank_tensor = TensorRef::from_array_view(feature_slice.view())?;
+         let weights_tensor = TensorRef::from_array_view(weight_slice.view())?;
+-        let outputs = self
+-            .ort
+-            .split_tail_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split tail session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_tail_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split tail session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "split tail output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         Ok(Array1::from_vec(data.to_vec()))
+@@ -206,12 +209,14 @@ impl EmbeddingModel {
+             TensorRef::from_array_view(self.buffers.split_feature_batch_buffer.view())?;
+         let weights_tensor =
+             TensorRef::from_array_view(self.buffers.split_weights_batch_buffer.view())?;
+-        let outputs = self
+-            .ort
+-            .split_tail_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing split tail batched session"))?
+-            .run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
++        let mut session = lock_session(
++            self.ort
++                .split_tail_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing split tail batched session"))?,
++        );
++        let outputs =
++            session.run(ort::inputs!["fbank" => fbank_tensor, "weights" => weights_tensor])?;
+         let output = first_output(outputs.values(), "tail batch output")?;
+         let (_shape, data) = output.try_extract_tensor::<f32>()?;
+         array2_from_shape_vec(
+diff --git a/src/inference/segmentation.rs b/src/inference/segmentation.rs
+index a9c6627..7fbd60c 100644
+--- a/src/inference/segmentation.rs
++++ b/src/inference/segmentation.rs
+@@ -5,7 +5,10 @@ use ort::session::Session;
+ 
+ #[cfg(feature = "coreml")]
+ use crate::inference::coreml::{CachedInputShape, SharedCoreMlModel};
+-use crate::inference::{ExecutionMode, ModelLoadError, ensure_ort_ready, with_execution_mode};
++use crate::inference::{
++    ExecutionMode, ModelLoadError, SharedSession, ensure_ort_ready, share_session,
++    with_execution_mode,
++};
+ #[cfg(feature = "coreml")]
+ mod native;
+ #[cfg(feature = "coreml")]
+@@ -55,8 +58,8 @@ const LARGE_BATCH_SIZE: usize = 64;
+ /// Sliding-window segmentation model (pyannote segmentation-3.0)
+ pub struct SegmentationModel {
+     mode: ExecutionMode,
+-    session: Session,
+-    primary_batched_session: Option<Session>,
++    session: SharedSession,
++    primary_batched_session: Option<SharedSession>,
+     #[cfg(feature = "coreml")]
+     native_session: Option<SharedCoreMlModel>,
+     #[cfg(feature = "coreml")]
+@@ -114,11 +117,11 @@ impl SegmentationModel {
+             }};
+         }
+ 
+-        let (session, session_elapsed) = timed!(Self::build_session(model_path, mode)?);
++        let (session, session_elapsed) = timed!(share_session(Self::build_session(model_path, mode)?));
+         let (primary_batched_session, primary_batched_elapsed) = timed!(
+             batched_model_path(model_path, PRIMARY_BATCH_SIZE)
+                 .filter(|path| path.exists())
+-                .map(|path| Self::build_session(&path, mode))
++                .map(|path| Self::build_session(&path, mode).map(share_session))
+                 .transpose()?
+         );
+         #[cfg(feature = "coreml")]
+@@ -254,6 +257,31 @@ impl SegmentationModel {
+     pub fn mode(&self) -> ExecutionMode {
+         self.mode
+     }
++
++    /// Cheap handle over the same ORT sessions with fresh scratch buffers
++    /// (diar-native patch, T9a).
++    ///
++    /// Weights and per-session arenas are shared through [`SharedSession`]; only the
++    /// input staging buffers are re-allocated, so N handles cost N × scratch, not
++    /// N × model. Handles may run concurrently — each inference call serializes on
++    /// its session's mutex for exactly one `Run`.
++    #[cfg(not(feature = "coreml"))]
++    pub fn clone_shared(&self) -> Self {
++        Self {
++            mode: self.mode,
++            session: std::sync::Arc::clone(&self.session),
++            primary_batched_session: self.primary_batched_session.clone(),
++            input_buffer: ndarray::Array3::zeros((1, 1, self.window_samples)),
++            primary_batch_input_buffer: ndarray::Array3::zeros((
++                PRIMARY_BATCH_SIZE,
++                1,
++                self.window_samples,
++            )),
++            window_samples: self.window_samples,
++            step_samples: self.step_samples,
++            sample_rate: self.sample_rate,
++        }
++    }
+ }
+ 
+ fn batched_model_path(model_path: &Path, batch_size: usize) -> Option<PathBuf> {
+diff --git a/src/inference/segmentation/run.rs b/src/inference/segmentation/run.rs
+index b0661ae..f995061 100644
+--- a/src/inference/segmentation/run.rs
++++ b/src/inference/segmentation/run.rs
+@@ -4,6 +4,7 @@ use ort::value::TensorRef;
+ use tracing::debug;
+ 
+ use super::{PRIMARY_BATCH_SIZE, SegmentationError, SegmentationModel};
++use crate::inference::lock_session;
+ use crate::inference::segmentation::tensor::{SegmentationWindows, first_output, output_shape3};
+ 
+ impl SegmentationModel {
+@@ -145,7 +146,8 @@ impl SegmentationModel {
+             .assign(&ndarray::ArrayView1::from(window));
+         let input_tensor = TensorRef::from_array_view(self.input_buffer.view())?;
+ 
+-        let outputs = self.session.run(ort::inputs![input_tensor])?;
++        let mut session = lock_session(&self.session);
++        let outputs = session.run(ort::inputs![input_tensor])?;
+         let output = first_output(outputs.values(), "segmentation window output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+ 
+@@ -179,11 +181,12 @@ impl SegmentationModel {
+         }
+         let input_tensor = TensorRef::from_array_view(self.primary_batch_input_buffer.view())?;
+ 
+-        let outputs = self
+-            .primary_batched_session
+-            .as_mut()
+-            .ok_or_else(|| ort::Error::new("missing primary batched segmentation session"))?
+-            .run(ort::inputs![input_tensor])?;
++        let mut session = lock_session(
++            self.primary_batched_session
++                .as_ref()
++                .ok_or_else(|| ort::Error::new("missing primary batched segmentation session"))?,
++        );
++        let outputs = session.run(ort::inputs![input_tensor])?;
+         let output = first_output(outputs.values(), "segmentation batch output")?;
+         let (shape, data) = output.try_extract_tensor::<f32>()?;
+ 
 diff --git a/src/pipeline/chunk_embedding.rs b/src/pipeline/chunk_embedding.rs
 index 17a8555..b8632f6 100644
 --- a/src/pipeline/chunk_embedding.rs

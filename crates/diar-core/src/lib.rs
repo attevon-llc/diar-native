@@ -125,8 +125,24 @@ impl DiarEngine {
         })
     }
 
-    /// Diarize 16 kHz mono f32 samples. `&mut` because speakrs sessions carry scratch
-    /// buffers; concurrency is provided by multiple engines or the server's admission gate.
+    /// Cheap handle over the same ORT sessions with fresh per-request scratch (T9a,
+    /// PLAN decision #4). Weights + arenas (the VRAM) load once; each handle carries
+    /// only staging buffers (~130 MB host RAM), so N handles run N jobs concurrently
+    /// without N × engine. Every inference call locks its session for exactly one run.
+    pub fn clone_shared(&self) -> Result<Self> {
+        Ok(Self {
+            seg: self.seg.clone_shared(),
+            emb: self
+                .emb
+                .clone_shared()
+                .map_err(|e| anyhow::anyhow!("cloning embedding handle: {e}"))?,
+            gender: self.gender.as_ref().map(GenderModel::clone_shared),
+            models_dir: self.models_dir.clone(),
+        })
+    }
+
+    /// Diarize 16 kHz mono f32 samples. `&mut` because the handle carries per-request
+    /// scratch buffers; for concurrency give each job its own [`Self::clone_shared`] handle.
     pub fn diarize(&mut self, audio: &[f32], file_id: &str) -> Result<DiarizeOutput> {
         self.diarize_with(audio, file_id, false)
     }

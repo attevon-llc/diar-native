@@ -1,8 +1,10 @@
 //! diar-server — T1 sidecar (PLAN.md deployment tier 1).
 //!
 //! Stateless executor: Celery (or any client) POSTs a job; orchestration/queueing stays
-//! upstream (PLAN decision #3). One engine instance (shared weights); an admission
-//! semaphore bounds in-flight jobs; compute runs on a blocking thread.
+//! upstream (PLAN decision #3). One set of shared ORT sessions (weights + arenas load
+//! once — PLAN decision #4 / T9a); each request runs on its own cheap engine handle, so
+//! jobs execute concurrently up to the admission semaphore instead of serializing on an
+//! engine mutex. Compute runs on blocking threads.
 //! Audio arrives BY PATH on a shared volume (matches the compose topology).
 
 use std::path::PathBuf;
@@ -17,8 +19,19 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 struct AppState {
+    /// Prototype holding the shared sessions. Never runs jobs itself — the mutex is held
+    /// only long enough to `clone_shared` a per-request handle (buffers, microseconds).
     engine: Mutex<DiarEngine>,
     gate: Semaphore,
+}
+
+impl AppState {
+    fn request_handle(&self) -> anyhow::Result<DiarEngine> {
+        self.engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone_shared()
+    }
 }
 
 #[derive(Deserialize)]
@@ -122,7 +135,7 @@ async fn diarize(
                     .map(|s| s.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "file".into());
-        let mut engine = state2.engine.lock().expect("engine mutex poisoned");
+        let mut engine = state2.request_handle()?;
         engine.diarize_with(&audio, &file_id, req.gender)
     })
     .await
@@ -158,7 +171,7 @@ async fn embed_window(
         } else {
             anyhow::bail!("embed_window requires wav_path or samples_b64");
         };
-        let mut engine = state2.engine.lock().expect("engine mutex poisoned");
+        let mut engine = state2.request_handle()?;
         engine.embed_window(&clip)
     })
     .await
