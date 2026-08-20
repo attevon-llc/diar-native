@@ -283,3 +283,25 @@ scores **6.188%**. Use 6.188% in any upstream claim.
 PR-1, PR-3, PR-5 (the three bug reports) and PR-6 are untouched by T9a. The Step-3 decision to
 consolidate into **two PRs** rather than a burst still holds and is still the right call for a
 single-maintainer project.
+
+---
+
+## Branches prepared (2026-08-19, this session) — awaiting approval to push
+
+Work clone: `upstream-work/` (gitignored; upstream tip verified NOT moved past `b0756b1`).
+All branches compile warning-clean and pass the full 94-test suite in isolation
+(fixtures mounted, `diar-bench-builder`, openblas-system+online):
+
+| branch | commit | maps to |
+|---|---|---|
+| `fix/multimask-batch-size` | f7d506c | PR-A (PR-1) |
+| `fix/exclusive-overlap-resolution` | abd505e | PR-7 — trimmed of our centroids-out feature |
+| `perf/vbx-vectorize-pdist-blocks` | 5239269 | PR-B commit i (PR-6) |
+| `perf/fbank-session-pool` | 26a8756 | PR-B commit ii (PR-2) — trimmed of lazy-sessions |
+| `feat/export-folded-segmentation` | a700aeb | PR-B commit iii (PR-3, onnxsim pass authored) |
+| `perf/cuda-pipeline-series` | 3 commits | PR-B as submitted (i+ii+iii cherry-picked) |
+| `feat/shared-sessions` | 1a51e8b | PR-4 as a REAL PR (T9a, minus pool/lazy/TRT) |
+
+Final PR/issue text: `docs/pr_drafts.md`. Remaining before submission: per-branch isolated
+E2E speed re-confirmation on a quiet machine (accuracy/bit-identity claims already verified),
+then operator approval to fork + push + open the intro issue.
