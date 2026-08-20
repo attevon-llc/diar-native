@@ -60,19 +60,10 @@ index 9578705..a87a6e0 100644
  name = "thread_local"
  version = "1.1.9"
 diff --git a/Cargo.toml b/Cargo.toml
-index 46c765f..6c0a29a 100644
+index 46c765f..1ae14f9 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -23,6 +23,8 @@ default-linalg = ["dep:ndarray-linalg-default"]
- online = ["dep:hf-hub", "hf-hub/ureq", "hf-hub/native-tls"]
- coreml = ["dep:objc2", "dep:objc2-core-ml", "dep:objc2-foundation", "dep:block2"]
- cuda = ["ort/cuda"]
-+# diar-native patch (T11): TensorRT EP, opt-in at runtime via SPEAKRS_TRT=1.
-+tensorrt = ["ort/tensorrt"]
- migraphx = ["ort/migraphx"]
- load-dynamic = ["ort/load-dynamic", "dep:libloading"]
- 
-@@ -40,7 +42,7 @@ hf-hub = { version = "0.5", optional = true, default-features = false }
+@@ -40,7 +40,7 @@ hf-hub = { version = "0.5", optional = true, default-features = false }
  
  # math
  kodama = "0.3.0"
@@ -297,7 +288,7 @@ index 100b53a..1933960 100644
  
          // update pi
 diff --git a/src/inference.rs b/src/inference.rs
-index 90d4908..ef51653 100644
+index 90d4908..808a82f 100644
 --- a/src/inference.rs
 +++ b/src/inference.rs
 @@ -10,15 +10,36 @@ use std::path::PathBuf;
@@ -338,67 +329,6 @@ index 90d4908..ef51653 100644
  #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
  static ORT_RUNTIME_INIT: OnceLock<Result<(), OrtRuntimeError>> = OnceLock::new();
  
-@@ -312,6 +333,60 @@ pub fn with_execution_mode(
-     }
- }
- 
-+/// diar-native patch (T11): TensorRT EP for the fixed-shape GPU sessions, opt-in via
-+/// `SPEAKRS_TRT=1`. Engines are compiled per GPU on first run and cached at
-+/// `SPEAKRS_TRT_CACHE` (default `/tmp/diar-native/trt_cache`) — put that on a persistent
-+/// volume or every process start pays the build. fp32 only: fp16 measurably collapses DER
-+/// in the StatsPool variance/sqrt subgraph (RESULTS §4.18).
-+#[cfg(feature = "tensorrt")]
-+pub(crate) fn trt_requested() -> bool {
-+    std::env::var("SPEAKRS_TRT")
-+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-+        .unwrap_or(false)
-+}
-+
-+#[cfg(not(feature = "tensorrt"))]
-+pub(crate) fn trt_requested() -> bool {
-+    false
-+}
-+
-+/// Like [`with_execution_mode`], but registers `[TensorRT, CUDA, CPU]` on CUDA modes when
-+/// `SPEAKRS_TRT=1`. TensorRT registration is non-fatal: with the TRT libs absent, ORT logs
-+/// a warning and the session falls back to the CUDA EP exactly as configured today.
-+pub(crate) fn with_execution_mode_trt_preferred(
-+    builder: SessionBuilder,
-+    mode: ExecutionMode,
-+) -> Result<SessionBuilder, ort::Error> {
-+    #[cfg(feature = "tensorrt")]
-+    if trt_requested() && mode.is_cuda() {
-+        mode.validate()?;
-+        let cache = std::env::var("SPEAKRS_TRT_CACHE")
-+            .unwrap_or_else(|_| "/tmp/diar-native/trt_cache".to_string());
-+        let _ = std::fs::create_dir_all(&cache);
-+        return Ok(builder.with_execution_providers([
-+            ep::TensorRT::default()
-+                .with_device_id(0)
-+                .with_engine_cache(true)
-+                .with_engine_cache_path(&cache)
-+                .with_timing_cache(true)
-+                .with_timing_cache_path(&cache)
-+                .with_fp16(false)
-+                .with_max_workspace_size(2 << 30)
-+                .build(),
-+            ep::CUDA::default()
-+                .with_device_id(0)
-+                .with_tf32(true)
-+                .with_conv_algorithm_search(ep::cuda::ConvAlgorithmSearch::Exhaustive)
-+                .with_conv_max_workspace(true)
-+                .with_arena_extend_strategy(ep::ArenaExtendStrategy::SameAsRequested)
-+                .with_prefer_nhwc(true)
-+                .build()
-+                .error_on_failure(),
-+        ])?);
-+    }
-+    with_execution_mode(builder, mode)
-+}
-+
- pub(crate) fn ensure_ort_ready() -> Result<(), ModelLoadError> {
-     #[cfg(all(feature = "load-dynamic", not(target_arch = "wasm32")))]
-     {
 diff --git a/src/inference/embedding.rs b/src/inference/embedding.rs
 index 2fd9512..233a01c 100644
 --- a/src/inference/embedding.rs
@@ -570,40 +500,18 @@ index 2fd9512..233a01c 100644
      pub fn sample_rate(&self) -> usize {
          self.meta.sample_rate
 diff --git a/src/inference/embedding/batch.rs b/src/inference/embedding/batch.rs
-index 3d68e0d..ffc08ae 100644
+index 3d68e0d..5f22e10 100644
 --- a/src/inference/embedding/batch.rs
 +++ b/src/inference/embedding/batch.rs
-@@ -8,8 +8,29 @@ use super::{
+@@ -8,6 +8,7 @@ use super::{
      NUM_SPEAKERS, PRIMARY_BATCH_SIZE, SplitTailInput, array2_from_shape_vec, array2_slice_mut,
      array3_slice_mut, first_output, select_mask,
  };
 +use crate::inference::lock_session;
  
  impl EmbeddingModel {
-+    /// Run the multimask ORT sessions once on zeros (diar-native patch, T11).
-+    ///
-+    /// Forces first-run provider costs — TensorRT engine build, cuDNN algorithm search,
-+    /// arena growth — at load time instead of on the first request. Only the multimask
-+    /// sessions are warmed: they are the TRT-eligible GPU path; fbank/tail stay lazy.
-+    pub fn warmup(&mut self) -> Result<(), ort::Error> {
-+        let fbank = Array2::<f32>::zeros((FBANK_FRAMES, FBANK_FEATURES));
-+        let mask = vec![0.0f32; self.meta.mask_frames];
-+        if self.ort.multi_mask_batched_session.is_some() {
-+            let fbanks: Vec<&Array2<f32>> = vec![&fbank; MULTI_MASK_BATCH_SIZE];
-+            let masks: Vec<&[f32]> = vec![&mask[..]; MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS];
-+            self.embed_multi_mask_batch(&fbanks, &masks)?;
-+        }
-+        if self.ort.multi_mask_session.is_some() {
-+            let masks: Vec<&[f32]> = vec![&mask[..]; NUM_SPEAKERS];
-+            self.embed_multi_mask_batch(&[&fbank], &masks)?;
-+        }
-+        Ok(())
-+    }
-+
      /// Extract speaker embeddings for a batch of masked audio windows
-     pub fn embed_batch(
-         &mut self,
-@@ -18,7 +39,7 @@ impl EmbeddingModel {
+@@ -18,7 +19,7 @@ impl EmbeddingModel {
          if let Some(sess) = self
              .ort
              .primary_batched_session
@@ -612,7 +520,7 @@ index 3d68e0d..ffc08ae 100644
              .filter(|_| inputs.len() == PRIMARY_BATCH_SIZE)
          {
              for (batch_idx, input) in inputs.iter().enumerate() {
-@@ -48,6 +69,7 @@ impl EmbeddingModel {
+@@ -48,6 +49,7 @@ impl EmbeddingModel {
                  TensorRef::from_array_view(self.buffers.primary_batch_weights_buffer.view())?;
              let ort_inputs =
                  ort::inputs!["waveform" => waveform_tensor, "weights" => weights_tensor];
@@ -620,7 +528,7 @@ index 3d68e0d..ffc08ae 100644
              let outputs = if let Some(opts) = &self.ort.primary_batch_run_options {
                  sess.run_with_options(ort_inputs, opts)?
              } else {
-@@ -146,12 +168,14 @@ impl EmbeddingModel {
+@@ -146,12 +148,14 @@ impl EmbeddingModel {
                  TensorRef::from_array_view(self.buffers.multi_mask_fbank_buffer.view())?;
              let masks_tensor =
                  TensorRef::from_array_view(self.buffers.multi_mask_masks_buffer.view())?;
@@ -641,7 +549,7 @@ index 3d68e0d..ffc08ae 100644
              let output = first_output(outputs.values(), "multi-mask batched output")?;
              let (_shape, data) = output.try_extract_tensor::<f32>()?;
              let batch = array2_from_shape_vec(
-@@ -177,12 +201,14 @@ impl EmbeddingModel {
+@@ -177,12 +181,14 @@ impl EmbeddingModel {
                      .slice(s![mask_start..mask_end, ..]);
                  let fbank_tensor = TensorRef::from_array_view(fbank_slice.view())?;
                  let masks_tensor = TensorRef::from_array_view(masks_slice.view())?;
@@ -662,7 +570,7 @@ index 3d68e0d..ffc08ae 100644
                  let output = first_output(outputs.values(), "multi-mask output")?;
                  let (_shape, data) = output.try_extract_tensor::<f32>()?;
                  for (local_idx, row_idx) in (mask_start..mask_end).enumerate() {
-@@ -266,12 +292,14 @@ impl EmbeddingModel {
+@@ -266,12 +272,14 @@ impl EmbeddingModel {
              TensorRef::from_array_view(self.buffers.split_primary_feature_batch_buffer.view())?;
          let weights_tensor =
              TensorRef::from_array_view(self.buffers.split_primary_weights_batch_buffer.view())?;
@@ -810,7 +718,7 @@ index 59c66fd..be39d39 100644
 +    )
 +}
 diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
-index ff5ae7f..d54d539 100644
+index ff5ae7f..00ebf06 100644
 --- a/src/inference/embedding/load/sessions.rs
 +++ b/src/inference/embedding/load/sessions.rs
 @@ -3,21 +3,23 @@ use std::path::Path;
@@ -893,22 +801,6 @@ index ff5ae7f..d54d539 100644
                  .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
                  .transpose()?
          );
-@@ -155,13 +166,13 @@ impl LoadedSessions {
-         let (multi_mask_session, multi_mask_elapsed) = timed!(
-             multi_mask_model_path(model_path, 1)
-                 .filter(|path| path.exists())
--                .map(|path| EmbeddingModel::build_session(&path, mode))
-+                .map(|path| EmbeddingModel::build_session_trt_preferred(&path, mode))
-                 .transpose()?
-         );
-         let (multi_mask_batched_session, multi_mask_batched_elapsed) = timed!(
-             multi_mask_model_path(model_path, PRIMARY_BATCH_SIZE)
-                 .filter(|path| path.exists())
--                .map(|path| EmbeddingModel::build_session(&path, mode))
-+                .map(|path| EmbeddingModel::build_session_trt_preferred(&path, mode))
-                 .transpose()?
-         );
- 
 @@ -236,10 +247,29 @@ impl LoadedSessions {
              );
          }
@@ -1063,30 +955,10 @@ index eabadde..9d56843 100644
          let (_shape, data) = output.try_extract_tensor::<f32>()?;
          Ok(Array1::from_vec(data.to_vec()))
 diff --git a/src/inference/embedding/session.rs b/src/inference/embedding/session.rs
-index 751dd24..cbf99ab 100644
+index 751dd24..c38f29d 100644
 --- a/src/inference/embedding/session.rs
 +++ b/src/inference/embedding/session.rs
-@@ -58,13 +58,36 @@ impl EmbeddingModel {
-         with_execution_mode(builder, ExecutionMode::Cpu)
-     }
- 
-+    /// diar-native patch (T11): the multimask graphs are fixed-shape (b1 / b32) → the two
-+    /// sessions that carry nearly all embedding GPU time are TRT-eligible. Everything else
-+    /// stays on today's providers.
-+    pub(super) fn build_session_trt_preferred(
-+        model_path: &Path,
-+        mode: ExecutionMode,
-+    ) -> Result<Session, ort::Error> {
-+        let builder = Session::builder()?
-+            .with_independent_thread_pool()?
-+            .with_intra_threads(1)?
-+            .with_inter_threads(1)?
-+            .with_memory_pattern(true)?;
-+        let mut builder = crate::inference::with_execution_mode_trt_preferred(builder, mode)?;
-+        builder.commit_from_file(model_path)
-+    }
-+
-     pub(super) fn build_fbank_session(
+@@ -62,9 +62,16 @@ impl EmbeddingModel {
          model_path: &Path,
          mode: ExecutionMode,
      ) -> Result<Session, ort::Error> {
@@ -1161,21 +1033,22 @@ index 2565f0a..7dfef0a 100644
          let (_shape, data) = output.try_extract_tensor::<f32>()?;
          array2_from_shape_vec(
 diff --git a/src/inference/segmentation.rs b/src/inference/segmentation.rs
-index a9c6627..03aa12f 100644
+index a9c6627..7fbd60c 100644
 --- a/src/inference/segmentation.rs
 +++ b/src/inference/segmentation.rs
-@@ -5,7 +5,9 @@ use ort::session::Session;
+@@ -5,7 +5,10 @@ use ort::session::Session;
  
  #[cfg(feature = "coreml")]
  use crate::inference::coreml::{CachedInputShape, SharedCoreMlModel};
 -use crate::inference::{ExecutionMode, ModelLoadError, ensure_ort_ready, with_execution_mode};
 +use crate::inference::{
 +    ExecutionMode, ModelLoadError, SharedSession, ensure_ort_ready, share_session,
++    with_execution_mode,
 +};
  #[cfg(feature = "coreml")]
  mod native;
  #[cfg(feature = "coreml")]
-@@ -55,8 +57,8 @@ const LARGE_BATCH_SIZE: usize = 64;
+@@ -55,8 +58,8 @@ const LARGE_BATCH_SIZE: usize = 64;
  /// Sliding-window segmentation model (pyannote segmentation-3.0)
  pub struct SegmentationModel {
      mode: ExecutionMode,
@@ -1186,7 +1059,7 @@ index a9c6627..03aa12f 100644
      #[cfg(feature = "coreml")]
      native_session: Option<SharedCoreMlModel>,
      #[cfg(feature = "coreml")]
-@@ -114,11 +116,11 @@ impl SegmentationModel {
+@@ -114,11 +117,11 @@ impl SegmentationModel {
              }};
          }
  
@@ -1200,16 +1073,6 @@ index a9c6627..03aa12f 100644
                  .transpose()?
          );
          #[cfg(feature = "coreml")]
-@@ -220,7 +222,8 @@ impl SegmentationModel {
-             .with_intra_threads(Self::available_threads().min(6))?
-             .with_inter_threads(1)?
-             .with_memory_pattern(true)?;
--        let mut builder = with_execution_mode(builder, mode)?;
-+        // diar-native patch (T11): segmentation graphs are fixed-shape → TRT-eligible.
-+        let mut builder = crate::inference::with_execution_mode_trt_preferred(builder, mode)?;
-         builder.commit_from_file(model_path)
-     }
- 
 @@ -254,6 +257,31 @@ impl SegmentationModel {
      pub fn mode(&self) -> ExecutionMode {
          self.mode
@@ -1243,7 +1106,7 @@ index a9c6627..03aa12f 100644
  
  fn batched_model_path(model_path: &Path, batch_size: usize) -> Option<PathBuf> {
 diff --git a/src/inference/segmentation/run.rs b/src/inference/segmentation/run.rs
-index b0661ae..5454420 100644
+index b0661ae..f995061 100644
 --- a/src/inference/segmentation/run.rs
 +++ b/src/inference/segmentation/run.rs
 @@ -4,6 +4,7 @@ use ort::value::TensorRef;
@@ -1254,29 +1117,7 @@ index b0661ae..5454420 100644
  use crate::inference::segmentation::tensor::{SegmentationWindows, first_output, output_shape3};
  
  impl SegmentationModel {
-@@ -90,6 +91,21 @@ impl SegmentationModel {
-         Ok(total_windows)
-     }
- 
-+    /// Run each ORT session once on zeros (diar-native patch, T11).
-+    ///
-+    /// Forces first-run provider costs — TensorRT engine build, cuDNN algorithm search,
-+    /// arena growth — at load time instead of on the first request, so a server can warm
-+    /// before reporting healthy.
-+    pub fn warmup(&mut self) -> Result<(), SegmentationError> {
-+        let zeros = vec![0.0f32; self.window_samples];
-+        self.run_window(&zeros)?;
-+        if self.primary_batched_session.is_some() {
-+            let batch: Vec<&[f32]> = vec![&zeros[..]; PRIMARY_BATCH_SIZE];
-+            self.run_batch(&batch)?;
-+        }
-+        Ok(())
-+    }
-+
-     /// Run segmentation on audio, returning raw logits per window
-     ///
-     /// Returns `Vec<Array2<f32>>` where each element is [frames, 7] logits
-@@ -145,7 +161,8 @@ impl SegmentationModel {
+@@ -145,7 +146,8 @@ impl SegmentationModel {
              .assign(&ndarray::ArrayView1::from(window));
          let input_tensor = TensorRef::from_array_view(self.input_buffer.view())?;
  
@@ -1286,7 +1127,7 @@ index b0661ae..5454420 100644
          let output = first_output(outputs.values(), "segmentation window output")?;
          let (shape, data) = output.try_extract_tensor::<f32>()?;
  
-@@ -179,11 +196,12 @@ impl SegmentationModel {
+@@ -179,11 +181,12 @@ impl SegmentationModel {
          }
          let input_tensor = TensorRef::from_array_view(self.primary_batch_input_buffer.view())?;
  

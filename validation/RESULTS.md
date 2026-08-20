@@ -1310,12 +1310,13 @@ timing cache, `sm86`-tagged files); empty cache dir → clean rebuild; `SPEAKRS_
 image WITHOUT the TRT libs → registration falls back and output is **byte-identical to the
 CUDA EP** (verified by diff).
 
-**Disposition (operator-confirmed):** parked as a measured option, DEFAULT OFF. The +0.03 pp
-AMI drift is tiny but the project's bar for silent engine changes is bit-identity, and since
-T2 the single-job speed is hidden inside transcription's window anyway. Turn it on
-(`SPEAKRS_TRT=1` + `WITH_TENSORRT=1` image) where diarization wall-time is user-visible: the
-4 GB laptop tier (sequential), very long files, or throughput-saturated servers — and note
-engines rebuild per GPU on first boot (cached thereafter).
+**Disposition (operator-decided, same day): ROLLED BACK.** The code was reverted after
+measurement — 1.33-1.48× on a stage that is already hidden inside transcription's window did
+not justify the compatibility surface (cuda12-matched libnvinfer pinning against a cuda13
+apt default, per-GPU engine builds, ORT↔TRT version pairing) plus the +0.03 pp AMI drift
+against a bit-identity bar. The numbers above stand as the record; if long-file or
+laptop-tier diarization speed ever becomes user-visible, this section is the recipe and the
+cost-benefit to re-judge. fp16 TRT is explicitly ruled out (§4.18 stands).
 
 ### 7.26 Redaction PII detection parallelised — 3.5x, and the container bug underneath it
 

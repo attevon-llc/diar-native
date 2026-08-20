@@ -7,9 +7,7 @@ license = "Apache-2.0"
 
 [features]
 default = []
-# tensorrt compiles the TRT EP surface in; it stays inert unless SPEAKRS_TRT=1 at runtime
-# and falls back to the CUDA EP when the TRT libs are absent (S-T11).
-cuda = ["speakrs/cuda", "speakrs/tensorrt", "ort/cuda"]
+cuda = ["speakrs/cuda", "ort/cuda"]
 
 [dependencies]
 speakrs = { workspace = true }

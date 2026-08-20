@@ -37,11 +37,13 @@ Measure against `docs/BENCHMARK_PROTOCOL.md`'s anchor before assuming any of the
 
 ## Lever 1 — TensorRT EP inside ort (T11) — strongest remaining, highest risk
 
-**STATUS 2026-08-19: implemented, measured, parked as opt-in (RESULTS §7.26).** 1.33-1.48×
-warm speed; AMI full +0.030 pp / exclusive +0.006 pp / Karpathy −0.002 pp (bit-parity is
-unachievable — TRT kernels shift boundaries ~1 frame); cache-hit restart 6 s; libs-absent
-fallback byte-identical to CUDA. Default off (`SPEAKRS_TRT=1` + `WITH_TENSORRT=1` image to
-enable) — operator decision: keep CUDA's exact recorded accuracy as the default.
+**STATUS 2026-08-19: implemented, measured, then ROLLED BACK by operator decision
+(RESULTS §7.26).** Measured 1.33-1.48× warm speed at +0.030 pp AMI full / +0.006 pp
+exclusive / −0.002 pp Karpathy (bit-parity unachievable — TRT kernels shift boundaries
+~1 frame); cache-hit restart 6 s; libs-absent fallback byte-identical to CUDA. Judged not
+worth the compatibility surface (cuda12-pinned libnvinfer, per-GPU engine builds,
+ORT↔TRT pairing) for speed that is hidden behind transcription. §7.26 is the recipe if the
+calculus changes; fp16 remains ruled out.
 
 Spec: `docs/DETAILED_SPECS.md` S-T11. Evidence: TRT measured **2.4× vs ORT-CUDA** on the embedding
 model (§4.6), and the graphs are **fixed-shape (b32)**, so the phase-6 rebuild-storm precondition

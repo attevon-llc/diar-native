@@ -117,28 +117,6 @@ impl DiarEngine {
         // Optional: absent model means the app keeps its own gender path untouched.
         let gender = GenderModel::load_optional(&config.models_dir, config.mode == Mode::Cuda)
             .context("loading gender model")?;
-
-        // With TRT enabled, first-run costs are engine builds (seconds-to-minutes uncached).
-        // Pay them here so a server is warm before it reports healthy (S-T11).
-        let mut seg = seg;
-        let mut emb = emb;
-        if std::env::var("SPEAKRS_TRT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-        {
-            let t0 = std::time::Instant::now();
-            seg.warmup()
-                .map_err(|e| anyhow::anyhow!("segmentation warmup: {e}"))?;
-            emb.warmup()
-                .map_err(|e| anyhow::anyhow!("embedding warmup: {e}"))?;
-            tracing::info!(
-                warmup_s = t0.elapsed().as_secs_f32(),
-                "TRT sessions warmed (engine cache: {})",
-                std::env::var("SPEAKRS_TRT_CACHE")
-                    .unwrap_or_else(|_| "/tmp/diar-native/trt_cache".into())
-            );
-        }
-
         Ok(Self {
             seg,
             emb,

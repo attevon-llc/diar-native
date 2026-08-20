@@ -105,7 +105,7 @@ unforced behavior bit-identical to current (feature is pure addition).
 
 ## S-T11: TensorRT EP inside ort (multimask + segmentation sessions)
 
-**IMPLEMENTED + MEASURED 2026-08-19 (RESULTS §7.26); PARKED AS OPT-IN, default off.**
+**IMPLEMENTED + MEASURED 2026-08-19, then ROLLED BACK by operator decision (RESULTS §7.26 has the numbers and the recipe).**
 Corrections learned: (a) the ORT 1.24.2 tarball DOES ship the TRT provider — what's missing is
 `libnvinfer.so.10`/`libnvonnxparser.so.10` (now behind `--build-arg WITH_TENSORRT=1`, TRT
 10.16.1 cuda12.9 — the repo's cuda13 default candidate will not load); (b) the bit-parity gate
