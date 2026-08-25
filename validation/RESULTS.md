@@ -1551,3 +1551,41 @@ and inference definitely ran through CoreML's own code path (real `.mlmodelc` bu
 not a silent ONNX/CPU fallback) — proven by successful load + correct output through the
 coreml-specific loaders. Only tested on this one machine (Apple M2 Max) — CoreML's compiled
 `mlprogram` format is chip-generation-portable by design, but M1/M3/M4 haven't been run.
+
+### 7.32 Embedding ONNX session intra-op threads unpinned for CPU mode — 3.7x, adopted from upstream PR #6
+
+`build_session_with_graph` (`vendor/speakrs/src/inference/embedding/session.rs`) hardcoded
+`.with_intra_threads(1)` for the segmentation-tail/multimask embedding sessions, unconditionally
+across every execution mode. Found relevant via an open, unrelated third-party PR against
+upstream (`avencera/speakrs#6`, `ryoma0421`), who measured the same bottleneck on Apple
+Silicon CPU mode (1.03x -> 8-9x realtime on a 5.7-min meeting file). We adopted the equivalent
+fix into our own fork rather than wait on that PR to merge, since this project ships a
+CPU-only image (`docker/Dockerfile.server-cpu`) that runs with no GPU/CoreML acceleration at
+all — exactly the scenario PR #6's bottleneck applies to.
+
+**Change:** new `SPEAKRS_INTRA_THREADS` env var, default `available_parallelism().min(6)`
+(zero/unparseable -> default). The cap of 6 isn't arbitrary — `SegmentationModel::build_session`
+already ships `.min(6)` in production, so this makes the embedding sessions match a threading
+policy already proven safe, rather than inventing a third one.
+
+**Oversubscription checked, not assumed:** ~7 embedding sessions exist per pipeline instance
+(tail, multimask, batched variants, each with `with_independent_thread_pool()`), but they are
+alternatives — only one executes per request. Real concurrent thread demand is
+`DIAR_MAX_INFLIGHT x 6`, the same bound segmentation already imposes; this doesn't introduce a
+new oversubscription class.
+
+**Control set:** AMI `EN2002c`, first 360 s, 16 kHz mono, `diar-bench-builder:latest`, 3
+alternating rounds, single build A/B'd via the env var (old=1 vs new=6) so it's the exact same
+binary both times. Host load ~9-13/48 (not fully quiet) — the gap below is far outside that
+noise band, per-round spread is tight, but this is not a protocol-grade quiet-machine leg.
+
+| mode | intra=1 (old) | intra=6 (new) |
+|---|---|---|
+| CPU | 218.9 / 217.2 / 220.1 s -> 1.64x RT | 57.8 / 59.2 / 67.7 s -> **6.1x RT** |
+| CUDA | 4.83 / 4.86 s | 4.88 / 4.85 s (round-1 7.3s excluded, cold start) |
+
+**3.7x faster on CPU mode** (219s -> 59s), matching PR #6's shape. CUDA mode explicitly
+re-tested rather than assumed unaffected — no regression. RTTM bit-identical: one MD5 across
+all CPU legs, one MD5 across all CUDA legs — scheduling change only, no output change.
+94/94 -> 96/96 speakrs tests pass (count includes the two prior session's `SPEAKRS_AHC_THREADS`
+tests).
