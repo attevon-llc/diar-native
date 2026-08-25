@@ -158,10 +158,10 @@ index 0000000..8f288d9
 +if __name__ == "__main__":
 +    main()
 diff --git a/src/clustering/ahc.rs b/src/clustering/ahc.rs
-index 007ffb3..77a5f31 100644
+index 007ffb3..6b364e9 100644
 --- a/src/clustering/ahc.rs
 +++ b/src/clustering/ahc.rs
-@@ -26,30 +26,83 @@ pub fn cluster(embeddings: &ArrayView2<f32>, config: AhcConfig) -> Vec<usize> {
+@@ -26,33 +26,121 @@ pub fn cluster(embeddings: &ArrayView2<f32>, config: AhcConfig) -> Vec<usize> {
      }
  
      let normalized = l2_normalize_rows(embeddings);
@@ -185,6 +185,10 @@ index 007ffb3..77a5f31 100644
  }
  
  fn condensed_euclidean(embeddings: &Array2<f32>) -> Vec<f32> {
++    condensed_euclidean_with_workers(embeddings, pdist_worker_count())
++}
++
++fn condensed_euclidean_with_workers(embeddings: &Array2<f32>, workers: usize) -> Vec<f32> {
 +    // diar-native patch: blocked Gram-matrix formulation with scoped threads.
 +    // The original per-pair scalar loop cost 64.5 s at N=21k; dist^2 = |a|^2 + |b|^2 - 2ab
 +    // via matmul blocks is ~20x faster and each block writes a disjoint contiguous
@@ -238,21 +242,35 @@ index 007ffb3..77a5f31 100644
          }
      }
 +
++    // Bounded worker pool: one thread per block would scale with meeting length
++    // (n=21k => 21 threads, each driving its own multi-threaded BLAS `dot`), which
++    // oversubscribes small/shared hosts and keeps every block's Gram matrix alive at
++    // once. Workers pull blocks from a shared queue instead, so peak concurrency and
++    // peak scratch memory scale with core count, not with n.
++    let workers = workers.min(blocks.len()).max(1);
++    let queue = std::sync::Mutex::new(blocks);
 +    std::thread::scope(|scope| {
-+        for (bi, bi_end, slice) in blocks {
++        for _ in 0..workers {
++            let queue = &queue;
 +            let emb = &embeddings;
 +            let norms = &sq_norms;
 +            scope.spawn(move || {
-+                let a = emb.slice(ndarray::s![bi..bi_end, ..]);
-+                let b = emb.slice(ndarray::s![bi.., ..]);
-+                let gram = a.dot(&b.t()); // (bi_end-bi) x (observations-bi)
-+                let mut offset = 0usize;
-+                for (local, i) in (bi..bi_end).enumerate() {
-+                    for j in (i + 1)..observations {
-+                        let dot = gram[[local, j - bi]];
-+                        let d2 = (norms[i] + norms[j] - 2.0 * dot).max(0.0);
-+                        slice[offset] = d2.sqrt();
-+                        offset += 1;
++                loop {
++                    let next = queue.lock().expect("pdist queue poisoned").pop();
++                    let Some((bi, bi_end, slice)) = next else {
++                        break;
++                    };
++                    let a = emb.slice(ndarray::s![bi..bi_end, ..]);
++                    let b = emb.slice(ndarray::s![bi.., ..]);
++                    let gram = a.dot(&b.t()); // (bi_end-bi) x (observations-bi)
++                    let mut offset = 0usize;
++                    for (local, i) in (bi..bi_end).enumerate() {
++                        for j in (i + 1)..observations {
++                            let dot = gram[[local, j - bi]];
++                            let d2 = (norms[i] + norms[j] - 2.0 * dot).max(0.0);
++                            slice[offset] = d2.sqrt();
++                            offset += 1;
++                        }
 +                    }
 +                }
 +            });
@@ -261,6 +279,64 @@ index 007ffb3..77a5f31 100644
      condensed
  }
  
++/// Number of concurrent workers used for the blocked pairwise-distance computation.
++///
++/// Defaults to `available_parallelism()` capped at 8 (each worker also drives a
++/// multi-threaded BLAS `dot`, so a higher cap oversubscribes rather than helps).
++/// Override with `SPEAKRS_AHC_THREADS`; values are clamped to at least 1.
++fn pdist_worker_count() -> usize {
++    std::env::var("SPEAKRS_AHC_THREADS")
++        .ok()
++        .and_then(|v| v.parse::<usize>().ok())
++        .filter(|v| *v > 0)
++        .unwrap_or_else(|| {
++            std::thread::available_parallelism()
++                .map(|c| c.get().min(8))
++                .unwrap_or(1)
++        })
++}
++
+ fn flat_clusters(observations: usize, steps: &[Step<f32>], threshold: f32) -> Vec<usize> {
+     if observations == 0 {
+         return Vec::new();
+@@ -168,6 +256,37 @@ mod tests {
+             .join(name)
+     }
+ 
++    #[test]
++    fn condensed_euclidean_is_bit_identical_across_worker_counts() {
++        // 2600 rows => 3 blocks at BLOCK=1024, so worker counts below/at/above the
++        // block count all get exercised.
++        let rows = 2600;
++        let cols = 16;
++        let data: Vec<f32> = (0..rows * cols)
++            .map(|i| ((i * 37 % 101) as f32 / 101.0) - 0.5)
++            .collect();
++        let embeddings = Array2::from_shape_vec((rows, cols), data).unwrap();
++
++        let reference = condensed_euclidean_with_workers(&embeddings, 1);
++        for workers in [2, 3, 8, 64] {
++            let got = condensed_euclidean_with_workers(&embeddings, workers);
++            assert_eq!(got.len(), reference.len());
++            assert!(
++                got.iter().zip(reference.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
++                "worker count {workers} changed pdist output"
++            );
++        }
++    }
++
++    #[test]
++    fn pdist_worker_count_is_bounded() {
++        let workers = pdist_worker_count();
++        assert!(workers >= 1);
++        if std::env::var_os("SPEAKRS_AHC_THREADS").is_none() {
++            assert!(workers <= 8, "default worker count should stay bounded");
++        }
++    }
++
+     #[test]
+     fn separates_two_clusters() {
+         let embeddings = array![[1.0, 0.0], [0.95, 0.05], [-1.0, 0.0], [-0.95, -0.05],];
 diff --git a/src/clustering/vbx.rs b/src/clustering/vbx.rs
 index 100b53a..1933960 100644
 --- a/src/clustering/vbx.rs
@@ -831,7 +907,7 @@ index 59c66fd..be39d39 100644
 +    )
 +}
 diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
-index ff5ae7f..00ebf06 100644
+index ff5ae7f..20a63f9 100644
 --- a/src/inference/embedding/load/sessions.rs
 +++ b/src/inference/embedding/load/sessions.rs
 @@ -3,21 +3,23 @@ use std::path::Path;
@@ -914,13 +990,15 @@ index ff5ae7f..00ebf06 100644
                  .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
                  .transpose()?
          );
-@@ -236,10 +247,29 @@ impl LoadedSessions {
+@@ -236,10 +247,31 @@ impl LoadedSessions {
              );
          }
  
 +        // diar-native patch: pool of extra CPU fbank sessions for parallel per-chunk fbank
 +        // (single-session fbank measured at ~76% of CUDA E2E wall on many-core hosts).
-+        let split_fbank_pool: Vec<Session> = if use_split_backend {
++        // CoreML modes have a native batched fbank path that the CPU pool would shadow,
++        // so the pool is skipped entirely there (also avoids loading unused CPU sessions).
++        let split_fbank_pool: Vec<Session> = if use_split_backend && !mode.is_coreml() {
 +            let pool_size = std::env::var("SPEAKRS_FBANK_POOL")
 +                .ok()
 +                .and_then(|v| v.parse::<usize>().ok())
@@ -944,7 +1022,7 @@ index ff5ae7f..00ebf06 100644
              split_fbank_batched_session,
              split_tail_session,
              split_tail_batched_session,
-@@ -275,6 +305,7 @@ impl LoadedSessions {
+@@ -275,6 +307,7 @@ impl LoadedSessions {
      ) -> Result<EmbeddingModel, ModelLoadError> {
          let metadata_path = model_path.with_extension("min_num_samples.txt");
  
@@ -952,7 +1030,7 @@ index ff5ae7f..00ebf06 100644
          Ok(EmbeddingModel {
              meta: EmbeddingMeta {
                  model_path: model_path.to_path_buf(),
-@@ -285,27 +316,30 @@ impl LoadedSessions {
+@@ -285,27 +318,30 @@ impl LoadedSessions {
                  min_num_samples: read_min_num_samples(&metadata_path).unwrap_or(400),
              },
              ort: OrtEmbeddingState {
@@ -1004,7 +1082,7 @@ index ff5ae7f..00ebf06 100644
              },
              #[cfg(feature = "coreml")]
              coreml: CoreMlEmbeddingState {
-@@ -344,35 +378,7 @@ impl LoadedSessions {
+@@ -344,35 +380,7 @@ impl LoadedSessions {
                      &[MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS, MASK_FRAMES],
                  ),
              },
@@ -1635,7 +1713,7 @@ index 309c2a9..e78ec1e 100644
          &self,
          num_frames: Option<usize>,
 diff --git a/src/pipeline/post_inference.rs b/src/pipeline/post_inference.rs
-index b869ea5..5549a74 100644
+index b869ea5..088a979 100644
 --- a/src/pipeline/post_inference.rs
 +++ b/src/pipeline/post_inference.rs
 @@ -3,7 +3,7 @@ use tracing::debug;
@@ -1643,11 +1721,11 @@ index b869ea5..5549a74 100644
  use crate::binarize::binarize;
  use crate::clustering::plda::PldaTransform;
 -use crate::reconstruct::Reconstructor;
-+use crate::reconstruct::{Reconstructor, exclusive_from};
++use crate::reconstruct::{Reconstructor, exclusive_from, resolve_exclusive_conflicts};
  use crate::segment::merge_segments;
  
  use super::config::{PipelineConfig, ReconstructMethod};
-@@ -36,32 +36,46 @@ pub fn post_inference(
+@@ -36,32 +36,49 @@ pub fn post_inference(
              hard_clusters: ChunkSpeakerClusters(Array2::zeros((0, 0))),
              discrete_diarization: DiscreteDiarization(Array2::zeros((0, 0))),
              segments: Vec::new(),
@@ -1692,6 +1770,9 @@ index b869ea5..5549a74 100644
 -        discrete_diarization
 +        (discrete_diarization, exclusive_diarization)
      };
++    // binarize runs per-speaker independently and can pad/extend two speakers' regions into the
++    // same frame, undoing the exclusivity exclusive_from established — re-resolve any conflicts.
++    let exclusive_diarization = resolve_exclusive_conflicts(&exclusive_diarization, &activations);
  
      let segments = discrete_diarization.to_segments();
      let segments = merge_segments(&segments, config.merge_gap);
@@ -1700,7 +1781,7 @@ index b869ea5..5549a74 100644
  
      debug!(
          post_inference_ms = post_start.elapsed().as_millis(),
-@@ -75,5 +89,7 @@ pub fn post_inference(
+@@ -75,5 +92,7 @@ pub fn post_inference(
          hard_clusters,
          discrete_diarization,
          segments,
@@ -1728,7 +1809,7 @@ index 6ca4c04..091d83b 100644
  
  impl DiarizationResult {
 diff --git a/src/reconstruct.rs b/src/reconstruct.rs
-index ce401c3..332d7c5 100644
+index ce401c3..58cfaf5 100644
 --- a/src/reconstruct.rs
 +++ b/src/reconstruct.rs
 @@ -135,10 +135,19 @@ impl<'a> Reconstructor<'a> {
@@ -1782,7 +1863,7 @@ index ce401c3..332d7c5 100644
              for &speaker_idx in &current_speakers {
                  discrete[[frame_idx, speaker_idx]] = 1.0;
              }
-@@ -167,6 +189,42 @@ impl<'a> Reconstructor<'a> {
+@@ -167,6 +189,81 @@ impl<'a> Reconstructor<'a> {
      }
  }
  
@@ -1817,6 +1898,45 @@ index ce401c3..332d7c5 100644
 +        }
 +        if let Some((speaker_idx, _)) = best {
 +            discrete[[frame_idx, speaker_idx]] = 1.0;
++        }
++    }
++    DiscreteDiarization(discrete)
++}
++
++/// `exclusive_from` guarantees at most one active speaker per frame, but that guarantee doesn't
++/// survive `binarize`: it runs per-speaker independently, so `min_duration_on`/`pad_onset`/etc.
++/// can extend one speaker's region into a frame another speaker's region was independently
++/// extended into, reintroducing overlap in the "exclusive" output. Re-collapse any such frame to
++/// its highest-activation speaker, using the same scores `exclusive_from` used originally.
++pub(crate) fn resolve_exclusive_conflicts(
++    exclusive: &DiscreteDiarization,
++    activations: &FrameActivations,
++) -> DiscreteDiarization {
++    let mut discrete = exclusive.0.clone();
++    let num_speakers = discrete.ncols();
++    for frame_idx in 0..discrete.nrows() {
++        let mut best: Option<(usize, f32)> = None;
++        let mut active_count = 0usize;
++        for speaker_idx in 0..num_speakers {
++            if discrete[[frame_idx, speaker_idx]] > 0.0 {
++                active_count += 1;
++                let score = activations
++                    .get([frame_idx, speaker_idx])
++                    .copied()
++                    .unwrap_or(0.0);
++                if best.is_none_or(|(_, best_score)| score > best_score) {
++                    best = Some((speaker_idx, score));
++                }
++            }
++        }
++        if active_count > 1
++            && let Some((winner, _)) = best
++        {
++            for speaker_idx in 0..num_speakers {
++                if speaker_idx != winner {
++                    discrete[[frame_idx, speaker_idx]] = 0.0;
++                }
++            }
 +        }
 +    }
 +    DiscreteDiarization(discrete)

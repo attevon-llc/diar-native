@@ -40,7 +40,10 @@ after), RTTM bit-identity between batch-1 and batched paths, crash repro with a 
 **Change (patches/0001).**
 - `session.rs`: `SPEAKRS_FBANK_THREADS` env override for the intra-op cap.
 - `load/sessions.rs`: build a `split_fbank_pool: Vec<Session>` (size `SPEAKRS_FBANK_POOL`,
-  default `available_parallelism/4` clamped 1–8) when the split backend is available.
+  default `available_parallelism/4` clamped 1–8) when the split backend is available **and the
+  execution mode is not CoreML** (CoreML has a native batched fbank path the CPU pool would
+  otherwise shadow — Greptile review on PR #15; the pool is skipped there, so no CPU sessions
+  are loaded and no CUDA-path behaviour changes).
 - `fbank.rs`: in `compute_chunk_fbanks_batch`, fan chunks across the pool with
   `std::thread::scope` (session-local input buffers; deterministic result ordering).
 
@@ -93,7 +96,11 @@ Clustering = 74% of the file's 474 s total.
   vector computed once per iteration; fused logsumexp/gamma row pass. Same f64 math, same
   iteration/early-stop semantics.
 - `ahc.rs`: condensed distances via blocked Gram matmul (`d² = |a|²+|b|²−2ab`) with
-  `std::thread::scope` over disjoint contiguous condensed ranges (lock-free, deterministic).
+  `std::thread::scope` over disjoint contiguous condensed ranges (deterministic). Blocks are
+  pulled from a shared queue by a **bounded** worker pool (`SPEAKRS_AHC_THREADS`, default
+  `available_parallelism()` capped at 8) rather than one thread per 1024-row block, so peak
+  thread count and peak Gram scratch scale with core count, not meeting length (Greptile
+  review on PR #15). Output is bit-identical for any worker count.
 - `Cargo.toml`: ndarray `matrixmultiply-threading`.
 
 **Evidence:**

@@ -63,19 +63,43 @@ WSER 1.312% → 0.890% on a 2-speaker 66.5-min clip.
 **Title:** CUDA pipeline performance series: vectorized VBx + threaded pdist, fbank session
 pool, folded segmentation export
 
-Cover letter = consolidated table (quiet-machine A6000, self-exported community-1 models):
+**SUPERSEDED 2026-08-24 — see corrected numbers below.** The table and isolated-lever
+numbers originally drafted here (ES2004a/4.7h-file table, "VBx/pdist 8×... fbank pool
+3.1×... folded seg −7%...") were measured pre-T9a and never re-confirmed on this corpus
+before drafting, per this file's own checklist. Retracted, not edited in place — kept here
+for the record:
 
-| corpus / file | stock b0756b1 | patched | GPU-optimized pyannote fork |
-|---|---|---|---|
-| ES2004a (36-min AMI) | 39.4 s | **12.9 s (3.1×)** | ~27 s |
-| 4.7 h 8-speaker file | 474 s | **171.6 s (2.8×)** | 349 s |
-| accuracy | AMI 13.100 / Karpathy 8.219 / Vox 4.847% | **bit-identical RTTMs** | 13.093 / 8.194 / 5.099% |
+> | corpus / file | stock b0756b1 | patched | GPU-optimized pyannote fork |
+> |---|---|---|---|
+> | ES2004a (36-min AMI) | 39.4 s | 12.9 s (3.1×) | ~27 s |
+> | 4.7 h 8-speaker file | 474 s | 171.6 s (2.8×) | 349 s |
+> | accuracy | AMI 13.100 / Karpathy 8.219 / Vox 4.847% | bit-identical RTTMs | 13.093 / 8.194 / 5.099% |
+> Isolated: VBx/pdist 8× clustering; fbank pool 3.1× E2E; folded seg −7% E2E / 2.0× per
+> batch-32 on ORT-CUDA.
 
-One commit per change so any piece can be dropped/reworked independently. Isolated numbers:
-VBx/pdist 8× clustering (305→36.7 s VB-EM, 64.5→1.2 s pdist, 4.7 h file); fbank pool 3.1×
-E2E (ES2004a); folded seg −7% E2E / 2.0× per batch-32 on ORT-CUDA. Env-var knobs
-(`SPEAKRS_FBANK_THREADS`, `SPEAKRS_FBANK_POOL`) are the smallest surface — happy to move
-into `RuntimeConfig`.
+### Corrected numbers (2026-08-24, re-measured)
+
+Quiet-machine re-bench, GPU 0 (RTX A6000, confirmed idle 0% util before/throughout, no
+contending compute), Karpathy 66.5-min file (`transcribe-app/benchmark/diarization-boundary/
+karpathy/karpathy_kwSVtQ7dziU/audio.wav`), median of 3 runs each, built standalone against
+`speakrs`'s own `examples/` harness (bypasses diar-core, whose API now assumes the fully
+patched tree) per-branch off upstream tip `b0756b1`:
+
+| variant | branch @ commit | median (s) | speedup vs baseline | RTTM-identical |
+|---|---|---|---|---|
+| baseline | `master`@b0756b1 (stock) | 121.5 | 1.0× | — (reference) |
+| vbx-only | `perf/vbx-vectorize-pdist-blocks`@5239269 | 112.8 | 1.08× | yes |
+| fbank-pool-only | `perf/fbank-session-pool`@26a8756 | 32.1 | **3.78×** | yes |
+| folded-seg-only | `feat/export-folded-segmentation`@a700aeb | 114.7 | 1.06× | yes |
+| combined (this PR) | `perf/cuda-pipeline-series`@7687da7 | **28.9** | **4.20×** | yes |
+
+fbank-pool dominates the combined gain almost entirely; VBx and folded-seg each contribute
+far less in isolation on this file than the old pre-T9a numbers implied (that draft's
+per-lever attribution was likely confounded by T9a's shared-session changes being present
+at measurement time). All four patched variants are RTTM-bit-identical to stock on this
+file. One commit per change so any piece can be dropped/reworked independently. Env-var
+knobs (`SPEAKRS_FBANK_THREADS`, `SPEAKRS_FBANK_POOL`) are the smallest surface — happy to
+move into `RuntimeConfig`.
 
 ## 4. PR — branch `feat/shared-sessions` (commit 1a51e8b)
 
