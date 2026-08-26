@@ -1589,3 +1589,67 @@ re-tested rather than assumed unaffected — no regression. RTTM bit-identical: 
 all CPU legs, one MD5 across all CUDA legs — scheduling change only, no output change.
 94/94 -> 96/96 speakrs tests pass (count includes the two prior session's `SPEAKRS_AHC_THREADS`
 tests).
+
+### 7.33 Missing `-tail-b64` artifact: split-primary batching was dead everywhere — restored, no perf change
+
+`EmbeddingModel::split_primary_batch_size()` returned **0 on every model set we ship**, on both
+ORT and CoreML. The loader asks for `split_tail_model_path(model_path, PRIMARY_BATCH_SIZE=64)` =>
+`wespeaker-voxceleb-resnet34-tail-b64.onnx` (`load/sessions.rs:70`) and, under CoreML, for the
+`.mlmodelc` compiled from it (`embedding/native/loaders.rs::load_native_tail`). Neither
+`scripts/export_models.py` (emits b1/b3/b32 tails) nor `scripts/native_coreml/convert_coreml.py`
+(`TAIL_BATCH_SIZES = (1, 3, 32)`) ever produced it. Same bug class as the multimask tail-b64 fixed
+earlier by `validation/export_b64_addendum.py`.
+
+Artifacts added (gated, local-only, never committed):
+- `validation/export_tail_b64_addendum.py` -> `wespeaker-voxceleb-resnet34-tail-b64.onnx`
+  (28.0 MB) into `models_folded/` and `vendor/speakrs/fixtures/models/`. Batch-invariance check
+  (row i of the b64 wrapper vs the b1 wrapper on row i alone): max diff **7.8e-08**.
+- `validation/convert_tail_b64_coreml_addendum.py` -> `wespeaker-voxceleb-resnet34-tail-b64.mlmodelc`
+  on the M2 Max. Deliberately a SEPARATE fixed-shape-64 conversion rather than adding 64 to
+  `TAIL_BATCH_SIZES`, so the shipped b1/b3/b32 tail artifacts are NOT regenerated and production
+  CoreML accuracy is untouched.
+
+`split_primary_batch_size()`: **0 -> 64** (verified on Linux/ORT via a throwaway probe test, and on
+the Mac by `fast_apple_split_primary_batch_matches_single_tail_path` no longer skipping).
+
+**Perf impact: none, and that is the real finding.** `select_embedding_path()` picks
+`EmbeddingPath::MultiMask` whenever the multimask model exists, and it does on every set we ship —
+`Split` is only reachable as a fallback. Measured, karpathy_66min.wav, `coreml_fast`, M2 Max,
+3 runs each, artifact present vs moved aside:
+
+| config | elapsed_s (3 runs) | segments |
+| --- | --- | --- |
+| with `-tail-b64.mlmodelc` | 5.15 / 4.41 / 4.54 | 656 |
+| without (as shipped before) | 4.82 / 4.40 / 4.64 | 656 |
+
+Overlapping distributions = no change, and the emitted segments are byte-identical (`json` diff).
+So the gap was **dead fallback code + a permanently-skipped test**, not a live perf regression.
+Retracting nothing; flagging that the "silently disables the split-primary batching optimization"
+framing overstates the impact while MultiMask outranks Split.
+
+**Test fallout, both fixed with measurements, not tolerance loosening:**
+1. `fast_apple_split_primary_batch_matches_single_tail_path` had never run. With the artifact it
+   failed twice for real reasons: (a) the fixture yields only 18x3 = 54 rows but the test asserted
+   exactly 64 — now the collected rows are cycled to fill a full batch so the
+   `inputs.len() == PRIMARY_BATCH_SIZE` fast path is the one under test; (b) its per-dimension
+   5e-3 check is wrong in kind, because `load_native_tail` loads with `MLComputeUnits::All` (ANE
+   fp16) while `expected` comes from the fp32 batch-1 tail. Measured over a full 64-row batch:
+   min cosine **0.944999**, mean |err| **5.2e-3**, max |err| **1.1e-1** — the exact ANE fp16
+   signature already documented for the multimask batch path (0.9450 / 8.5e-3 / 1.1e-1), which is
+   what establishes the b64 graph is correct. Rescoped to cosine >= 0.90 / mean |err| <= 2e-2, the
+   same thresholds as `fast_apple_embeddings_match_python_fixture`.
+2. `fast_apple_single_embedding_matches_python_fixture` was flagged as "well-conditioned by luck"
+   (pinned chunk 0 / speaker 1). **Not confirmed.** Swept all 35 non-NaN (chunk, speaker) pairs:
+   max |err| **2.7e-5**, mean |err| **4.1e-6**, min cosine **1.000000** everywhere. `embed_masked`
+   takes the batch-1 fp32 tail, not the ANE fp16 batch tail, so it is genuinely fp32-clean and its
+   5e-4 per-dimension tolerance keeps ~18x headroom. Kept the strict check and added the sweep
+   (loosening it to cosine/MAE would have LOST real coverage); speaker 0 is all-NaN in the fixture
+   for every chunk and is skipped.
+
+Both modified tests were verified to still fail on an injected bug: swapping two rows of the batch
+`weights` drives split-primary min cosine to **0.068**, and shifting the expected dimension index
+fails the single-embedding test at dim 0.
+
+Suites: Linux `openblas-system,online` **96 passed / 0 failed**; Mac
+`openblas-system,online,coreml` **110 passed / 0 failed** (90 lib, up from 89 — the split-primary
+test now executes instead of skipping).
