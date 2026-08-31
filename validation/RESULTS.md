@@ -2074,3 +2074,18 @@ Tests: 50 diar-core unit + 13 diar-server unit + 7 provisioning integration, all
 (correctly — it is a secrets file), so the download half was exercised only from cache. All
 four preflight branches are unit-tested from canned responses and two of them were confirmed
 against the live API; what remains unproven is a real gated download.
+
+**Image size, measured (this was called out as a regression check).** CPU image
+**189 MB -> 194 MB (+5 MB, +2.6%)**. The 832 KB smoke clip is a small part of it; the rest is
+binary growth from `clap`, `ureq`/rustls, `sha2`/`time`, the provisioning code, and the ~60 KB
+of `include_str!`'d export scripts. Not zero, but the alternative it replaces — bundling
+torch + pyannote + onnxscript into the runtime image so provisioning could run there — was
+measured at ~13x on this image for a step that runs once. Verified in the built image: bare
+`docker run <image>` with NO ARGS serves; `/usr/local/share/diar-native/smoke.wav` is present;
+against a verified models dir `/healthz` and `/readyz` both return 200 with
+`models_state: "verified"` and every provenance field populated, and no startup warning.
+
+**Idempotency, demonstrated without a token** (the no-op is decided before preflight, so it
+needs no network and no python): with a valid marker, `provision-models` and NO token exits
+**0** with "already provisioned and verified (recipe v1)"; adding `--force` on the same
+directory proceeds to preflight and exits **5** naming the token page.
