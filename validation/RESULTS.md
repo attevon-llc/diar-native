@@ -2089,3 +2089,88 @@ against a verified models dir `/healthz` and `/readyz` both return 200 with
 needs no network and no python): with a valid marker, `provision-models` and NO token exits
 **0** with "already provisioned and verified (recipe v1)"; adding `--force` on the same
 directory proceeds to preflight and exits **5** naming the token page.
+### 7.37 diar-server had no log subscriber at all — structured logging, and two things measuring it found
+
+**No timed leg. No benchmark number is claimed, retracted or affected here**; the box was
+loaded (load average ~11–22 on 48 cores) throughout and every run below is functional.
+
+**The bug.** `diar-server` had no `tracing-subscriber` dependency and never installed a
+subscriber. `vendor/speakrs/src/` emits 40 tracing events and `crates/diar-core/src/` emits 2
+`warn!`; **all 42 went to /dev/null in the deployed artifact.** The operator's entire visible
+surface was two `eprintln!` lines plus crash output. CLAUDE.md documented
+`RUST_LOG=speakrs=trace` for engine stage timings, which worked only in `diar-cli` — it was
+dead in the thing that actually ships. Corrected in CLAUDE.md rather than deleted.
+
+Worth recording precisely, because it is why this survived review: the natural reading is "no
+subscriber ⇒ nothing logged", but `diar-cli` used `EnvFilter::from_default_env()`, which with
+`RUST_LOG` unset falls back to **`ERROR`** — not to off. Nothing in this workspace emits at
+`error` level (speakrs' 40 are debug/trace/info, diar-core's 2 are `warn!`), so an `ERROR`
+floor is observationally identical to silence. The code looked correctly wired and produced
+nothing. Pinned as a characterization test so nobody simplifies back into it.
+
+**What landed.** `diar_core::logging` holds the policy for both binaries (the sink is a
+parameter: server → stdout, CLI → stderr, whose stdout is the harness's JSONL). `RUST_LOG`
+unset/empty/malformed ⇒ the default filter; `DIAR_LOG_FORMAT=text|json`. One startup record
+built from `health_body()` so it cannot drift from `/healthz`. A per-request span on
+`/diarize` and `/embed_window`, re-entered inside `spawn_blocking` so speakrs' own events
+nest under it. `x-request-id` honoured inbound and echoed back.
+
+**Finding 1 — a bare `info` default is unusable, measured.** First run of the built image
+against `models_folded/`, no extra env: **5835 log lines, of which 5812 were `ort::logging`
+and exactly 3 were diar-server's** ("Removing NodeArg …", "GraphTransformer … modified: 0").
+The startup record was buried ~2000:1. Default is now `info,ort::logging=warn`, which keeps
+ORT's 15 WARNs (Memcpy nodes added, nodes not assigned to the preferred EP — real perf
+diagnostics) and keeps `ort::ep`'s EP-registration lines. **5835 → 38 lines**, same models,
+same device, same image. Narrowing applies to the DEFAULT only; `RUST_LOG=ort=info` still
+returns the firehose, and there is a test asserting that.
+
+**Finding 2 — a privacy leak, caught by running it rather than reading it.** Keeping the span
+field to a basename is not sufficient: the underlying I/O error interpolates the path it was
+handed. Verbatim from the run, `audio` correct and `error` defeating it in the same record:
+
+```
+WARN request{request_id=5158e4-000002 endpoint="/diarize" gender=false
+     audio="Board Meeting Q3 - CONFIDENTIAL.wav" device="cuda"}:
+  /diarize failed outcome="error" duration_ms=0.4 error_class="audio_decode" status=422
+  error=opening /audio/private/Board Meeting Q3 - CONFIDENTIAL.wav: No such file or directory
+```
+
+Logged error text is now redacted down to the basename. Re-run of the identical request:
+`error=opening Board Meeting Q3 - CONFIDENTIAL.wav: …`, and `/audio/private` appears nowhere
+in the log. The HTTP **response body** deliberately still carries the full path — the caller
+supplied it, so it is not a disclosure to them, and trimming it would break error handling
+that parses these messages.
+
+**Verified in the built image** (`diar-server:log-test`, CUDA, GPU 0, `models_folded/`):
+
+- No extra env: 38 lines; startup record carries version, bind, models dir/state/set/gender,
+  devices, default device, both inflight gates and the resolved log config.
+- `POST /diarize` → `200`, `x-diar-device: cuda`, `x-request-id: 5158e4-000000`, and
+  `/diarize ok outcome="ok" duration_ms=3126.7 num_speakers=2 segments=7`.
+- Caller-supplied `x-request-id: otranscribe-job-4271` is kept and echoed back.
+- Error classes exercised: `device:"tpu"` → **400** `error_class="bad_device"`; a missing file
+  → **422** `error_class="audio_decode"`. Status codes unchanged from before this work.
+- `RUST_LOG=speakrs=debug` surfaces the previously invisible engine events — `Embedding path
+  selected path=MultiMask`, `Segmentation thread profile windows=18 seg_infer_ms=514`,
+  `AHC pre-clustering num_clusters=2`, `clustering stage timing ahc_ms=0 plda_ms=0 vbx_ms=0`.
+- `DIAR_LOG_FORMAT=json`: **54 of 54 lines parsed by Python's `json.loads`, 0 failures.**
+  Fields are flattened and the span is nested, e.g. the request record carries
+  `span.request_id`, `span.device`, `span.audio`, `duration_ms`, `num_speakers`, `segments`.
+- Correlation: with `RUST_LOG=info,speakrs=debug`, **14 of 15** speakrs events carried the
+  caller's `request_id`.
+
+**Known limitation (NOT fixed, needs a vendored change).** The 15th event,
+`speakrs::inference::segmentation::run`'s "Segmentation thread profile", is emitted from a
+thread speakrs spawns internally for the fbank∥GPU pipeline (§7.28); that thread does not
+inherit the request span, so the event is logged without a `request_id`. Fixing it means
+propagating the span into `vendor/speakrs`, which is out of scope here and is flagged rather
+than done.
+
+**Also on record:** the startup line reports `version="0.1.0"` — the `diar-server` crate
+version, which has never been bumped and does not match the `diar-server:0.2.0` image tag.
+The value is accurate for what it names; the crate/tag divergence pre-dates this work and is
+left for an operator decision rather than silently changed here.
+
+Tests: **76 diar-core + 28 diar-server**, all passing (this work added the `logging` and
+`reqlog` suites; the counts also include §7.38's additions). The default-filter test was
+watched failing against the old policy first — it reported `info was dropped: ""`.
