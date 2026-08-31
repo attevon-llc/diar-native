@@ -1987,3 +1987,90 @@ Tests: 50/50 diar-core unit, 7/7 provisioning integration. `vendor/speakrs` unto
 (`git diff HEAD --stat` unchanged at 23 files / 1359 insertions / 256 deletions) — the export
 scripts are adapted COPIES under `scripts/provision/`, so
 `patches/0001-cuda-performance-patch-set.patch` needs no regeneration.
+
+### 7.36 Provisioning acceptance run — RTTM byte-identical from a reconstructed export (issue #2)
+
+Ran the full 5-step recipe from `scripts/provision/provision.py` into a clean directory and
+compared it against the shipped `models_folded/`. Run was **offline from a warm HF cache**
+(`HF_HUB_OFFLINE=1`), so it needed no token — which also exercises the air-gapped/re-export
+path. Python 3.12, torch 2.13.0, onnx 1.22.0, onnxscript 0.7.1, pyannote.audio 4.0.7,
+onnxsim 0.7.3.
+
+**Steps 2a-2d reproduced the shipped artifacts exactly.** Folding census on the fresh export:
+`segmentation-3.0.onnx` **144 -> 40 nodes, max_abs_diff = 0.000e+00**; `-b32` and `-b64`
+175 -> 40 with `Sin`/`Cos`/`If` eliminated.
+
+**Smoke test on the fresh directory — identical to the shipped set on every number:**
+
+| | models_folded | fresh export |
+| --- | --- | --- |
+| graphs parsed / signatures | 16 / 16 | 16 / 16 |
+| speakers / segments / exclusive | 2 / 7 / 8 | 2 / 7 / 8 |
+| 3a fbank b1-vs-b32 | 3.43e-5 | 3.43e-5 |
+| 3b fused-vs-split | 0.00e0 | 0.00e0 |
+| 3c multimask-vs-tail | 0.00e0 | 0.00e0 |
+| 3e tail-b64 invariance | 3.58e-7 | 3.58e-7 |
+
+**Output identity (the check that actually matters — proved by diffing raw records, not
+asserted).** `diar-cli` over `fixtures/test.wav`, `--mode cpu`, against each directory:
+
+```
+sha256 46c9c617943ece588bb121c9b8c59155c03271b0376cfb2719a4151da750740f  models_folded RTTM
+sha256 46c9c617943ece588bb121c9b8c59155c03271b0376cfb2719a4151da750740f  fresh export  RTTM
+```
+
+`diff` empty. 7 segments, 2 speakers, RTF ~6x on CPU on a loaded box (NOT a timed leg —
+recorded only as run context).
+
+**`compare_model_sets.py`, Tier B:** all 15 diarization ONNX graphs have identical op-type
+histograms AND bit-identical initializer tensors; all six `plda_*.npy` and
+`min_num_samples.txt` byte-identical. Only `gender-wav2vec2.onnx` differs — see below.
+
+**A bug in the comparison tool, found by having a second export to compare against.** Tier B
+originally zipped the two name-sorted initializer lists. `torch.onnx.export(dynamo=True)`
+assigns initializer names at TRACE time, so the same weight legitimately carries a different
+name across runs — the shipped `wespeaker-fbank.onnx` has `{eps, val_45}` where the fresh one
+has `{val_44, val_46}`. Zipping paired DIFFERENT tensors and reported
+"13/15 initializers differ, max |Δ| **2.000e+00**" for graphs that are in fact bit-identical.
+Now compared as a multiset of `(dtype, shape, sha256)`. Negative control retained: the
+zeroed-initializer fixture is still caught at 1/84. Worth recording because the false
+positive was *plausible* — a tolerance would have been "fixed" instead of the tool.
+
+**GENDER MODEL: fp16 conversion does not work on current torch, fp32 fallback adopted.**
+`onnxconverter_common.float16` cannot convert the wav2vec2 graph torch 2.13 emits; ORT
+rejects the output with `Type parameter (T) of Optype (Add) bound to different types
+(tensor(float16) and tensor(float))`. Tried and rejected: opset 14 vs **17** (same failure),
+`disable_shape_infer=True`, `op_block_list=['Cast']`, and clearing `graph.value_info` (which
+only moves the error from a `Cast` to an `Add`). The shipped fp16 artifact was produced under
+**torch 2.11.0**, whose graph the converter handles.
+
+Rather than fail the whole run over a disk/VRAM optimisation, the exporter now treats fp16 as
+**best-effort with a validated fp32 fallback**, and reports which precision it produced
+(`toolchain`/`gender_precision`, surfaced as `models_gender` on `/healthz`). fp32 parity vs
+torch on the fresh export: **max |logit diff| 5.36e-06** (bar 1e-4; §7.16 measured 5.96e-06).
+Cost of the fallback, per §7.18: disk 189 -> 379 MB and roughly +500 MiB VRAM
+(4890 -> ~5396 MiB). **Open item:** either pin torch 2.11 for provisioning or find a converter
+path that works on 2.13; until then a freshly provisioned deployment uses more VRAM for gender
+than the shipped one does.
+
+**Server behaviour verified against the real `models_folded/` (which has NO marker, i.e. the
+state every deployment is in today):**
+
+- Bare `diar-server` with NO ARGS starts and serves — the hard backward-compat requirement.
+- One warning naming `verify-models`/`provision-models`, then normal startup.
+- `GET /healthz` -> **200**, body carries `models_state: "unverified"`, `models_verified:
+  false`, `models_gender: true`, and issue #1's `status`/`default_device`/`devices`/
+  `supported_devices` unchanged.
+- `GET /readyz` -> **503**, same body.
+- Empty models dir -> exit 6 naming the 22 missing files, the `provision-models` command line,
+  the token page and the gate URL. No engine is constructed, so no "session load failed".
+- `check-token` against the LIVE API: no token and a garbage token both exit 5 with the gate
+  URL and **no traceback**.
+
+Tests: 50 diar-core unit + 13 diar-server unit + 7 provisioning integration, all passing.
+
+**NOT run, and needing an operator:** the token-authenticated end-to-end
+`provision-models` path. Reading `transcribe-app/.env` is blocked by the permission system
+(correctly — it is a secrets file), so the download half was exercised only from cache. All
+four preflight branches are unit-tested from canned responses and two of them were confirmed
+against the live API; what remains unproven is a real gated download.
