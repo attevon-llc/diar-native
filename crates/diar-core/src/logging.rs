@@ -34,7 +34,17 @@ pub const FILTER_ENV: &str = "RUST_LOG";
 /// `text` (default) or `json`.
 pub const FORMAT_ENV: &str = "DIAR_LOG_FORMAT";
 /// Applied when `RUST_LOG` is unset, empty, or unparseable.
-pub const DEFAULT_FILTER: &str = "info";
+///
+/// `info` globally, **except** ONNX Runtime's native log bridge. That exception is not a taste
+/// call, it is measured: on a real CUDA startup `ort::logging` emits **5797 INFO lines**
+/// ("Removing NodeArg …", "GraphTransformer … modified: 0") against 3 lines from diar-server, so
+/// a blanket `info` buries the startup record 2000:1 and makes the log useless for the operator
+/// it exists to serve. Its 15 WARNs are real perf diagnostics (Memcpy nodes, unassigned nodes)
+/// and are kept, as is `ort::ep`, which reports which execution provider actually registered.
+///
+/// This narrows only the DEFAULT. An explicit `RUST_LOG=debug` or `RUST_LOG=ort=trace` still
+/// gets everything — someone who asks for the firehose has asked for it.
+pub const DEFAULT_FILTER: &str = "info,ort::logging=warn";
 
 /// How records are rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -233,6 +243,10 @@ mod tests {
             tracing::info!(num_speakers = 3, segments = 42, "diarize complete");
             tracing::debug!(target: "speakrs::pipeline", stage = "clustering", "clustering done");
             tracing::trace!(target: "speakrs::pipeline", "trace detail");
+            // ORT's native bridge: 5797 lines of this on a real CUDA startup.
+            tracing::info!(target: "ort::logging", "Removing NodeArg 'Transpose_token_21_out0'.");
+            tracing::warn!(target: "ort::logging", "2 Memcpy nodes are added to the graph");
+            tracing::info!(target: "ort::ep", "Successfully registered `CUDAExecutionProvider`");
         });
         capture.text()
     }
@@ -278,6 +292,27 @@ mod tests {
             "",
             "from_default_env started passing a level this workspace emits"
         );
+    }
+
+    /// Measured on a real CUDA startup: 5797 `ort::logging` INFO lines against 3 useful ones.
+    /// A default that buries the startup record 2000:1 is not a working default.
+    #[test]
+    fn the_default_suppresses_ort_graph_chatter_but_keeps_its_warnings() {
+        let out = emit(&settings_from(None, None));
+        assert!(!out.contains("Removing NodeArg"), "ORT INFO flood leaked: {out:?}");
+        assert!(out.contains("Memcpy nodes"), "ORT warnings must survive: {out:?}");
+        assert!(
+            out.contains("CUDAExecutionProvider"),
+            "ort::ep says which EP loaded and must survive: {out:?}"
+        );
+        assert!(out.contains("diarize complete"));
+    }
+
+    #[test]
+    fn an_explicit_rust_log_can_still_ask_for_the_ort_firehose() {
+        // Narrowing the default must not make the detail unreachable.
+        let out = emit(&settings_from(Some("info,ort=info"), None));
+        assert!(out.contains("Removing NodeArg"), "{out:?}");
     }
 
     #[test]
@@ -336,18 +371,23 @@ mod tests {
     fn json_mode_emits_one_parseable_object_per_line() {
         let settings = settings_from(Some("info"), Some("json"));
         let out = emit(&settings);
-        let mut lines = 0;
+        let mut records = Vec::new();
         for line in out.lines().filter(|l| !l.trim().is_empty()) {
-            let v: serde_json::Value =
-                serde_json::from_str(line).unwrap_or_else(|e| panic!("not JSON: {line:?} ({e})"));
-            assert_eq!(v["level"], "INFO");
-            assert_eq!(v["message"], "diarize complete");
-            // flatten_event: structured fields are top-level, not stringified into the message.
-            assert_eq!(v["num_speakers"], 3);
-            assert_eq!(v["segments"], 42);
-            lines += 1;
+            // EVERY line must parse — one stray non-JSON line breaks an ingest pipeline.
+            records.push(
+                serde_json::from_str::<serde_json::Value>(line)
+                    .unwrap_or_else(|e| panic!("not JSON: {line:?} ({e})")),
+            );
         }
-        assert_eq!(lines, 1, "expected exactly one record, got {out:?}");
+        assert!(!records.is_empty(), "no output: {out:?}");
+        let v = records
+            .iter()
+            .find(|v| v["message"] == "diarize complete")
+            .unwrap_or_else(|| panic!("request record missing: {out:?}"));
+        assert_eq!(v["level"], "INFO");
+        // flatten_event: structured fields are top-level, not stringified into the message.
+        assert_eq!(v["num_speakers"], 3);
+        assert_eq!(v["segments"], 42);
     }
 
     #[test]
