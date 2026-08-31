@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 ort = { workspace = true }
 ndarray = { workspace = true }
 tracing = { workspace = true }
+# `logging` only *offers* an init function; nothing in this library installs a subscriber.
+# It lives here so diar-server and diar-cli share one answer to "what does an unset RUST_LOG
+# mean", while each still picks its own sink (stdout vs stderr).
+tracing-subscriber = { workspace = true }
 # Provisioning (provision/). `ureq` rather than `reqwest`: preflight makes exactly two
 # blocking GETs, and reqwest would drag tokio into diar-core (which the CLI links too) for
 # no benefit. rustls keeps it free of a C toolchain.

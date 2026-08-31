@@ -14,3 +14,5 @@ hound = "3.5"
 ort = { version = "=2.0.0-rc.12", features = ["ndarray"] }
 ndarray = "0.17.2"
 tracing = "0.1"
+# `json` is not a default feature; without it `DIAR_LOG_FORMAT=json` cannot be built.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

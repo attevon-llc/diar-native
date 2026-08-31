@@ -15,6 +15,7 @@ use speakrs::ExecutionMode;
 
 pub mod audio;
 pub mod gender;
+pub mod logging;
 pub mod provision;
 use gender::{GenderModel, GenderVerdict};
 

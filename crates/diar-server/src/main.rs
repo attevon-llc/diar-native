@@ -15,19 +15,21 @@
 
 mod cli;
 mod engines;
+mod reqlog;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
 use diar_core::provision::marker::ModelsStatus;
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use diar_core::{DiarEngine, DiarizeOutput};
 use engines::{Device, EngineRegistry};
+use reqlog::{Outcome, RequestLog};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -36,8 +38,62 @@ use tokio::sync::Semaphore;
 /// costs nothing and is readable by anything that can see response headers.
 const DEVICE_HEADER: &str = "x-diar-device";
 
-/// `Ok` side carries the device header alongside the JSON body.
-type ApiResult<T> = Result<([(&'static str, &'static str); 1], Json<T>), (StatusCode, String)>;
+/// Success: the JSON body plus the device and request-id headers. `String` values rather than
+/// `&'static str` because the request id is per request.
+type ApiOk<T> = ([(&'static str, String); 2], Json<T>);
+/// Failure: the status and message exactly as before, plus the request id, so a caller looking
+/// at a 4xx/5xx can find the matching server-side record without guessing.
+type ApiErr = (StatusCode, [(&'static str, String); 1], String);
+type ApiResult<T> = Result<ApiOk<T>, ApiErr>;
+
+/// What failed inside the blocking half of a request.
+///
+/// This exists so a log line can say *which* stage broke rather than only that something did —
+/// "the caller handed us an unreadable file" and "the engine fell over" have different owners.
+/// The HTTP mapping is unchanged: every variant is still a 422, exactly as before.
+#[derive(Debug)]
+enum JobError {
+    /// The request body did not describe a job that could be run at all.
+    InvalidInput(anyhow::Error),
+    /// The media could not be read, decoded or resampled.
+    AudioDecode(anyhow::Error),
+    /// The engine itself failed.
+    Inference(anyhow::Error),
+}
+
+impl JobError {
+    fn class(&self) -> &'static str {
+        match self {
+            JobError::InvalidInput(_) => "invalid_input",
+            JobError::AudioDecode(_) => "audio_decode",
+            JobError::Inference(_) => "inference",
+        }
+    }
+
+    fn inner(&self) -> &anyhow::Error {
+        match self {
+            JobError::InvalidInput(e) | JobError::AudioDecode(e) | JobError::Inference(e) => e,
+        }
+    }
+}
+
+/// Log the failure against the request span and build the response. Consumes the log so a
+/// request can only be finished once.
+fn fail(log: RequestLog, class: &'static str, status: StatusCode, message: String) -> ApiErr {
+    let id = log.id().to_string();
+    log.finish(Outcome::Failed {
+        class,
+        status: status.as_u16(),
+        message: message.clone(),
+    });
+    (status, [(reqlog::REQUEST_ID_HEADER, id)], message)
+}
+
+/// The last path component, or `None`. NEVER the full path: it is a user's filename on a
+/// shared volume and the rest of it is not ours to log.
+fn basename(path: &Path) -> Option<String> {
+    path.file_name().map(|s| s.to_string_lossy().into_owned())
+}
 
 struct AppState {
     /// Every loaded engine, keyed by device. Each prototype holds that device's shared
@@ -250,70 +306,167 @@ async fn admit<'a>(
 
 async fn diarize(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<DiarizeRequest>,
 ) -> ApiResult<DiarizeOutput> {
+    // Opened before admission so a request that spent time queued reports that time.
+    let log = RequestLog::new("/diarize", &headers);
+    log.set_gender(req.gender);
+    if let Some(name) = basename(&req.wav_path) {
+        log.set_audio(&name);
+    }
+
     // Resolve BEFORE admission: a bad device name must cost a 400, not an admission permit.
-    let device = state
-        .engines
-        .resolve(req.device.as_deref())
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let _permits = admit(&state, device).await?;
+    let device = match state.engines.resolve(req.device.as_deref()) {
+        Ok(device) => device,
+        Err(e) => return Err(fail(log, "bad_device", StatusCode::BAD_REQUEST, e.to_string())),
+    };
+    log.set_device(device.as_str());
+
+    let _permits = match admit(&state, device).await {
+        Ok(permits) => permits,
+        Err((status, message)) => return Err(fail(log, "admission", status, message)),
+    };
+
+    // The span is re-entered on the blocking thread: that is what puts speakrs' own pipeline
+    // and clustering events under this request id instead of floating free.
+    let span = log.span();
     let state2 = Arc::clone(&state);
-    let out = tokio::task::spawn_blocking(move || -> anyhow::Result<DiarizeOutput> {
-        let audio = load_audio(&req.wav_path)?;
-        let file_id = req
-            .file_id
-            .clone()
-            .or_else(|| {
-                req.wav_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| "file".into());
-        state2.with_engine_on(device, |engine| {
-            engine.diarize_with(&audio, &file_id, req.gender)
+    let joined = tokio::task::spawn_blocking(move || -> Result<DiarizeOutput, JobError> {
+        span.in_scope(|| {
+            let audio = load_audio(&req.wav_path).map_err(JobError::AudioDecode)?;
+            let file_id = req
+                .file_id
+                .clone()
+                .or_else(|| {
+                    req.wav_path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| "file".into());
+            state2
+                .with_engine_on(device, |engine| {
+                    engine.diarize_with(&audio, &file_id, req.gender)
+                })
+                .map_err(JobError::Inference)
         })
     })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
-    Ok(([(DEVICE_HEADER, device.as_str())], Json(out)))
+    .await;
+
+    let out = match joined {
+        // A JoinError here means the blocking task panicked or was cancelled — our bug, 500.
+        Err(e) => {
+            return Err(fail(
+                log,
+                "panic",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ))
+        }
+        Ok(Err(e)) => {
+            return Err(fail(
+                log,
+                e.class(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{:#}", e.inner()),
+            ))
+        }
+        Ok(Ok(out)) => out,
+    };
+
+    let id = log.id().to_string();
+    log.finish(Outcome::Diarize {
+        num_speakers: out.num_speakers,
+        segments: out.segments.len(),
+    });
+    Ok((
+        [
+            (DEVICE_HEADER, device.as_str().to_string()),
+            (reqlog::REQUEST_ID_HEADER, id),
+        ],
+        Json(out),
+    ))
 }
 
 async fn embed_window(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<EmbedRequest>,
 ) -> ApiResult<EmbedResponse> {
-    let device = state
-        .engines
-        .resolve(req.device.as_deref())
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let _permits = admit(&state, device).await?;
+    let log = RequestLog::new("/embed_window", &headers);
+    if let Some(name) = req.wav_path.as_deref().and_then(basename) {
+        log.set_audio(&name);
+    }
+
+    let device = match state.engines.resolve(req.device.as_deref()) {
+        Ok(device) => device,
+        Err(e) => return Err(fail(log, "bad_device", StatusCode::BAD_REQUEST, e.to_string())),
+    };
+    log.set_device(device.as_str());
+
+    let _permits = match admit(&state, device).await {
+        Ok(permits) => permits,
+        Err((status, message)) => return Err(fail(log, "admission", status, message)),
+    };
+
+    let span = log.span();
     let state2 = Arc::clone(&state);
-    let embedding = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<f32>> {
-        let clip: Vec<f32> = if let Some(b64) = &req.samples_b64 {
-            decode_samples_b64(b64)?
-        } else if let Some(path) = &req.wav_path {
-            let audio = load_audio(path)?;
-            let sr = 16_000.0;
-            match (req.start_s, req.end_s) {
-                (Some(s), Some(e)) if e > s => {
-                    let a = ((s * sr) as usize).min(audio.len());
-                    let b = ((e * sr) as usize).min(audio.len());
-                    audio[a..b].to_vec()
+    let joined = tokio::task::spawn_blocking(move || -> Result<Vec<f32>, JobError> {
+        span.in_scope(|| {
+            let clip: Vec<f32> = if let Some(b64) = &req.samples_b64 {
+                decode_samples_b64(b64).map_err(JobError::InvalidInput)?
+            } else if let Some(path) = &req.wav_path {
+                let audio = load_audio(path).map_err(JobError::AudioDecode)?;
+                let sr = 16_000.0;
+                match (req.start_s, req.end_s) {
+                    (Some(s), Some(e)) if e > s => {
+                        let a = ((s * sr) as usize).min(audio.len());
+                        let b = ((e * sr) as usize).min(audio.len());
+                        audio[a..b].to_vec()
+                    }
+                    _ => audio,
                 }
-                _ => audio,
-            }
-        } else {
-            anyhow::bail!("embed_window requires wav_path or samples_b64");
-        };
-        state2.with_engine_on(device, |engine| engine.embed_window(&clip))
+            } else {
+                return Err(JobError::InvalidInput(anyhow::anyhow!(
+                    "embed_window requires wav_path or samples_b64"
+                )));
+            };
+            state2
+                .with_engine_on(device, |engine| engine.embed_window(&clip))
+                .map_err(JobError::Inference)
+        })
     })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
+    .await;
+
+    let embedding = match joined {
+        Err(e) => {
+            return Err(fail(
+                log,
+                "panic",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ))
+        }
+        Ok(Err(e)) => {
+            return Err(fail(
+                log,
+                e.class(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{:#}", e.inner()),
+            ))
+        }
+        Ok(Ok(embedding)) => embedding,
+    };
+
+    let id = log.id().to_string();
+    log.finish(Outcome::Embed {
+        dim: embedding.len(),
+    });
     Ok((
-        [(DEVICE_HEADER, device.as_str())],
+        [
+            (DEVICE_HEADER, device.as_str().to_string()),
+            (reqlog::REQUEST_ID_HEADER, id),
+        ],
         Json(EmbedResponse { embedding }),
     ))
 }
@@ -439,6 +592,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // FIRST, before anything that might want to say something. Logs go to stdout so `docker
+    // logs` and compose capture them; `RUST_LOG` unset means `info`, so the container is
+    // useful with zero configuration. Only the serve path installs a subscriber — the
+    // provisioning subcommands write machine-readable JSON to stdout and must not be
+    // interleaved with log records.
+    let log_settings = diar_core::logging::init_stdout();
+
     let models_dir =
         std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
     let max_inflight: usize = std::env::var("DIAR_MAX_INFLIGHT")
@@ -460,22 +620,33 @@ async fn run() -> anyhow::Result<()> {
     // Every engine loads here, serially, before `axum::serve` — DiarEngine::load calls
     // std::env::set_var, which cannot safely run alongside live tokio workers. See engines.rs.
     let engines = EngineRegistry::load_from_env(&models_dir)?;
-    eprintln!(
-        "diar-server devices: [{}] (default {})",
-        engines
-            .devices()
-            .iter()
-            .map(|d| d.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        engines.default_device()
-    );
     let state = Arc::new(AppState {
         engines,
         gate: Semaphore::new(max_inflight),
         cpu_gate: max_inflight_cpu.map(Semaphore::new),
         models,
     });
+
+    // ONE startup record with everything an operator needs to answer "what is this process
+    // actually running". Built from `health_body`, so it cannot drift from what `/healthz`
+    // reports — the two used to be able to disagree.
+    let health = health_body(&state);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        bind = %bind,
+        models_dir = %health.models_dir,
+        models_state = health.models_state,
+        models_verified = health.models_verified,
+        models_set = health.models_set.as_deref().unwrap_or("unknown"),
+        models_gender = health.models_gender,
+        devices = %health.devices.join(","),
+        default_device = health.default_device,
+        max_inflight,
+        max_inflight_cpu = max_inflight_cpu.unwrap_or(0),
+        log_format = log_settings.format.as_str(),
+        log_filter = %log_settings.filter,
+        "diar-server starting"
+    );
 
     let app = Router::new()
         .route("/diarize", post(diarize))
@@ -485,7 +656,7 @@ async fn run() -> anyhow::Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    eprintln!("diar-server listening on {bind}");
+    tracing::info!(bind = %bind, "diar-server listening");
     axum::serve(listener, app).await?;
     Ok(())
 }

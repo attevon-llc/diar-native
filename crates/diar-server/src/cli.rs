@@ -342,8 +342,11 @@ pub fn startup_gate_or_exit(models_dir: &std::path::Path) -> marker::ModelsStatu
             std::process::exit(exit_code::NO_EXPORTER_ENV);
         }
         provision::StartupGate::Proceed { status, warning } => {
+            // Non-fatal, so it belongs in the log stream with everything else. The Fatal arm
+            // above deliberately stays on stderr: it is a multi-line remediation block printed
+            // on the way to `exit()`, and it must survive any log configuration.
             if let Some(w) = warning {
-                eprintln!("warning: {w}");
+                tracing::warn!(models_state = status.state.as_str(), "{w}");
             }
             status
         }
