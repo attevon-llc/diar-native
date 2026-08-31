@@ -78,4 +78,11 @@ RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bi
 RUN mkdir -p /tmp/diar-native && chmod 1777 /tmp/diar-native
 WORKDIR /srv
 EXPOSE 8701
+# Liveness, deliberately NOT readiness. /healthz is 200 whenever the process is serving;
+# /readyz is 200 only once the models are provisioned and verified. Using /readyz here would
+# mark every not-yet-provisioned container unhealthy, failing `compose up --wait` for the whole
+# stack — the exact silent-fallback regression the models-state split exists to prevent.
+# Operators who want readiness gating should point their own compose healthcheck at /readyz.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://localhost:8701/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/diar-server"]
