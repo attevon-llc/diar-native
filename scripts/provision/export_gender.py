@@ -60,9 +60,15 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
     from transformers import AutoConfig, AutoModelForAudioClassification
 
     print(f"Exporting gender classifier from {GENDER_REPO}...")
-    # Ungated, so no token is passed even if one is set.
-    info = model_info(GENDER_REPO)
-    revision = getattr(info, "sha", None)
+    # Ungated, so no token is passed even if one is set. The revision is provenance for the
+    # marker, not a requirement — provisioning from a warm cache with HF_HUB_OFFLINE=1 is a
+    # legitimate mode (air-gapped hosts, and re-exports that must not re-download), so a
+    # failure to reach the API must not fail the export.
+    try:
+        revision = getattr(model_info(GENDER_REPO), "sha", None)
+    except Exception as exc:
+        print(f"  (could not resolve upstream revision: {exc})")
+        revision = None
 
     config = AutoConfig.from_pretrained(GENDER_REPO)
     model = AutoModelForAudioClassification.from_pretrained(GENDER_REPO)
