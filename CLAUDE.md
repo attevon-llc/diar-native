@@ -19,14 +19,19 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
   PR-prep branches (which are trimmed subsets tailored for clean upstream review, not meant to
   represent production).
 - `crates/diar-core` — engine wrapper: `DiarEngine::clone_shared()` per-request handles,
-  centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode.
+  centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode, and
+  `logging.rs` (the `RUST_LOG`/`DIAR_LOG_FORMAT` policy both binaries share; the sink is a
+  parameter, and the library never installs a subscriber itself).
   `clone_shared` is `#[cfg(not(feature = "coreml"))]` — speakrs cfgs its own equivalent out
   for CoreML (not ORT sessions, single-thread-at-a-time). `Mode` also has `CoreMl`/`CoreMlFast`.
 - `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz`;
   `DIAR_MAX_INFLIGHT` bounds concurrency; requests run on cloned handles (no engine mutex) —
   except under `coreml`, where `AppState::with_engine` holds the mutex for the whole request
   instead (RESULTS §7.31; `DIAR_MAX_INFLIGHT` has no effect in that mode).
-- `crates/diar-cli` — bench runner; `RUST_LOG=speakrs=trace` for engine stage timings.
+- `crates/diar-cli` — bench runner; `RUST_LOG=speakrs=trace` for engine stage timings (on
+  stderr — stdout is the harness's JSONL). **This works in `diar-server` too as of §7.37**;
+  before that the server installed no subscriber at all, so `RUST_LOG` was dead in the
+  DEPLOYED artifact and only ever did anything in the CLI.
 - `upstream-work/` (gitignored) — upstream-tip clone with the 7 prepared PR branches;
   drafts in `docs/pr_drafts.md`. `origin` = `attevon-llc/speakrs` (our fork, branches pushed
   2026-08-20), `upstream` = `avencera/speakrs`. Opening PRs/issues against avencera/speakrs
@@ -75,7 +80,14 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 - Env knobs: `DIAR_MAX_INFLIGHT`, `SPEAKRS_FBANK_POOL`, `SPEAKRS_LAZY_SESSIONS`,
   `SPEAKRS_ARENA_SHRINK` (4 GB-tier VRAM floor, ~20% per-job cost — default off),
   `DIAR_GENDER_MAX_SECONDS`, `DIAR_DEVICES` (comma list, first = default; wins over
-  `DIAR_MODE`), `DIAR_MAX_INFLIGHT_CPU` (optional inner sub-gate, default off).
+  `DIAR_MODE`), `DIAR_MAX_INFLIGHT_CPU` (optional inner sub-gate, default off),
+  `RUST_LOG` (default `info,ort::logging=warn` — NOT unset-means-silent; ORT's native bridge
+  is held at warn because it emits 5797 INFO lines per CUDA startup), `DIAR_LOG_FORMAT`
+  (`text`|`json`).
+- Server logs go to **stdout** (so `docker logs`/compose capture them); fatal startup errors
+  stay on stderr. Only the serve path installs a subscriber — the `provision-models` /
+  `verify-models` subcommands write machine-readable JSON to stdout and must not be
+  interleaved with log records.
 - The CUDA image is a SUPERSET of the CPU image on amd64 — one process serves `cuda` and
   `cpu`, picked per request via the `device` field (RESULTS §7.34). The ORT CPU EP is
   statically linked in every build, so this costs no extra bytes. `Dockerfile.server-cpu`

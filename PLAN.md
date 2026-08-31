@@ -113,6 +113,14 @@ Milestones:
     tokio workers, so lazy per-request loading is unsound, not merely unoptimized.
     `docker/Dockerfile.server-cpu` STAYS: it is the arm64 / 189 MB artifact, not a correctness
     carve-out (the CUDA base image and its ORT tarball are x86-64 only).
+  - **Structured server logging: DONE 2026-08-31 (RESULTS §7.37)** — `diar-server` shipped with
+    NO `tracing-subscriber` and never installed one, so speakrs' 40 events and diar-core's 2
+    warnings went nowhere and the operator saw two `eprintln!` lines and crashes. `RUST_LOG`
+    now defaults to `info,ort::logging=warn` (unset must not mean silent; ORT's native bridge
+    emits 5797 INFO lines per CUDA startup and would bury everything), `DIAR_LOG_FORMAT` selects
+    the rendering, logs go to stdout, and every `/diarize` / `/embed_window` request gets a
+    span (`request_id`, device, duration, outcome, `error_class`) that speakrs' own events
+    nest under. Policy lives in `diar_core::logging` so the server and the CLI cannot drift.
 - **M4 (T2)**: Triton repo productionization — accuracy-correct community-1 TRT engines
   (rebuild from our exports), `diar-ffi` backend or sidecar-calls-Triton, per-arch engine build
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured

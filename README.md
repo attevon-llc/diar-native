@@ -137,10 +137,13 @@ diar-native/
 │   └── UPSTREAM_PRS.md        ← the speakrs contribution queue (incl. PR-7 exclusive fix)
 ├── crates/
 │   ├── diar-core/             ← speakrs wrapper: shared-session engine handles (clone_shared),
-│   │                            centroids, embed_window, exclusive output, gender, media decode
+│   │                            centroids, embed_window, exclusive output, gender, media decode,
+│   │                            logging policy shared by both binaries (logging.rs)
 │   ├── diar-server/           ← the T1 sidecar: /diarize /embed_window /healthz (axum);
-│   │                            per-request engine handles — jobs run concurrently
-│   └── diar-cli/              ← bench/ops runner (RTTM+JSON out, engine traces via RUST_LOG)
+│   │                            per-request engine handles — jobs run concurrently;
+│   │                            structured logs to stdout (RUST_LOG, DIAR_LOG_FORMAT)
+│   └── diar-cli/              ← bench/ops runner (RTTM+JSON out, engine traces via RUST_LOG
+│                                on stderr — stdout stays parseable JSONL)
 ├── docker/
 │   ├── Dockerfile.server      ← production image (diar-server:0.2.0; ORT 1.24.2 GPU libs)
 │   └── Dockerfile.bench       ← self-contained speakrs CUDA build (xtask diarize CLI)
@@ -277,6 +280,52 @@ is `curl -sf .../healthz` and only inspects the HTTP status.
 > `x-diar-device` response header) before relying on the field. An unknown device name on a
 > *new* server is a 400 that names the devices the build serves; on an old one it is a silent
 > success on the wrong device.
+
+## 6c. Logging
+
+`diar-server` installs a `tracing-subscriber` and logs to **stdout**, so `docker logs` and
+compose capture it with no configuration. Fatal startup errors (the provisioning gate's
+remediation block) stay on **stderr**, because they are printed on the way to `exit()` and must
+survive any log setting.
+
+| knob | scope | meaning |
+|---|---|---|
+| `RUST_LOG` | startup | Standard `tracing` filter, e.g. `info`, `debug`, `speakrs=debug`, `diar_server=debug,speakrs=trace`. **Unset or empty ⇒ `info,ort::logging=warn`** — the container is useful out of the box. A malformed value logs a warning and falls back to that same default rather than starting the process silent. |
+| `DIAR_LOG_FORMAT` | startup | `text` (default) — human-readable lines, ANSI only when stdout is a terminal. `json` — one flattened JSON object per line for log aggregation. An unrecognized value warns and uses `text`. |
+| `x-request-id` | per request | Request header, optional. Honoured if present so a job keeps one id end to end through a larger stack; otherwise one is generated. Echoed back on the response, including on errors. Sanitized before it is logged (control characters stripped, 64 chars max) — a caller cannot forge a log record with it. |
+
+`RUST_LOG=speakrs=debug` is what surfaces the engine's own stage timings (fbank, GPU predict,
+clustering). This works in **both** `diar-server` and `diar-cli`; before this landed the server
+installed no subscriber at all, so every speakrs event was silently discarded regardless of
+`RUST_LOG`.
+
+> **Why the default is not a bare `info`.** ONNX Runtime's native log bridge (`ort::logging`)
+> emits **5797 INFO lines** on a CUDA startup — "Removing NodeArg …", "GraphTransformer …
+> modified: 0" — against 3 lines from diar-server. Measured, not estimated (RESULTS §7.37). A
+> blanket `info` buries the startup record 2000:1, so the default holds that one target at
+> `warn`. Its warnings are real perf diagnostics (Memcpy nodes, unassigned nodes) and are kept,
+> as is `ort::ep`, which reports which execution provider actually registered. An explicit
+> `RUST_LOG=ort=info` or `RUST_LOG=debug` still gets the firehose.
+
+Each `/diarize` and `/embed_window` request runs inside a span carrying `request_id`,
+`endpoint`, `device`, the audio **basename** and the `gender` flag, and ends with one record
+giving `duration_ms`, `outcome`, and either `num_speakers`/`segments` or an `error_class`
+(`bad_device`, `admission`, `invalid_input`, `audio_decode`, `inference`, `panic`). The span is
+re-entered on the blocking worker thread, so speakrs' pipeline events are attributed to the
+request that caused them.
+
+Full media paths, model weights and the HuggingFace provisioning token are never logged;
+`provision-models` scrubs the token out of the exporter's stdout *and* stderr and marks its
+`--hf-token` argument `hide_env_values`.
+
+```bash
+# human-readable, default level
+docker run --rm -p 8701:8701 -v /srv/models:/models:ro diar-server:latest
+
+# engine stage timings, JSON for an aggregator
+docker run --rm -p 8701:8701 -v /srv/models:/models:ro \
+  -e RUST_LOG=speakrs=debug -e DIAR_LOG_FORMAT=json diar-server:latest
+```
 
 ## 7. Ground rules
 

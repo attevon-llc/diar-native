@@ -163,6 +163,50 @@ asymmetry is deliberate:
 
 `DIAR_ALLOW_UNVERIFIED_MODELS=1` downgrades the fatal cases to warnings.
 
+## Step 4 — logs
+
+The server logs to **stdout** with `tracing`, so `docker logs diar-native` and `docker compose
+logs` show it with no configuration. Fatal startup errors (the gate block above) stay on
+stderr. Two knobs:
+
+| var | default | meaning |
+|---|---|---|
+| `RUST_LOG` | `info,ort::logging=warn` | Standard `tracing` filter. The default gives the startup line, warnings, and one line per request. `speakrs=debug` adds the engine's stage timings (fbank, GPU predict, clustering). Empty is treated as unset; a malformed value warns and falls back to the default rather than starting silent. ONNX Runtime's native bridge is held at `warn` because it emits 5797 INFO lines per CUDA startup (RESULTS §7.37); `RUST_LOG=ort=info` brings it back. |
+| `DIAR_LOG_FORMAT` | `text` | `text` for humans, `json` for an aggregator (one flattened object per line). Unrecognized values warn and use `text`. |
+
+Add them to the `diar-native` service in `transcribe-app/docker-compose.diar-native.yml`
+(that file lives in the consuming repo — this change is made there, not here):
+
+```yaml
+services:
+  diar-native:
+    environment:
+      - DIAR_MODELS_DIR=/models
+      - DIAR_MAX_INFLIGHT=${DIAR_NATIVE_MAX_INFLIGHT:-2}
+      # Logging. Both are optional; these are the built-in defaults spelled out.
+      - RUST_LOG=${DIAR_NATIVE_LOG_LEVEL:-info}
+      - DIAR_LOG_FORMAT=${DIAR_NATIVE_LOG_FORMAT:-text}
+```
+
+Set `DIAR_LOG_FORMAT=json` when OpenTranscribe's log shipping wants structured records; leave
+it unset for hand debugging.
+
+**What a request looks like.** Each `/diarize` and `/embed_window` call gets a span with
+`request_id`, `endpoint`, `device`, the audio **basename** (never the full path) and the
+`gender` flag, and ends with one record carrying `duration_ms`, `outcome`, and either
+`num_speakers`/`segments` or an `error_class` — one of `bad_device`, `admission`,
+`invalid_input`, `audio_decode`, `inference`, `panic`. That is enough to tell a caller error
+from a sidecar fault without reproducing anything.
+
+**Correlating with the caller.** An inbound `x-request-id` header is reused as the request id
+and echoed back on the response (including on 4xx/5xx), so one id spans OpenTranscribe's log
+and the sidecar's. If the caller sends none, the server generates one. Inbound ids are
+sanitized before they are logged.
+
+Nothing sensitive is logged: no full media paths, no model weights, and no HuggingFace token
+— `provision-models` scrubs the token from the exporter's stdout and stderr and hides it from
+clap's error rendering.
+
 ## Known limitations
 
 - `num_speakers` forced counts: the native engine logs a warning and runs auto counting
