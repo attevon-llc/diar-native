@@ -13,10 +13,14 @@
 //! loaded; with it unset the server loads exactly one engine from `DIAR_MODE`, which is what
 //! it has always done.
 
+mod cli;
 mod engines;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use clap::Parser;
+use diar_core::provision::marker::ModelsStatus;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -48,6 +52,12 @@ struct AppState {
     /// take the global permit FIRST and this one SECOND, always in that order, so there is no
     /// lock-ordering hazard against requests that only take the global one.
     cpu_gate: Option<Semaphore>,
+    /// Provisioning state of the models directory, decided ONCE at startup by a `stat`-only
+    /// pass. Not re-read per request: `/healthz` is polled by a compose healthcheck on a
+    /// short interval, and re-hashing (or even re-stat-ing) 470 MB on every poll would be a
+    /// self-inflicted load source. It answers "is this the directory that passed", which is
+    /// a startup-time fact.
+    models: ModelsStatus,
 }
 
 impl AppState {
@@ -98,9 +108,14 @@ impl AppState {
 #[derive(Deserialize)]
 struct DiarizeRequest {
     /// Path to media on a shared volume. A 16 kHz mono WAV takes the exact handoff fast
-    /// path the app relies on; anything else (mp3/m4a/flac/ogg, any-rate wav) is decoded
-    /// and resampled in-process. `media_path` is accepted as an alias.
-    #[serde(alias = "media_path")]
+    /// path the app relies on; anything else (mp3/m4a/flac/ogg/aac/mp4, any-rate wav) is
+    /// decoded and resampled in-process.
+    ///
+    /// `media_path` and `audio_path` are accepted as aliases. The `wav_path` name is kept
+    /// because the live OpenTranscribe caller sends it, but it undersells the field and has
+    /// led third parties to transcode to WAV first for no reason — the decoder handles
+    /// anything symphonia can read.
+    #[serde(alias = "media_path", alias = "audio_path")]
     wav_path: PathBuf,
     #[serde(default)]
     file_id: Option<String>,
@@ -118,8 +133,9 @@ struct DiarizeRequest {
 
 #[derive(Deserialize)]
 struct EmbedRequest {
-    /// Path to a 16 kHz mono WAV on a shared volume…
-    #[serde(default)]
+    /// Path to media on a shared volume — any symphonia-decodable format, not only WAV.
+    /// `media_path` and `audio_path` are accepted as aliases; see `DiarizeRequest::wav_path`.
+    #[serde(default, alias = "media_path", alias = "audio_path")]
     wav_path: Option<PathBuf>,
     /// …or raw 16 kHz mono f32 little-endian samples, base64 (small clips).
     #[serde(default)]
@@ -322,20 +338,76 @@ struct HealthResponse {
     /// Devices this BUILD can serve — a compile-time capability, a superset of `devices`.
     /// One listed here but absent from `devices` needs a `DIAR_DEVICES` change, not a rebuild.
     supported_devices: Vec<&'static str>,
+
+    // ---- provisioning state (issue #2) ----
+    // FLAT fields rather than a nested object, so appending them stays additive for anything
+    // already parsing this body.
+    /// True only when `models_state == "verified"`. This is what `/readyz` gates on.
+    models_verified: bool,
+    /// `verified` | `stale` | `unverified` | `failed`.
+    ///
+    /// `unverified` is NOT an error: every models directory provisioned before this feature
+    /// existed has no marker, and the server serves them exactly as before.
+    models_state: &'static str,
+    models_dir: String,
+    /// Tier recorded in the marker (`fast`/`small`), when there is one.
+    models_set: Option<String>,
+    models_exporter_version: Option<u32>,
+    /// Upstream pipeline commit the weights came from.
+    models_pipeline_revision: Option<String>,
+    models_smoke_at: Option<String>,
+    /// Whether the gender classifier was provisioned. Gender is enabled by FILE PRESENCE, so
+    /// a `--skip-gender` deployment answers `diarize(gender=true)` with 200 and no genders;
+    /// reporting it here is the difference between that being a decision and a mystery.
+    models_gender: bool,
+    /// Human sentence plus the remediation command, for every non-verified state.
+    models_reason: Option<String>,
 }
 
-async fn healthz(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    Json(HealthResponse {
+fn health_body(state: &AppState) -> HealthResponse {
+    let m = &state.models;
+    HealthResponse {
         status: "ok",
         default_device: state.engines.default_device().as_str(),
-        devices: state
-            .engines
-            .devices()
-            .iter()
-            .map(|d| d.as_str())
-            .collect(),
+        devices: state.engines.devices().iter().map(|d| d.as_str()).collect(),
         supported_devices: engines::supported().iter().map(|d| d.as_str()).collect(),
-    })
+        models_verified: m.state.is_verified(),
+        models_state: m.state.as_str(),
+        models_dir: m.dir.display().to_string(),
+        models_set: m.set.clone(),
+        models_exporter_version: m.exporter_version,
+        models_pipeline_revision: m.pipeline_revision.clone(),
+        models_smoke_at: m.smoke_at.clone(),
+        models_gender: m.dir.join(diar_core::provision::files::GENDER_MODEL).exists(),
+        models_reason: m.reason.clone(),
+    }
+}
+
+/// ALWAYS 200 while the process is serving, in every model state.
+///
+/// This is a hard compatibility constraint, not a stylistic choice. Verified callers inspect
+/// the STATUS ONLY — `docker-compose.diar-native.yml` runs `curl -sf .../healthz || exit 1`,
+/// and `diarizer_native.py` checks `resp.status == 200`. Every models directory deployed
+/// today has no marker, so a 503 for "unverified" would, on the day this ships, fail every
+/// existing healthcheck, fail `up --wait` for the whole stack, and make OpenTranscribe fall
+/// back to in-process PyAnnote — the exact silent quality regression this work exists to
+/// prevent, caused by the fix for it. Changing the BODY is safe; changing the CODE is not.
+async fn healthz(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    Json(health_body(&state))
+}
+
+/// 200 only when the models are verified; 503 otherwise, with the same body.
+///
+/// This is where "still provisioning" is distinguished from "broken", with zero blast radius
+/// on existing callers. Compose healthchecks move here AFTER provisioning once.
+async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, Json<HealthResponse>) {
+    let body = health_body(&state);
+    let code = if body.models_verified {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, Json(body))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -344,6 +416,21 @@ fn main() -> anyhow::Result<()> {
     if std::env::var("RUST_MIN_STACK").is_err() {
         std::env::set_var("RUST_MIN_STACK", "16777216");
     }
+
+    // `None` => serve. The live deployment runs `diar-server` with no arguments and both
+    // Dockerfiles have ENTRYPOINT with no CMD, so this path must stay exactly as it was.
+    match cli::Cli::parse().command {
+        None | Some(cli::Command::Serve) => {}
+        // The provisioning subcommands never construct an engine: no ORT, no VRAM, no
+        // device. They must work on a box with no GPU and an empty models directory —
+        // which is precisely the situation they exist to fix.
+        Some(cli::Command::ProvisionModels(args)) => {
+            std::process::exit(cli::run_provision(args))
+        }
+        Some(cli::Command::VerifyModels(args)) => std::process::exit(cli::run_verify(args)),
+        Some(cli::Command::CheckToken(args)) => std::process::exit(cli::run_check_token(args)),
+    }
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)
@@ -365,6 +452,11 @@ async fn run() -> anyhow::Result<()> {
         .filter(|&n| n > 0);
     let bind = std::env::var("DIAR_BIND").unwrap_or_else(|_| "0.0.0.0:8701".to_string());
 
+    // Provisioning gate FIRST — before any engine is constructed. A `stat`-only pass, so it
+    // costs nothing and fires exactly once. Its job is to name the real problem (no models)
+    // instead of letting it surface as one "session load failed" per configured device.
+    let models = cli::startup_gate_or_exit(std::path::Path::new(&models_dir));
+
     // Every engine loads here, serially, before `axum::serve` — DiarEngine::load calls
     // std::env::set_var, which cannot safely run alongside live tokio workers. See engines.rs.
     let engines = EngineRegistry::load_from_env(&models_dir)?;
@@ -382,12 +474,14 @@ async fn run() -> anyhow::Result<()> {
         engines,
         gate: Semaphore::new(max_inflight),
         cpu_gate: max_inflight_cpu.map(Semaphore::new),
+        models,
     });
 
     let app = Router::new()
         .route("/diarize", post(diarize))
         .route("/embed_window", post(embed_window))
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

@@ -96,10 +96,27 @@ pub enum StartupGate {
 /// warning. Every models directory deployed before this feature shipped has no marker, and
 /// refusing to start on those would turn a provenance improvement into an outage.
 pub fn startup_gate(models_dir: &Path, set: ModelSet, wanted: ModelSet) -> StartupGate {
-    let allow_unverified = std::env::var(ALLOW_UNVERIFIED_ENV)
-        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes"))
-        .unwrap_or(false);
+    startup_gate_with(models_dir, set, wanted, allow_unverified_from_env())
+}
 
+pub fn allow_unverified_from_env() -> bool {
+    std::env::var(ALLOW_UNVERIFIED_ENV)
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false)
+}
+
+/// `allow_unverified` is a PARAMETER, not read from the environment here.
+///
+/// Process environment is global mutable state, and two tests exercising the escape hatch
+/// and the fatal path in parallel raced on it — one flipped the variable while the other was
+/// mid-decision. Threading it through means the decision function is pure and the tests are
+/// deterministic; only [`startup_gate`] touches the environment.
+pub fn startup_gate_with(
+    models_dir: &Path,
+    set: ModelSet,
+    wanted: ModelSet,
+    allow_unverified: bool,
+) -> StartupGate {
     // Gender is optional by construction (`GenderModel::load_optional`), so it is never
     // part of the can-we-start question.
     let missing = marker::missing_required(models_dir, set, false);
@@ -440,9 +457,8 @@ mod tests {
 
     #[test]
     fn missing_models_are_fatal_and_the_message_teaches_the_fix() {
-        std::env::remove_var(ALLOW_UNVERIFIED_ENV);
         let d = scratch();
-        match startup_gate(&d, ModelSet::Fast, ModelSet::Fast) {
+        match startup_gate_with(&d, ModelSet::Fast, ModelSet::Fast, false) {
             StartupGate::Fatal(m) => {
                 assert!(m.contains("provision-models"), "{m}");
                 assert!(m.contains("huggingface.co/settings/tokens"), "{m}");
@@ -457,10 +473,9 @@ mod tests {
     /// today has no marker, and refusing to start on those would take the live stack down.
     #[test]
     fn a_complete_directory_with_no_marker_still_starts() {
-        std::env::remove_var(ALLOW_UNVERIFIED_ENV);
         let d = scratch();
         write_all_required(&d, ModelSet::Fast);
-        match startup_gate(&d, ModelSet::Fast, ModelSet::Fast) {
+        match startup_gate_with(&d, ModelSet::Fast, ModelSet::Fast, false) {
             StartupGate::Proceed { status, warning } => {
                 assert_eq!(status.state, ModelsState::Unverified);
                 assert!(warning.is_some(), "operator should be told, but not blocked");
@@ -499,7 +514,7 @@ mod tests {
         }
         .write(&d)
         .unwrap();
-        match startup_gate(&d, ModelSet::Fast, ModelSet::Fast) {
+        match startup_gate_with(&d, ModelSet::Fast, ModelSet::Fast, false) {
             StartupGate::Fatal(m) => assert!(m.contains("known-bad"), "{m}"),
             _ => panic!("known-bad models must not serve"),
         }
@@ -509,9 +524,7 @@ mod tests {
     #[test]
     fn the_escape_hatch_downgrades_fatals_to_warnings() {
         let d = scratch();
-        std::env::set_var(ALLOW_UNVERIFIED_ENV, "1");
-        let got = startup_gate(&d, ModelSet::Fast, ModelSet::Fast);
-        std::env::remove_var(ALLOW_UNVERIFIED_ENV);
+        let got = startup_gate_with(&d, ModelSet::Fast, ModelSet::Fast, true);
         match got {
             StartupGate::Proceed { warning, .. } => {
                 assert!(warning.unwrap().contains(ALLOW_UNVERIFIED_ENV));
@@ -523,11 +536,10 @@ mod tests {
 
     #[test]
     fn an_empty_file_counts_as_missing() {
-        std::env::remove_var(ALLOW_UNVERIFIED_ENV);
         let d = scratch();
         write_all_required(&d, ModelSet::Small);
         std::fs::write(d.join("wespeaker-fbank.onnx"), b"").unwrap();
-        match startup_gate(&d, ModelSet::Small, ModelSet::Small) {
+        match startup_gate_with(&d, ModelSet::Small, ModelSet::Small, false) {
             StartupGate::Fatal(m) => assert!(m.contains("wespeaker-fbank.onnx"), "{m}"),
             _ => panic!("a zero-length model must be treated as missing"),
         }

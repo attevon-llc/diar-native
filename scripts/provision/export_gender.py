@@ -17,13 +17,19 @@ still runs when the pipeline gate is the thing that failed.
    and reads `"logits"` by name. An export with torch's default generated names loads fine
    and then fails at the first request. They are pinned explicitly below.
 
-2. **The shipped model is FP16, not FP32.** This is not an optimisation you can skip and
-   still match: a plain fp32 export is ~361 MB, while the artifact in `models_folded/` is
-   189,431,659 bytes — and every one of its 213 initializers is FLOAT16 with `keep_io_types`
+2. **The shipped model is FP16, not FP32** — which the documented `optimum-cli` route does
+   not tell you. A plain fp32 export is ~378 MB, while the artifact in `models_folded/` is
+   189,431,659 bytes, and every one of its 213 initializers is FLOAT16 with `keep_io_types`
    preserving fp32 in and out (confirmed by reading the shipped graph). RESULTS §7.18
-   adopted fp16 after checking 67 verdicts across 16 AMI meetings came out 67/67 identical,
-   with VRAM 5396 -> 4890 MiB. Note this is the OPPOSITE conclusion to §4.18, where fp16 was
-   rejected for the diarization graph — so it must be applied here and only here.
+   adopted fp16 after 67 verdicts across 16 AMI meetings came out 67/67 identical, with VRAM
+   5396 -> 4890 MiB. Note this is the OPPOSITE conclusion to §4.18, where fp16 was rejected
+   for the diarization graph.
+
+   The conversion here is **best-effort with a validated fp32 fallback**, because
+   `onnxconverter_common.float16` cannot convert the graph torch 2.13 emits (see the comment
+   at the conversion site). Both precisions are functionally correct; fp16 only saves VRAM
+   and disk, so a failed conversion degrades rather than aborts, and the precision actually
+   produced is reported back for the marker.
 
 `optimum` is deliberately not used (upstream's documented route was
 `optimum-cli export onnx`): it drags in a large dependency tree to wrap the same
@@ -112,7 +118,7 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
                 "input_values": {0: "batch", 1: "samples"},
                 "logits": {0: "batch"},
             },
-            opset_version=14,
+            opset_version=17,
             dynamo=False,
         )
 
@@ -132,45 +138,75 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
         )
     print(f"  fp32 parity vs torch: max |logit diff| = {diff:.2e}")
 
-    # fp16 with keep_io_types: the graph runs in half precision while still accepting and
-    # returning fp32, so gender.rs needs no change at all.
-    import onnx
-    from onnxconverter_common import float16
-
-    fp16_model = float16.convert_float_to_float16(
-        onnx.load(fp32_path), keep_io_types=True
-    )
-    out_path = os.path.join(models_dir, MODEL_FILE)
-    onnx.save(fp16_model, out_path)
-
-    # Parity gate 2: fp16 must not move the decision. Probabilities may drift; the argmax
-    # must not — that is the property §7.18 actually validated (67/67 labels identical).
-    fp16_logits = ort.InferenceSession(out_path, providers=["CPUExecutionProvider"]).run(
-        None, {"input_values": dummy.numpy()}
-    )[0]
-    if int(np.argmax(fp16_logits)) != int(np.argmax(onnx_logits)):
-        os.unlink(fp32_path)
-        raise RuntimeError(
-            "fp16 conversion changed the predicted class on the trace input — refusing to "
-            "ship a classifier whose verdicts moved."
-        )
-
     def softmax(x: np.ndarray) -> np.ndarray:
         e = np.exp(x - x.max())
         return e / e.sum()
 
-    prob_delta = float(np.abs(softmax(fp16_logits[0]) - softmax(onnx_logits[0])).max())
-    if prob_delta > FP16_PROB_TOL:
-        os.unlink(fp32_path)
-        raise RuntimeError(
-            f"fp16 conversion moved probabilities by {prob_delta:.3e} "
-            f"(bar {FP16_PROB_TOL}); §7.18 measured 0.0118"
+    # fp16 with keep_io_types: the graph runs in half precision while still accepting and
+    # returning fp32, so gender.rs needs no change at all.
+    #
+    # BEST-EFFORT, with a validated fp32 fallback. `onnxconverter_common.float16` does not
+    # successfully convert this graph as emitted by torch 2.13: it produces a model ORT
+    # refuses to load ("Type parameter (T) of Optype (Add) bound to different types
+    # (tensor(float16) and tensor(float))"), and neither `disable_shape_infer=True` nor
+    # `op_block_list=['Cast']` fixes it. The shipped models_folded/ artifact was produced
+    # under torch 2.11.0, whose graph the converter handles.
+    #
+    # fp16 is a real but non-blocking win — §7.18 measured VRAM 5396 -> 4890 MiB and disk
+    # 361 -> 181 MB with 67/67 labels identical — so failing the whole provisioning run over
+    # it would trade a working deployment for a smaller file. The fp32 model is correct and
+    # is what `gender.rs` loads either way; only VRAM and disk differ. Which precision was
+    # produced is REPORTED, so the marker and /healthz can say so rather than implying fp16.
+    out_path = os.path.join(models_dir, MODEL_FILE)
+    precision = "fp32"
+
+    import onnx
+
+    try:
+        from onnxconverter_common import float16
+
+        fp16_path = out_path + ".fp16"
+        onnx.save(
+            float16.convert_float_to_float16(onnx.load(fp32_path), keep_io_types=True),
+            fp16_path,
         )
-    print(
-        f"  fp16 conversion: max Δp = {prob_delta:.2e}, label unchanged, "
-        f"{os.path.getsize(fp32_path) / 1e6:.0f} MB -> {os.path.getsize(out_path) / 1e6:.0f} MB"
-    )
-    os.unlink(fp32_path)
+        fp16_logits = ort.InferenceSession(
+            fp16_path, providers=["CPUExecutionProvider"]
+        ).run(None, {"input_values": dummy.numpy()})[0]
+
+        # Parity gate 2: fp16 must not move the decision. Probabilities may drift; the
+        # argmax must not — that is the property §7.18 actually validated.
+        if int(np.argmax(fp16_logits)) != int(np.argmax(onnx_logits)):
+            raise RuntimeError("fp16 conversion changed the predicted class")
+        prob_delta = float(np.abs(softmax(fp16_logits[0]) - softmax(onnx_logits[0])).max())
+        if prob_delta > FP16_PROB_TOL:
+            raise RuntimeError(
+                f"fp16 moved probabilities by {prob_delta:.3e} (bar {FP16_PROB_TOL})"
+            )
+
+        os.replace(fp16_path, out_path)
+        precision = "fp16"
+        print(
+            f"  fp16 conversion: max Δp = {prob_delta:.2e}, label unchanged, "
+            f"{os.path.getsize(fp32_path) / 1e6:.0f} MB -> "
+            f"{os.path.getsize(out_path) / 1e6:.0f} MB"
+        )
+    except Exception as exc:
+        for stale in (out_path + ".fp16",):
+            if os.path.isfile(stale):
+                os.unlink(stale)
+        print(
+            f"  fp16 conversion unavailable ({str(exc)[:120]}); keeping fp32. "
+            f"The classifier is correct either way — it costs ~500 MiB more VRAM and "
+            f"~190 MB more disk than the fp16 build (RESULTS §7.18)."
+        )
+
+    if precision == "fp32":
+        os.replace(fp32_path, out_path)
+    else:
+        os.unlink(fp32_path)
+
+    print(f"  {MODEL_FILE}: {os.path.getsize(out_path) / 1e6:.0f} MB ({precision})")
 
     if write_meta:
         meta = {
@@ -182,4 +218,8 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
             json.dump(meta, f, indent=2)
             f.write("\n")
 
-    return {"gender_repo": GENDER_REPO, "gender_revision": revision}
+    return {
+        "gender_repo": GENDER_REPO,
+        "gender_revision": revision,
+        "gender_precision": precision,
+    }
