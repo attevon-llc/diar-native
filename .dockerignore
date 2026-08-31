@@ -1,0 +1,22 @@
+# Build context control. Without this the context is 8.3 GB and includes 1.1 GB of
+# TERMS-GATED model weights. The Dockerfiles only COPY Cargo.toml, Cargo.lock, crates/,
+# vendor/speakrs/ and scripts/, so nothing below is needed to build.
+#
+# Allowlist, not denylist: gated weights must never reach a published image, and a
+# denylist silently fails open the moment someone adds a new directory. Everything is
+# excluded, then the five build inputs are added back.
+*
+
+!Cargo.toml
+!Cargo.lock
+!crates/
+!scripts/
+# vendor/ is gitignored but IS a build input: speakrs is a path dependency, and
+# fixtures/test.wav is baked in as the provisioning smoke clip.
+!vendor/speakrs/
+
+# Re-exclude heavy or irrelevant subtrees of the paths added back above.
+vendor/speakrs/.git/
+vendor/speakrs/target/
+**/__pycache__/
+**/*.pyc
