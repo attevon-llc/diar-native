@@ -1,0 +1,39 @@
+# Ruff config for scripts/ and validation/.
+#
+# These are operator and developer utilities — model export, benchmark drivers, DER scoring —
+# not a distributed package. The rule set is therefore deliberately narrow: ruff's stock
+# default (pycodestyle errors + pyflakes), which catches real bugs (undefined names, unused
+# imports, shadowed definitions) without imposing a style opinion on scripts nobody imports.
+#
+# `ruff format` is NOT enforced anywhere. 14 of the 20 files would be reformatted today, and
+# reformatting a benchmark driver is a change to a measurement artifact's provenance. That is
+# a decision for whoever owns those scripts, not something to slip in via a lint config.
+
+line-length = 100
+target-version = "py311"
+
+exclude = [
+    "vendor",
+    "venv",
+    "venv-export",
+    "target",
+    "upstream-work",
+    "models",
+    "models_folded",
+    "models_small",
+    "triton",
+]
+
+[lint]
+# Ruff's stock default, stated explicitly so a ruff release cannot widen the gate underneath us
+# and turn a green CI red for reasons unrelated to any change.
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# Two pre-existing findings in files this configuration does not own. Named individually so the
+# list can only shrink; fix the finding and delete the line.
+#
+#   F841  scripts/provision/export_models.py:399  local `dummy_fbank` assigned but never used
+#   F541  validation/summarize_e2e_baseline.py:80 f-string with no placeholders
+"scripts/provision/export_models.py" = ["F841"]
+"validation/summarize_e2e_baseline.py" = ["F541"]

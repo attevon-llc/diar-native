@@ -1,0 +1,143 @@
+# Pre-commit hooks for diar-native.
+#
+#   python3 -m venv .venv && .venv/bin/pip install pre-commit
+#   .venv/bin/pre-commit install
+#   .venv/bin/pre-commit run --all-files
+#
+# Call the venv binary directly; do not `source` the environment first.
+#
+# Nothing here builds the project. The host cannot — speakrs links system OpenBLAS — so
+# compilation is CI's and the container's job. These hooks are the cheap checks that catch the
+# expensive mistakes: a gated model weight in a commit, a private key, a 300 MB blob.
+
+# Trees that are not ours to lint, plus byte-exact artifacts that must not be rewritten.
+#
+# NOTE what is deliberately NOT excluded here: models/, models_folded/, models_small/.
+# Listing them would be the obvious thing to do and it would be a serious mistake — a
+# top-level `exclude` applies to EVERY hook, including forbid-gated-model-artifacts below,
+# which exists precisely to catch a force-added file under those paths. Excluding them would
+# have made that hook silently unable to fire on the case it was written for. (Caught by
+# positive-control test, 2026-08-31.) They are gitignored anyway, so pre-commit only ever sees
+# them when someone has used `git add -f` — exactly when we want to hear about it.
+exclude: |
+  (?x)^(
+      vendor/
+    | venv/
+    | venv-export/
+    | target/
+    | upstream-work/
+    | results/rttm/
+    | patches/.*\.patch$
+  )
+
+repos:
+  # ----------------------------------------------------------------------------------------
+  # THE important hook in this repo. `models*/` is gitignored, but .gitignore only protects
+  # against accident, not against `git add -f` or a path that does not match the glob. 254 MB
+  # of terms-gated pyannote community-1 weights reached this repository's history once already
+  # and had to be removed with git filter-repo (validation/RESULTS.md §7.8).
+  #
+  # This blocks the file types outright, whatever directory they arrive in. There is no
+  # legitimate reason for a model artifact to be committed here — regenerate it locally with
+  # scripts/provision/ instead.
+  # ----------------------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: forbid-gated-model-artifacts
+        name: refuse to commit gated model artifacts
+        language: fail
+        entry: >-
+          Model artifacts must never be committed. These are terms-gated derivatives of
+          pyannote speaker-diarization-community-1 and may not be redistributed. Regenerate
+          them locally (`diar-server provision-models`, or scripts/provision/). See
+          CONTRIBUTING.md section 3.
+        files: |
+          (?xi)(
+              ^models[^/]*/
+            | \.onnx$
+            | \.plan$
+            | \.mlmodelc(/|$)
+            | \.ckpt$
+            | \.safetensors$
+            | \.pt$
+            | \.pth$
+            | \.npz$
+          )
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Backstop to the hook above, for artifact types nobody thought to name. 1024 KB is
+      # chosen against the real data: the largest legitimately tracked file in the repo is an
+      # 812 KB RTTM transcript, while the smallest thing we are actually defending against is
+      # an ONNX graph two orders of magnitude larger. Tighter than this only produces false
+      # positives on benchmark output.
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+      - id: detect-private-key
+
+      - id: trailing-whitespace
+        # Markdown uses two trailing spaces as a hard line break.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      # `check-shebang-scripts-are-executable`, its counterpart, is deliberately NOT enabled.
+      # Six scripts under validation/ carry a `#!/usr/bin/env python3` line without the
+      # executable bit, and that is correct for them: they are documented as `python3
+      # validation/score_der.py ...`, and several are staged into a container with `docker cp`
+      # where the local mode is irrelevant. The shebang is documentation of the interpreter,
+      # not a claim that the file is directly executable.
+
+  # ----------------------------------------------------------------------------------------
+  # Rust. Formatting only — clippy needs a full dependency build (OpenBLAS, ort-sys, bindgen)
+  # that does not belong in a commit hook. CI runs clippy.
+  #
+  # Note this calls `rustfmt` on the staged files rather than `cargo fmt`. `cargo fmt --all`
+  # reformats vendor/speakrs as well, because cargo resolves path dependencies — which would
+  # silently invalidate patches/0001-cuda-performance-patch-set.patch. Scoping to the staged
+  # files under crates/ makes that impossible.
+  # ----------------------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt (crates/ only, never vendor/)
+        language: system
+        entry: rustfmt --edition 2021
+        types: [rust]
+        files: ^crates/
+
+  # ----------------------------------------------------------------------------------------
+  # Python utility scripts. Config lives in .ruff.toml. `ruff-format` is intentionally absent —
+  # see the note there.
+  # ----------------------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-check
+        files: ^(scripts|validation)/.*\.py$
+
+  # ----------------------------------------------------------------------------------------
+  # Shell. bootstrap_vendor_speakrs.sh and the benchmark harnesses are load-bearing.
+  # ----------------------------------------------------------------------------------------
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        # Warning level, not the default (which includes `info` and `style`). The single
+        # exclusion is named rather than blanket-lowering the severity, so the exemption can
+        # only shrink:
+        #
+        #   SC2046  validation/t9a_concurrency.sh:43 — `wait $(jobs -p | grep -v ...)`.
+        #           Word splitting is the intent here; the PIDs must become separate arguments.
+        #
+        # Verified clean at this setting across all five tracked shell scripts on 2026-08-31.
+        args: [--severity=warning, --exclude=SC2046]

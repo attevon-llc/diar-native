@@ -1,0 +1,8 @@
+# Stock rustfmt. The only setting here is the edition, so that bare `rustfmt <file>`
+# invocations (pre-commit, editors) agree with `cargo fmt`, which reads the edition from
+# each crate's Cargo.toml.
+#
+# Deliberately NOT set: `style_edition = "2024"`. It was measured against the tree on
+# 2026-08-31 and is a net regression here — 86 reformat hunks vs 74 under the default —
+# because the crates are not consistently formatted in either style. Stock it is.
+edition = "2021"

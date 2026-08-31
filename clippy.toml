@@ -1,0 +1,16 @@
+# Clippy configuration. This file sets lint *parameters* only — lint levels live on the
+# command line in .github/workflows/ci.yml, which is the single place the gate is defined.
+#
+# Deliberately NOT set here:
+#
+#   msrv          There is no declared minimum supported Rust version. The only supported way
+#                 to build this project is the container toolchain, which tracks stable, so
+#                 declaring an MSRV would assert a compatibility promise nothing verifies.
+#
+#   disallowed-*  Tempting, but every candidate either already has no hits or would fire on
+#                 code this repo does not own. An empty policy beats a decorative one.
+
+# These crates are internal to the sidecar. Nothing outside this workspace depends on
+# diar-core's API, so clippy should lint public items as freely as private ones rather than
+# holding back to avoid a "breaking change" that cannot exist.
+avoid-breaking-exported-api = false

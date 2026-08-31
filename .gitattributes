@@ -1,0 +1,22 @@
+# Normalize line endings on checkin; let git decide what is text.
+* text=auto eol=lf
+
+# Explicitly binary — never diff, never munge line endings.
+*.onnx      binary
+*.plan      binary
+*.wav       binary
+*.flac      binary
+*.mp3       binary
+*.m4a       binary
+*.rttm      text eol=lf
+*.png       binary
+*.jpg       binary
+*.pdf       binary
+
+# Patches are byte-exact artifacts of `git diff HEAD` against vendor/speakrs.
+# Any EOL rewrite here breaks `git apply`.
+patches/*.patch -text
+
+# Keep generated/vendored trees out of GitHub's language stats and default diffs.
+vendor/**       linguist-vendored
+Cargo.lock      linguist-generated
