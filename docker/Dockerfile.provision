@@ -1,0 +1,64 @@
+# Provisioning image — the FALLBACK path, not the primary one.
+#
+# The primary way to provision is to run the ordinary `diar-server` binary and let it exec a
+# python that already has torch and pyannote.audio:
+#
+#     HF_TOKEN=... diar-server provision-models --models-dir /models
+#
+# The export scripts are compiled INTO the binary (`include_str!`, see
+# crates/diar-core/src/provision/exporter.rs), so there is nothing to install for the tooling
+# itself — only the python libraries the export calls. In OpenTranscribe's backend image most
+# of them are already present; only `onnxscript` and a constant folder are missing.
+#
+# This image exists for operators running the plain standalone `diar-server` image, which has
+# NO python at all. It adds ~1.5-2 GB, is pulled once, and can be deleted afterwards. The
+# serving images are untouched by it (CUDA stays ~3.46 GB, CPU stays 189 MB) — which is the
+# whole reason provisioning is not baked into them: bundling torch would be a ~13x permanent
+# regression on every laptop deployment for a step that runs once.
+#
+# Build (after building the server image it is based on):
+#   docker build -f docker/Dockerfile.provision --build-arg BASE=diar-server:<ver> \
+#                -t diar-provision:<ver> .
+#
+# Run (note :rw — the serving compose file mounts /models read-only):
+#   docker run --rm -e HF_TOKEN=... -v /path/to/models:/models diar-provision:<ver>
+#
+# Reuse an existing HuggingFace cache to avoid re-downloading:
+#   ... -v /path/to/hf:/hf -e HF_HOME=/hf
+
+ARG BASE=diar-server:latest
+FROM ${BASE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# python3 + venv only. No compiler and no cmake: every dependency below must resolve to a
+# wheel, which is exactly why `onnxslim` is used rather than `onnxsim` when the interpreter
+# has no onnxsim wheel (notably CPython 3.13).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/provision/requirements.txt /opt/diar-provision/requirements.txt
+
+# CPU-ONLY torch, deliberately. The export never touches a GPU — export_models.py does
+# `pipeline.to(torch.device("cpu"))` — so the default CUDA wheels would pull ~5 GB of
+# nvidia_* packages that are downloaded and then never executed.
+RUN python3 -m venv /opt/diar-provision/env \
+ && /opt/diar-provision/env/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/diar-provision/env/bin/pip install --no-cache-dir \
+      --extra-index-url https://download.pytorch.org/whl/cpu \
+      -r /opt/diar-provision/requirements.txt
+
+# The scripts themselves are baked into the binary; this copy is for inspection and for
+# `diar-server provision-models --dump-scripts`-style debugging, not for execution.
+COPY scripts/provision/ /opt/diar-provision/scripts/
+
+# Point the binary's exporter at this venv. Without it the binary would look for `python3` on
+# PATH, find the bare system interpreter, and fail the dependency preflight with an
+# actionable-but-unnecessary message.
+ENV DIAR_EXPORT_PYTHON=/opt/diar-provision/env/bin/python
+
+# Same entrypoint as the server image, so `docker run diar-provision` provisions and
+# `docker run diar-provision serve` still serves. Nothing about the server is removed.
+ENTRYPOINT ["/usr/local/bin/diar-server"]
+CMD ["provision-models"]

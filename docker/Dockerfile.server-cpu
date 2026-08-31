@@ -60,6 +60,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     ca-certificates curl libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/bin/diar-server /usr/local/bin/
+# Smoke-test fixture for `provision-models` / `verify-models`. 26 s, 16 kHz mono:
+# long enough for 3 segmentation chunks, so it exercises multi-chunk aggregation,
+# VBx clustering and PLDA rather than just "a session loaded". ~832 KB.
+COPY vendor/speakrs/fixtures/test.wav /usr/local/share/diar-native/smoke.wav
 COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
 RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ 2>/dev/null || true && \
     mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/ 2>/dev/null || true

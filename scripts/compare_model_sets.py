@@ -130,28 +130,42 @@ def tier_b(a: str, b: str, shared: list[str], res: Result) -> None:
             res.fail(f"{name}: {len(ia)} initializers vs {len(ib)}")
             continue
 
-        # Compare by SORTED ORDER rather than by name: dynamo assigns initializer names at
-        # trace time, so the same weight can legitimately carry a different name in two
-        # runs. What cannot change is the multiset of weight tensors.
-        ka, kb = sorted(ia), sorted(ib)
-        mismatched = 0
-        worst = 0.0
-        for na, nb in zip(ka, kb):
-            ta = numpy_helper.to_array(ia[na])
-            tb = numpy_helper.to_array(ib[nb])
-            if ta.shape != tb.shape or ta.dtype != tb.dtype:
-                mismatched += 1
-                continue
-            if not np.array_equal(ta, tb):
-                mismatched += 1
-                worst = max(worst, float(np.abs(ta.astype(np.float64) - tb.astype(np.float64)).max()))
-        if mismatched:
+        # Compare the MULTISET of tensors, keyed by (dtype, shape, content hash) — never by
+        # name and never by sorted-name position.
+        #
+        # `torch.onnx.export(dynamo=True)` assigns initializer names at TRACE time, so the
+        # same weight legitimately carries a different name across two runs: comparing a
+        # real second export of wespeaker-fbank.onnx, the shipped graph had {eps, val_45}
+        # where the new one had {val_44, val_46}. An earlier version of this function zipped
+        # the two name-sorted lists, which silently paired DIFFERENT tensors and reported
+        # "13/15 initializers differ, max |Δ| 2.0" for a pair of graphs whose weights are in
+        # fact bit-identical. A comparison tool that cries wolf is worse than none, because
+        # the next person tunes a tolerance instead of reading it.
+        #
+        # What genuinely must not change is the multiset of weight tensors, which is exactly
+        # what this compares.
+        def fingerprints(tensors):
+            out = []
+            for t in tensors:
+                arr = numpy_helper.to_array(t)
+                out.append((str(arr.dtype), arr.shape, hashlib.sha256(arr.tobytes()).hexdigest()))
+            return sorted(out)
+
+        fa, fb = fingerprints(ia.values()), fingerprints(ib.values())
+        if fa != fb:
+            only_a = [x for x in fa if x not in fb]
+            only_b = [x for x in fb if x not in fa]
             res.fail(
-                f"{name}: {mismatched}/{len(ka)} initializers differ (max |Δ| {worst:.3e}). "
-                f"Weights come from the same checkpoint and MUST be bit-identical."
+                f"{name}: {len(only_a)}/{len(fa)} initializer tensors differ in CONTENT "
+                f"(shapes only in {a}: {[x[1] for x in only_a][:4]}; only in {b}: "
+                f"{[x[1] for x in only_b][:4]}). Weights come from the same checkpoint and "
+                f"MUST be bit-identical."
             )
         else:
-            res.ok(f"{name}: {len(oa)} op types, {len(ka)} initializers all byte-identical")
+            res.ok(
+                f"{name}: {len(oa)} op types, {len(fa)} initializer tensors identical "
+                f"(names may differ — dynamo assigns them at trace time)"
+            )
 
 
 def _probe_inputs(sess, rng) -> dict:
