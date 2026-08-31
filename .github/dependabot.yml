@@ -1,0 +1,86 @@
+# Dependency updates.
+#
+# READ THE IGNORE LISTS BEFORE CHANGING ANYTHING HERE. Several pins in this project are
+# load-bearing and were arrived at by debugging a failure, not by picking the newest version.
+# An automated bump of any of them produces a broken artifact that still builds.
+
+version: 2
+
+updates:
+  # --------------------------------------------------------------------------------------
+  # Rust workspace. Note this does NOT cover vendor/speakrs — that tree is gitignored and is
+  # pinned by scripts/bootstrap_vendor_speakrs.sh, so moving it is a deliberate, manual act
+  # (re-validate, then edit SPEAKRS_FORK_COMMIT).
+  # --------------------------------------------------------------------------------------
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      # One PR for the routine churn; anything ignored below is excluded by definition.
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # PINNED `=2.0.0-rc.12`, and it must stay there. rc.13 ships a static core that
+      # mismatches the ONNX Runtime 1.24.2 provider libraries and fails at SESSION LOAD —
+      # meaning it compiles and links perfectly, then dies at runtime when the first model is
+      # opened. CI would not catch it, because CI has no models. (RESULTS §4.26)
+      - dependency-name: ort
+      - dependency-name: ort-sys
+
+  # --------------------------------------------------------------------------------------
+  # The model export environment. Bumping these silently changes the BYTES of the exported
+  # models, which is a change to a measurement artifact, not a dependency update: the shipped
+  # models_folded/ set is md5-verified against a specific toolchain, and the accuracy gates in
+  # docs/TEST_CORPORA_AND_BASELINES.md were measured against that set.
+  # --------------------------------------------------------------------------------------
+  - package-ecosystem: pip
+    directory: /scripts/provision
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # The versions the shipped models_folded/ set was produced with.
+      - dependency-name: torch
+      - dependency-name: torchaudio
+      - dependency-name: onnx
+      - dependency-name: onnxruntime
+      - dependency-name: onnxscript
+      - dependency-name: pyannote.audio
+      # onnxsim reproduces the shipped segmentation graphs byte-identically; onnxslim is the
+      # documented fallback and emits a differently-shaped (though numerically bit-exact)
+      # graph. Which one runs is recorded in the provisioning marker. Not a bot's call.
+      - dependency-name: onnxsim
+      - dependency-name: onnxslim
+
+  # --------------------------------------------------------------------------------------
+  # Base images. The CUDA image's base and its ONNX Runtime version are coupled to the six
+  # CUDA libraries installed by hand in docker/Dockerfile.server, so review these carefully
+  # rather than merging on green — CI does not build the CUDA image.
+  # --------------------------------------------------------------------------------------
+  - package-ecosystem: docker
+    directories:
+      - /docker
+      - /.github/ci
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+      include: scope

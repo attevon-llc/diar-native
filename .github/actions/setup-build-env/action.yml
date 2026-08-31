@@ -1,0 +1,59 @@
+name: Set up the diar-native build environment
+description: >-
+  Installs the system libraries speakrs links against, pins the Rust toolchain, populates the
+  gitignored vendor/speakrs path dependency, and restores the cargo caches. This is the single
+  definition of the CI build environment — CONTRIBUTING.md documents how to reproduce it locally.
+
+inputs:
+  cache-key:
+    description: >-
+      Discriminator for the cargo cache. Give each job its own value; clippy and rustc write
+      incompatible artifacts into target/ and will thrash a shared cache.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # speakrs is built with its `openblas-system` feature, so OpenBLAS has to come from the
+    # system — this is exactly why the project cannot be built on a stock developer machine.
+    # libclang is for bindgen (ort-sys); cmake and build-essential are for the C/C++ deps.
+    - name: Install system build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential pkg-config cmake ca-certificates curl git \
+          libssl-dev libclang-dev libopenblas-dev
+
+    - name: Pin the Rust toolchain
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal -c rustfmt -c clippy
+        rustup default stable
+        cargo --version
+        rustc --version
+        cargo clippy --version
+
+    # vendor/ is gitignored and is NOT a submodule, but speakrs is a path dependency — a clean
+    # clone cannot resolve the workspace until this runs. The script clones the public
+    # attevon-llc/speakrs fork at a pinned commit; it needs no credentials and never prompts.
+    #
+    # It does NOT fetch vendor/speakrs/fixtures/models/ (gitignored upstream, and gated
+    # anyway). Nothing CI runs needs them.
+    - name: Populate vendor/speakrs
+      shell: bash
+      run: ./scripts/bootstrap_vendor_speakrs.sh
+
+    # Placed after the bootstrap so the pinned speakrs Cargo.lock participates in the key:
+    # moving the vendor pin then correctly invalidates the cache.
+    - name: Restore cargo and target caches
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ runner.os }}-cargo-${{ inputs.cache-key }}-${{ hashFiles('Cargo.lock', 'vendor/speakrs/Cargo.lock', 'scripts/bootstrap_vendor_speakrs.sh') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-${{ inputs.cache-key }}-

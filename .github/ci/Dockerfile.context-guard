@@ -1,0 +1,52 @@
+# Build-context guard. Not a runtime image — it exists only to be built and to fail.
+#
+# `COPY . /ctx` gets exactly what .dockerignore lets through, so building this file IS the
+# assertion. Run from the repo root:
+#
+#   docker build -f .github/ci/Dockerfile.context-guard -t diar-context-guard .
+#
+# Context: repo root. See the docker-context-guard job in .github/workflows/ci.yml, which
+# plants decoy models/, venv/ and target/ trees first — without them this check would pass
+# vacuously on a clean clone, since those paths are gitignored and simply do not exist there.
+
+FROM busybox:1.36
+
+COPY . /ctx
+
+RUN set -eu; \
+    echo "=== build context contents ==="; \
+    ls -la /ctx; \
+    echo; \
+    fail=0; \
+    echo "--- required build inputs (must be PRESENT) ---"; \
+    for p in Cargo.toml Cargo.lock crates scripts vendor/speakrs; do \
+        if [ -e "/ctx/$p" ]; then \
+            echo "  ok       $p"; \
+        else \
+            echo "  MISSING  $p  <-- the Dockerfiles COPY this; the build will break"; \
+            fail=1; \
+        fi; \
+    done; \
+    echo; \
+    echo "--- must be ABSENT (gated weights, local tooling, build output) ---"; \
+    for p in models models_folded models_small venv venv-export target upstream-work \
+             results refs triton docs validation patches .git \
+             vendor/speakrs/.git vendor/speakrs/target; do \
+        if [ -e "/ctx/$p" ]; then \
+            echo "  LEAKED   $p  <-- .dockerignore regression"; \
+            fail=1; \
+        else \
+            echo "  ok       $p"; \
+        fi; \
+    done; \
+    echo; \
+    echo "context size: $(du -sh /ctx | cut -f1)"; \
+    if [ "$fail" -ne 0 ]; then \
+        echo; \
+        echo "FAILED: the Docker build context is wrong."; \
+        echo "  .dockerignore is an ALLOWLIST (\`*\` then \`!\` the five build inputs) on purpose:"; \
+        echo "  a denylist fails open the moment someone adds a directory, and failing open here"; \
+        echo "  means shipping terms-gated model weights in a published image."; \
+        exit 1; \
+    fi; \
+    echo "OK: build context contains the build inputs and nothing else."

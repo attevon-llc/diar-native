@@ -1,0 +1,112 @@
+# Publish the CPU runtime image.
+#
+# MANUAL / TAG-TRIGGERED ONLY, never on push or pull_request. This is the one workflow in the
+# repository that touches credentials, and it is deliberately kept away from anything a fork or
+# an untrusted PR can reach: `pull_request` runs from forks get no access to repository secrets,
+# and this workflow simply never runs in that context.
+#
+# Credentials come from repository secrets and nothing else:
+#   DOCKERHUB_USERNAME    Docker Hub account (davidamacey)
+#   DOCKERHUB_TOKEN       Docker Hub ACCESS TOKEN, not the password
+# If either is unset the workflow stops before building rather than producing an artifact it
+# cannot publish.
+#
+# WHAT THIS DOES NOT DO, on purpose:
+#
+#   * It does not build the CUDA image. That is `docker/Dockerfile.server`, it needs the CUDA
+#     ONNX Runtime distribution, and it should be built and smoke-tested on a real GPU host
+#     before it goes anywhere near a registry. Publishing a 3.46 GB CUDA image that has never
+#     executed a CUDA session is worse than not publishing one.
+#
+#   * It does not bake in model weights, and it has no HF_TOKEN. The images ship empty of
+#     models by design — the weights are terms-gated derivatives of pyannote
+#     speaker-diarization-community-1 and may not be redistributed. Operators provision them at
+#     deploy time with `diar-server provision-models`.
+
+name: Release (publish CPU image)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to publish (e.g. 0.3.0). Ignored when triggered by a git tag.
+        required: true
+        type: string
+      push:
+        description: Actually push to Docker Hub. Leave off for a build-only dry run.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-cpu-image:
+    name: Build and publish the multi-arch CPU image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Publishing tag: ${tag}"
+
+      - name: Require credentials before doing any work
+        if: github.event_name == 'push' || inputs.push
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not configured."
+            exit 1
+          fi
+
+      # vendor/ is gitignored but speakrs is a path dependency; without this the image build
+      # fails at `COPY vendor/speakrs/`.
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      - name: Set up QEMU (for the linux/arm64 leg)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' || inputs.push
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build (and push) linux/amd64 + linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.server-cpu
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' || inputs.push }}
+          tags: |
+            davidamacey/diar-native:${{ steps.meta.outputs.tag }}-cpu
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Remind the operator what is still manual
+        run: |
+          echo "::notice::CPU image done. The CUDA image (docker/Dockerfile.server) is NOT built here — build, smoke-test and push it from a GPU host."
+          echo "::notice::Scan with Trivy before announcing the release, and update CHANGELOG.md."

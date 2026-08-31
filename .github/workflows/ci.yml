@@ -1,0 +1,282 @@
+# diar-native CI.
+#
+# Three constraints shape everything below; none of them are negotiable.
+#
+#   1. THE HOST CANNOT BUILD THIS PROJECT. speakrs links OpenBLAS through its
+#      `openblas-system` feature, so every job installs libopenblas-dev before touching cargo.
+#      The environment is defined once, in .github/actions/setup-build-env.
+#
+#   2. vendor/speakrs IS GITIGNORED AND IS A REQUIRED BUILD INPUT. speakrs is a path
+#      dependency, so a clean clone cannot even run `cargo metadata` until
+#      scripts/bootstrap_vendor_speakrs.sh has populated it from the public fork at its pinned
+#      commit. That script needs no credentials and never prompts.
+#
+#   3. MODEL WEIGHTS ARE TERMS-GATED AND MUST NEVER ENTER CI. Nothing here downloads a model,
+#      nothing needs HF_TOKEN, and no job has access to a repository secret. Every test that
+#      requires model artifacts is #[ignore]d behind DIAR_TEST_MODELS_DIR /
+#      DIAR_TEST_SMALL_MODELS_DIR / DIAR_TEST_ZEROED_DIR, so a plain `cargo test` cannot reach
+#      them. Run those locally — see CONTRIBUTING.md.
+#
+# CI builds the DEFAULT (CPU) feature set only. `--features cuda` needs the CUDA-enabled ONNX
+# Runtime distribution and GitHub-hosted runners have no GPU and no CUDA toolkit; the CUDA image
+# is verified by building docker/Dockerfile.server on a GPU host. `--features coreml` compiles
+# only on macOS (objc2) and is unreachable through Docker at all, so it is out of scope here too.
+#
+# CI also runs NO BENCHMARKS, deliberately. Shared runners cannot produce a timing anyone should
+# trust, and docs/BENCHMARK_PROTOCOL.md requires a quiet machine.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep cargo from spending CI minutes on incremental artifacts it will never reuse.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # --------------------------------------------------------------------------------------
+  # Formatting.
+  #
+  # ADVISORY, NOT BLOCKING — and that is a deliberate, temporary baseline, not an oversight.
+  # Measured against a clean clone of c160129 on 2026-08-31: 71 reformat hunks across 16 files
+  # in crates/**, all predating this workflow. Turning the gate on today would paint every PR
+  # red for reasons unrelated to the PR.
+  #
+  # TO FIX: run `cargo fmt -p diar-core -p diar-cli -p diar-server` once, commit it alone, then
+  # DELETE the `continue-on-error` line below. Nothing else needs to change.
+  #
+  # Note the `-p` scoping. A bare `cargo fmt --all` reformats vendor/speakrs too, because cargo
+  # resolves path dependencies — which would silently invalidate
+  # patches/0001-cuda-performance-patch-set.patch. Naming the three workspace members keeps the
+  # vendored tree untouched; verified as 0 vendor hunks.
+  #
+  # This job needs the vendor bootstrap (cargo has to resolve the workspace) but NOT OpenBLAS,
+  # because `cargo fmt` never compiles anything — so it skips the full build setup and stays
+  # fast.
+  # --------------------------------------------------------------------------------------
+  fmt:
+    name: rustfmt (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true # TODO: remove once the one-shot `cargo fmt` has landed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rustfmt
+        run: rustup toolchain install stable --profile minimal -c rustfmt && rustup default stable
+
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      - name: Check formatting of the workspace crates
+        run: |
+          if cargo fmt -p diar-core -p diar-cli -p diar-server --check > fmt.diff 2>&1; then
+            echo "All formatted."
+          else
+            hunks=$(grep -c '^Diff in ' fmt.diff || true)
+            vendor=$(grep -c 'vendor/' fmt.diff || true)
+            echo "::warning title=rustfmt::${hunks} unformatted hunk(s). Fix with: cargo fmt -p diar-core -p diar-cli -p diar-server"
+            grep -oP '^Diff in \K[^:]+' fmt.diff | sort | uniq -c | sort -rn
+            # Guard the guard: if this is ever non-zero the -p scoping has broken and the
+            # vendored patch set is about to be silently rewritten.
+            if [ "$vendor" -ne 0 ]; then
+              echo "::error title=rustfmt::${vendor} hunk(s) inside vendor/ — the -p scoping is broken. DO NOT run cargo fmt until this is fixed."
+              exit 1
+            fi
+            cat fmt.diff
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------------------
+  # Clippy.
+  #
+  # BLOCKING, with exactly two named exemptions. `-D warnings` is genuinely in force for every
+  # other lint; the two `-A` flags below are the pre-existing debt, named individually so the
+  # list can only shrink and so nobody has to guess what "the baseline" means.
+  #
+  # `-D warnings` applies only to workspace members, not to path dependencies — verified
+  # empirically on 2026-08-31: speakrs' own `dead_code` warning stays a warning and does not
+  # fail the build. So this gates OUR crates without dragging in vendored-code debt.
+  # --------------------------------------------------------------------------------------
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-key: clippy
+
+      - name: cargo clippy --all-targets -D warnings
+        run: |
+          cargo clippy --release --workspace --all-targets -- \
+            -D warnings \
+            -A clippy::neg_cmp_op_on_partial_ord \
+            -A clippy::chunks_exact_to_as_chunks
+        # Pre-existing, both introduced before this workflow existed:
+        #   clippy::neg_cmp_op_on_partial_ord  crates/diar-core/src/provision/verify.rs:607
+        #   clippy::chunks_exact_to_as_chunks  crates/diar-server/src/main.rs:234
+        # Fix them and delete the matching -A line. Do not add to this list without doing the
+        # same — a growing list is how a gate becomes decoration.
+
+  # --------------------------------------------------------------------------------------
+  # Build and test, default (CPU) features. No models, no token, no network beyond crates.io.
+  # --------------------------------------------------------------------------------------
+  build-and-test:
+    name: build + test (CPU features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-key: build
+
+      - name: cargo build --release -p diar-server -p diar-cli
+        run: cargo build --release -p diar-server -p diar-cli
+
+      - name: cargo test --release -p diar-core -p diar-server
+        # The model-dependent tests are #[ignore]d and gated on DIAR_TEST_MODELS_DIR et al.
+        # They are NOT run here and must never be: the weights are terms-gated derivatives of
+        # pyannote community-1 and may not be redistributed. `cargo test` skips them by default,
+        # so this needs no filter — but do not add `-- --ignored`.
+        run: cargo test --release -p diar-core -p diar-server
+
+      - name: The binaries actually start
+        run: |
+          ./target/release/diar-server --help > /dev/null
+          ./target/release/diar-cli --help > /dev/null
+          echo "Both binaries run."
+
+  # --------------------------------------------------------------------------------------
+  # Docker build-context guard.
+  #
+  # The context was 8.3 GB and contained 1.1 GB of TERMS-GATED WEIGHTS until .dockerignore
+  # landed in c160129. This job makes that regression impossible to reintroduce silently.
+  #
+  # It is not enough to assert "models/ is not in the context" on a clean clone — those
+  # directories are gitignored, so they do not exist in CI and the assertion would pass
+  # vacuously while proving nothing. So the job FABRICATES the decoys first, then proves
+  # .dockerignore excludes them. That is what makes this a real test.
+  # --------------------------------------------------------------------------------------
+  docker-context-guard:
+    name: .dockerignore guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      - name: Plant decoys that MUST NOT reach the build context
+        run: |
+          set -eux
+          mkdir -p models models_folded models_small venv/bin venv-export/bin \
+                   target/release upstream-work vendor/speakrs/target
+          # Big enough that a leak is unmissable in the context size, small enough to be free.
+          for d in models models_folded models_small; do
+            head -c 4194304 /dev/urandom > "$d/DECOY_gated_weights.onnx"
+          done
+          echo "decoy" > venv/bin/DECOY_python
+          echo "decoy" > venv-export/bin/DECOY_python
+          echo "decoy" > target/release/DECOY_binary
+          echo "decoy" > upstream-work/DECOY
+          echo "decoy" > vendor/speakrs/target/DECOY
+
+      - name: Assert the context holds the build inputs and nothing else
+        run: docker build -f .github/ci/Dockerfile.context-guard -t diar-context-guard:ci .
+
+  # --------------------------------------------------------------------------------------
+  # The CPU runtime image. Small (about 195 MB), needs no GPU, and is the artifact most likely
+  # to break independently of the cargo build — it has caught a missing `COPY scripts/` and an
+  # out-of-scope TARGETARCH already.
+  #
+  # Built for linux/amd64 only and NEVER pushed. Multi-arch and publishing live in
+  # release.yml, which is manual/tag-triggered and is the only place credentials are used.
+  # --------------------------------------------------------------------------------------
+  docker-cpu-image:
+    name: docker build (CPU image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      - name: Build docker/Dockerfile.server-cpu
+        run: docker build --platform linux/amd64 -f docker/Dockerfile.server-cpu -t diar-server:ci .
+
+      # No models are provisioned here and none ever will be — they are terms-gated. So this
+      # cannot test diarization. What it CAN test, and what has actually broken before, is
+      # whether the image is assembled correctly: that the binary's shared libraries resolve
+      # (the ONNX Runtime .so files are unpacked from a tarball into /usr/local/lib by hand),
+      # and that the entrypoint reaches the startup model gate and fails for that reason rather
+      # than dying earlier for some other one.
+      - name: Every shared library resolves
+        run: |
+          set -eu
+          missing=$(docker run --rm --entrypoint sh diar-server:ci -c \
+            'ldd /usr/local/bin/diar-server | grep -c "not found" || true')
+          echo "unresolved shared libraries: ${missing}"
+          if [ "${missing}" -ne 0 ]; then
+            docker run --rm --entrypoint sh diar-server:ci -c 'ldd /usr/local/bin/diar-server'
+            echo "::error::The binary has unresolved shared libraries; the ORT runtime libs are not installed correctly."
+            exit 1
+          fi
+
+      - name: The binary runs and its CLI surface is intact
+        run: |
+          set -eu
+          docker run --rm --entrypoint /usr/local/bin/diar-server diar-server:ci --help
+
+      - name: Starting without models hits the model gate, exit 6
+        run: |
+          set -eu
+          rc=0
+          docker run --rm --name diar-ci -e DIAR_DEVICES=cpu diar-server:ci > gate.log 2>&1 || rc=$?
+          cat gate.log
+          # Exit 6 is the startup model gate refusing to serve. Any other code means it fell
+          # over somewhere else, which is what we want to hear about.
+          if [ "$rc" -ne 6 ]; then
+            echo "::error::Expected exit 6 (model gate), got ${rc}."
+            exit 1
+          fi
+          grep -q 'provision-models' gate.log || {
+            echo "::error::The model-gate message no longer tells the operator how to fix it."
+            exit 1
+          }
+          echo "Model gate behaved correctly."
+          echo "Image size: $(docker image inspect diar-server:ci --format '{{.Size}}' | numfmt --to=iec)"
+
+  # --------------------------------------------------------------------------------------
+  # Python utility scripts. scripts/ and validation/ are developer tooling, not a package, so
+  # the rule set in .ruff.toml is deliberately narrow. `ruff format` is NOT enforced: 14 of 20
+  # files would be reformatted today, and that is a separate decision from linting.
+  # --------------------------------------------------------------------------------------
+  python-lint:
+    name: ruff (scripts/ + validation/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install --disable-pip-version-check 'ruff==0.16.1'
+
+      - name: ruff check
+        run: ruff check --no-cache scripts/ validation/
