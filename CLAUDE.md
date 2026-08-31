@@ -74,7 +74,14 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
   `docker-compose.diar-native.yml`). Old image kept as `diar-server:pre-t9a` for rollback.
 - Env knobs: `DIAR_MAX_INFLIGHT`, `SPEAKRS_FBANK_POOL`, `SPEAKRS_LAZY_SESSIONS`,
   `SPEAKRS_ARENA_SHRINK` (4 GB-tier VRAM floor, ~20% per-job cost — default off),
-  `DIAR_GENDER_MAX_SECONDS`.
+  `DIAR_GENDER_MAX_SECONDS`, `DIAR_DEVICES` (comma list, first = default; wins over
+  `DIAR_MODE`), `DIAR_MAX_INFLIGHT_CPU` (optional inner sub-gate, default off).
+- The CUDA image is a SUPERSET of the CPU image on amd64 — one process serves `cuda` and
+  `cpu`, picked per request via the `device` field (RESULTS §7.34). The ORT CPU EP is
+  statically linked in every build, so this costs no extra bytes. `Dockerfile.server-cpu`
+  stays as the arm64 / 189 MB artifact. `/healthz` returns JSON (`devices` = loaded,
+  `supported_devices` = compiled in). **Old servers silently IGNORE `device`** (no
+  `deny_unknown_fields`) — consumers must gate on `/healthz` `supported_devices`.
 - Decisions on record: TensorRT rolled back (§7.26); native fbank superseded by the
   fbank∥GPU pipeline (§7.28); sinc resampler rejected — keep `FftFixedIn` (§7.29).
 

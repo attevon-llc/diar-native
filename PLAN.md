@@ -67,7 +67,8 @@ crates/diar-core/    # speakrs wrapper: Arc-shared sessions + per-request buffer
                      #   constraints (port VBxClustering L1004-1024 k-means path),
                      #   dual outputs (full + exclusive diarization)
 crates/diar-server/  # T1 sidecar: HTTP/gRPC /diarize /embed_window /healthz, admission
-                     #   semaphore, CUDA + CPU-only builds
+                     #   semaphore, CUDA + CPU-only builds; engines.rs = device registry,
+                     #   one process serves cuda + cpu, selected per request (issue #1)
 crates/diar-cli/     # bench/ops runner (RTTM out, --dump-stages)
 crates/diar-ffi/     # C-ABI cdylib → T2 Triton custom backend (Triton backend API is C)
 ```
@@ -98,6 +99,20 @@ Milestones:
   comes from — RESULTS §7.9), and parity with the fork on the 66.5-min clip.
 - **M3 hardening**: shadow mode (both engines, log diffs) → default flip after a clean week;
   CUDA + CPU-only images; laptop-class validation.
+  - **Multi-device serving (issue #1): DONE 2026-08-31** — the CUDA image is a SUPERSET of the
+    CPU image on amd64 and always was: `ort-sys` statically links the ORT CPU EP (no
+    `libonnxruntime` NEEDED entry in the binary at all) and `ort/cuda` is purely additive, so
+    serving CPU from the GPU image costs zero extra bytes and zero extra libraries. Verified
+    empirically against the *already-shipped* `davidamacey/diar-native:0.2.0`: `DIAR_MODE=cpu`,
+    no `--gpus`, no `/dev/nvidia*` → `/healthz`, `/diarize` and `/embed_window` all succeed.
+    Added a startup-loaded engine registry (`crates/diar-server/src/engines.rs`), `DIAR_DEVICES`
+    (comma list, first = default), a per-request `device` field, an `x-diar-device` response
+    header, and JSON `/healthz` reporting loaded vs compiled-in devices. Defaults unchanged:
+    unset ⇒ one engine from `DIAR_MODE`, one global semaphore, as before. Engine loads stay
+    serial in `run()` before bind — `DiarEngine::load` calls `set_var`, which cannot race live
+    tokio workers, so lazy per-request loading is unsound, not merely unoptimized.
+    `docker/Dockerfile.server-cpu` STAYS: it is the arm64 / 189 MB artifact, not a correctness
+    carve-out (the CUDA base image and its ORT tarball are x86-64 only).
 - **M4 (T2)**: Triton repo productionization — accuracy-correct community-1 TRT engines
   (rebuild from our exports), `diar-ffi` backend or sidecar-calls-Triton, per-arch engine build
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured

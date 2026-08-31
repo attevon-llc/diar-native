@@ -170,7 +170,7 @@ Still open: min/max/num-speaker constraints (T9b — forced counts currently war
 
 | tier | target | design |
 |---|---|---|
-| **T1 — embedded/sidecar (DEFAULT, open source — SHIPPED as `diar-server:0.2.0`)** | laptops, small computers, single-GPU boxes | speakrs core + our patch set (folded seg, multimask-batching fix, fbank pool, VBx vectorization, exclusive-overlap fix, **shared sessions**, **pipelined fbank∥GPU**): one model set (Arc-shared ORT sessions, weights + arenas loaded once) + per-request scratch handles — concurrent jobs at one engine's VRAM, verified output-identical to serial. Ingests original media directly (symphonia + FFT resample). CPU-only works (ORT CPU EP, ≈ eager-torch parity measured). `SPEAKRS_ARENA_SHRINK=1` drops the between-job VRAM floor 4.5 GB → 1.1 GB for small cards (~20% per-job cost). No Triton, minimal RAM. |
+| **T1 — embedded/sidecar (DEFAULT, open source — SHIPPED as `diar-server:0.2.0`)** | laptops, small computers, single-GPU boxes | speakrs core + our patch set (folded seg, multimask-batching fix, fbank pool, VBx vectorization, exclusive-overlap fix, **shared sessions**, **pipelined fbank∥GPU**): one model set (Arc-shared ORT sessions, weights + arenas loaded once) + per-request scratch handles — concurrent jobs at one engine's VRAM, verified output-identical to serial. Ingests original media directly (symphonia + FFT resample). **CPU and CUDA are served from one image, selected per request** (ORT CPU EP, ≈ eager-torch parity measured) — see §6b. `SPEAKRS_ARENA_SHRINK=1` drops the between-job VRAM floor 4.5 GB → 1.1 GB for small cards (~20% per-job cost). No Triton, minimal RAM. |
 | **T2 — Triton (opt-in, larger home servers + AWS)** | multi-user / multi-job servers | tritonserver + TRT engines (fp32), dynamic batching across concurrent jobs (measured 2.14× throughput at 8 clients on one weight copy), `diar-ffi` custom backend or sidecar-calls-Triton topology. Higher RAM/system footprint — that's why it's opt-in, not default. Note: an in-`ort` TensorRT EP for T1 was implemented, measured (1.33-1.48× at +0.03 pp AMI DER) and **rolled back** — the compatibility surface wasn't worth speed that hides behind transcription (RESULTS §7.26 is the recipe if this changes). |
 
 The Python fork path remains the universal fallback behind a config flag in both tiers.
@@ -215,6 +215,68 @@ is at the image layer only (`docker-compose.diar-native.yml`'s `diar-native` ser
   local `transcribe-app` deployment at it (already the default — override
   `DIAR_NATIVE_MODELS_DIR` / the image tag via `.env` if diverging from the registry version).
   No push required for local iteration.
+
+## 6b. Execution devices (one image, CPU and CUDA)
+
+The CUDA image is a **superset** of the CPU image on amd64, and always was — we just had no way
+to ask for CPU after startup. The ORT CPU execution provider is *statically linked* into the
+binary by `ort-sys` (the `onnxruntime_mlas` kernel library is part of the core static objects),
+which is why `ldd diar-server` reports no ONNX Runtime `NEEDED` entry at all. `--features cuda`
+only selects a different prebuilt `ort-sys` distribution and adds the dlopen'd provider `.so`
+files; it is purely additive. speakrs agrees: `ExecutionMode::Cpu.validate()` returns `Ok(())`
+unconditionally and the CPU EP is registered with no feature gate. **Serving CPU from the GPU
+image costs zero extra bytes and zero extra libraries** — do not add the CPU ORT tarball, its
+`libonnxruntime.so` would collide with the GPU tarball's.
+
+`docker/Dockerfile.server-cpu` stays. It is not a correctness carve-out; it is the **arm64 and
+minimal-footprint** artifact (189 MB vs 3.46 GB, no NVIDIA runtime or driver). The CUDA image's
+base and ORT tarball are x86-64 only, so there is no arm64 superset to fold it into.
+
+### Selecting devices
+
+| knob | scope | meaning |
+|---|---|---|
+| `DIAR_MODE` | startup | Unchanged. Single device: `cpu`, `coreml`, `coreml_fast`; **unset or unrecognized ⇒ `cuda`** (a long-standing quirk, deliberately preserved). |
+| `DIAR_DEVICES` | startup | Comma list, e.g. `cuda,cpu`. **First entry is the default device.** Wins over `DIAR_MODE`; blank is treated as unset. Duplicates collapse, order is preserved. |
+| `DIAR_MAX_INFLIGHT` | startup | Unchanged, default 2. The **global** admission gate — bounds TOTAL inflight across all devices, so adding an engine cannot silently double concurrency. |
+| `DIAR_MAX_INFLIGHT_CPU` | startup | Optional inner sub-gate for CPU work only. Unset (default) = no inner gate and no behaviour change. CPU requests take the global permit first, this one second — always that order. |
+| `"device"` | per request | New optional field on `/diarize` and `/embed_window`. Omitted/null = the default device. |
+
+All engines load **serially in `run()` before the server binds** — never lazily on a request
+thread. This is not a missed optimization: `DiarEngine::load` calls `std::env::set_var`
+(`SPEAKRS_FBANK_POOL`, read back inside the same call), and glibc `setenv`/`getenv` is not
+thread-safe, so a lazy load would race live tokio workers.
+
+Defaults are unchanged end to end: with neither new variable set, the server loads exactly one
+engine from `DIAR_MODE`, exactly as before.
+
+```bash
+# GPU deployment that can also answer CPU requests
+DIAR_DEVICES=cuda,cpu diar-server
+curl -sX POST localhost:8701/diarize -d '{"wav_path":"/audio/x.wav","device":"cpu"}'
+```
+
+Responses carry `x-diar-device: cuda|cpu` naming the device that actually ran the job. It is a
+header, not a body field, because `DiarizeOutput` is the consumer's parsed schema.
+
+### `/healthz` now returns JSON
+
+```json
+{"status":"ok","default_device":"cuda","devices":["cuda","cpu"],"supported_devices":["cuda","cpu"]}
+```
+
+`devices` = loaded and serving in this process (first is the default). `supported_devices` =
+what this **build** can serve — a superset; something listed there but missing from `devices`
+needs a `DIAR_DEVICES` change, not a rebuild. Non-breaking for the compose healthcheck, which
+is `curl -sf .../healthz` and only inspects the HTTP status.
+
+> **Silent-ignore trap — read this before sending `device`.** Neither request struct uses
+> `deny_unknown_fields`, so an **old** diar-server does not reject `{"device":"cpu"}` — it
+> *ignores* it and runs the job on CUDA anyway, returning 200. Serde cannot help you here.
+> Consumers MUST negotiate on `/healthz` `supported_devices` (or on the presence of the
+> `x-diar-device` response header) before relying on the field. An unknown device name on a
+> *new* server is a 400 that names the devices the build serves; on an old one it is a silent
+> success on the wrong device.
 
 ## 7. Ground rules
 
