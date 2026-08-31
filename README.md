@@ -312,7 +312,10 @@ Each `/diarize` and `/embed_window` request runs inside a span carrying `request
 giving `duration_ms`, `outcome`, and either `num_speakers`/`segments` or an `error_class`
 (`bad_device`, `admission`, `invalid_input`, `audio_decode`, `inference`, `panic`). The span is
 re-entered on the blocking worker thread, so speakrs' pipeline events are attributed to the
-request that caused them.
+request that caused them — 14 of 15 measured. The exception is
+`speakrs::inference::segmentation::run`'s "Segmentation thread profile", emitted from a thread
+speakrs spawns internally for the fbank∥GPU pipeline; that thread does not inherit the span, so
+the event is logged without a `request_id`. Fixing it needs a `vendor/speakrs` change.
 
 Full media paths, model weights and the HuggingFace provisioning token are never logged;
 `provision-models` scrubs the token out of the exporter's stdout *and* stderr and marks its

@@ -17,7 +17,7 @@ mod cli;
 mod engines;
 mod reqlog;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
