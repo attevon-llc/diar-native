@@ -698,14 +698,23 @@ pub fn run(opts: &SmokeOptions) -> Result<SmokeReport> {
     let audio = read_wav_16k_mono(&opts.clip)?;
     let clip_sha256 = super::sha256_file(&opts.clip).map_err(|e| anyhow!("{e}"))?;
 
+    // Execution order is by COST AND PRECISION, not by stage number: every structural
+    // check runs before the end-to-end run, so the most specific message wins.
+    //
+    // Measured, not assumed: with stage 5 last, truncating `plda_tr.npy` by 64 bytes was
+    // reported as "STAGE 4 FAILED: pipeline init: reached EOF before reading all data" —
+    // no filename, no hint that PLDA was involved. Running the header check first turns
+    // that into "plda_tr.npy is 131136 bytes, expected 131200". Producing unactionable
+    // errors is the exact failure mode this command exists to eliminate, so it would be
+    // perverse for the verifier itself to emit one.
     let mut stages = vec![
         stage1_parse_all(opts)?,
         stage2_io_contract(opts)?,
+        stage5_plda(opts)?,
         stage3_numeric(opts, &audio)?,
     ];
     let (s4, num_speakers, segments) = stage4_end_to_end(opts, &audio)?;
     stages.push(s4);
-    stages.push(stage5_plda(opts)?);
 
     Ok(SmokeReport {
         stages,
