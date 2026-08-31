@@ -1653,3 +1653,337 @@ fails the single-embedding test at dim 0.
 Suites: Linux `openblas-system,online` **96 passed / 0 failed**; Mac
 `openblas-system,online,coreml` **110 passed / 0 failed** (90 lib, up from 89 — the split-primary
 test now executes instead of skipping).
+
+### 7.34 One image, two devices — the CUDA image was ALREADY a CPU image (issue #1)
+
+**The premise, tested before any code was written.** Ran the *already-shipped, unmodified*
+`davidamacey/diar-native:0.2.0` with `DIAR_MODE=cpu`, no `--gpus`, on a host whose Docker default
+runtime is `runc` (verified: no `/dev/nvidia*` and no `nvidia-smi` inside the container):
+
+| endpoint | result |
+| --- | --- |
+| `/healthz` | HTTP 200 |
+| `/diarize` (`clip30.wav`, 30 s) | HTTP 200, 16.3 s, 1 speaker, 2 segments, 256-d centroid |
+| `/embed_window` (1–5 s) | HTTP 200, 256-d embedding |
+
+So the Dockerfile half of the issue was **already closed** — it only needed documenting. Why:
+`ort-sys` **statically links** the ORT core objects, `onnxruntime_mlas` (the CPU EP kernel
+library) included; `ldd /usr/local/bin/diar-server` in the shipped image shows **no ONNX Runtime
+`NEEDED` entry at all**. `ort/cuda` only selects a different prebuilt distribution — purely
+additive. speakrs agrees in source: `ExecutionMode::Cpu.validate()` returns `Ok(())`
+unconditionally, before any feature gate, and `with_execution_mode` registers
+`ep::CPU::default().with_arena_allocator(false)` with no `#[cfg]`.
+
+**Do NOT add the CPU ORT tarball to Dockerfile.server.** The GPU tarball already installs
+`libonnxruntime.so.1.24.2` (unused by the binary, which is statically linked); the CPU tarball's
+copy would collide. Rebuilt image is **3.46 GB — byte-for-byte the same size as before**. The
+superset costs zero bytes and zero libraries.
+
+`docker/Dockerfile.server-cpu` **stays**, and not as a correctness carve-out: it is the only
+**arm64** artifact (the CUDA base image and the `onnxruntime-linux-x64-gpu` tarball are x86-64
+only, no arm64 equivalent exists) and the only **small** one (189 MB vs 3.46 GB, no NVIDIA
+runtime or driver). The superset claim is precisely *"the amd64 GPU image is a superset of the
+amd64 CPU image."*
+
+#### What was implemented
+
+Startup-loaded engine registry (`crates/diar-server/src/engines.rs`, new file), `DIAR_DEVICES`
+(comma list, **first entry is the default**, wins over `DIAR_MODE`), per-request `device` field
+on `/diarize` + `/embed_window`, `x-diar-device` response header, and JSON `/healthz`.
+Defaults unchanged: with neither new knob set the server loads exactly one engine from
+`DIAR_MODE`, one global semaphore, one `clone_shared` per request — as before.
+
+**Lazy on-first-use loading was rejected as unsound, not as an optimization declined.**
+`DiarEngine::load` calls `std::env::set_var("SPEAKRS_FBANK_POOL", ..)` and speakrs reads it back
+inside the same call (`inference/embedding/load/sessions.rs:255` — verified the **only** read
+site, load-time only, never at request time). glibc `setenv`/`getenv` is not thread-safe, so a
+lazy load on a request thread would race live tokio workers. All engines therefore load
+**serially in `run()` before `axum::serve`**, which is exactly as safe as the single load the
+server has always done.
+
+#### B5 — capability matrix (untimed; asserts behaviour, not speed)
+
+New image `diar-server:issue1`. GPU-free leg = no `--gpus`, `DIAR_MODE=cpu`:
+
+| leg | request | result |
+| --- | --- | --- |
+| no GPU, `[cpu]` | `device` omitted | 200, `x-diar-device: cpu` |
+| no GPU, `[cpu]` | `"device":"cpu"` | 200, `x-diar-device: cpu` |
+| no GPU, `[cpu]` | `"device":"cuda"` | **400** `device 'cuda' is not loaded; this server is serving [cpu] (add it to DIAR_DEVICES to load it)` |
+| no GPU, `[cpu]` | `"device":"tpu"` | **400** `unsupported device 'tpu'; this build serves [cuda, cpu]` |
+| no GPU, `[cpu]` | `/embed_window` `"device":"cpu"` | 200, 256-d |
+| GPU, `[cuda,cpu]` | `"device":"cuda"` / `"cpu"` | 200 each, header matches |
+
+`/healthz` on the CUDA build with only CPU loaded:
+`{"status":"ok","default_device":"cpu","devices":["cpu"],"supported_devices":["cuda","cpu"]}` —
+`devices` = loaded and serving, `supported_devices` = compiled-in capability.
+
+**Cross-image control:** the new image's CPU `/embed_window` returned
+`0.024982646, 0.05198441, 0.06093254, …` against the shipped 0.2.0 image's
+`0.02498265, 0.051984407, 0.06093254, …` on the same clip and window — identical. `/diarize`
+segment boundaries likewise identical (`0.030969 + 27.489375 = 27.520344` from 0.2.0's RTTM vs
+`end: 27.520343750000002`). The registry did not perturb the CPU path.
+
+#### B3 — RSS cost of a second resident engine (memory, so machine load does not invalidate it)
+
+`--gpus device=0` (idle, 15 MiB before each leg), `SPEAKRS_LAZY_SESSIONS=1` matching live,
+`DIAR_MAX_INFLIGHT=2`, `models_folded/`. VRAM sampled **per process**
+(`--query-compute-apps`), not whole-GPU — the first attempt at this was contaminated by a
+previous container still holding 4 437 MiB on the same card, and is retracted in favour of the
+numbers below.
+
+| | `DIAR_DEVICES=cuda` | `DIAR_DEVICES=cuda,cpu` | delta for the CPU engine |
+| --- | --- | --- | --- |
+| idle VmRSS | 633 008 kB | 1 268 428 kB | **+635 420 kB (+620 MB)** |
+| idle process VRAM | 824 MiB | 824 MiB | **+0** |
+| peak VmRSS, CUDA run | 1 415 464 kB | 2 065 688 kB | +650 224 kB |
+| peak process VRAM, CUDA run | 4 388 MiB | 4 388 MiB | **+0** |
+
+**The CPU engine costs zero VRAM**, as predicted. Confirmed independently on a fresh
+`cuda,cpu` container that ran *only* a CPU job and never a CUDA one: process VRAM 824 MiB idle
+→ 824 MiB peak → 824 MiB after. (The 824 MiB is the CUDA engine's own session load, paid
+whether or not CPU is enabled.)
+
+**+620 MB host RSS is double the ~311 MB predicted from weight sizes; gender is why.** Measured
+by re-running both legs against a models dir symlinked to omit `gender-wav2vec2.onnx`:
+
+| | with gender | no gender | gender's share |
+| --- | --- | --- | --- |
+| `cuda` idle VmRSS | 633 008 kB | 452 624 kB | 180 384 kB |
+| `cuda,cpu` idle VmRSS | 1 268 428 kB | 620 520 kB | 647 908 kB |
+| **CPU-engine delta** | **635 420 kB** | **167 896 kB** | **467 524 kB = 74%** |
+
+So the CPU engine is ~164 MB of diarization weights plus ~457 MB of gender. `GenderModel::load_optional(dir, cuda)`'s
+`cuda` flag selects only the execution provider, not precision — both engines parse the same
+189 MB fp32 ONNX, but under CUDA most of it lands in VRAM while under CPU it is materialised in
+host RAM with an ORT CPU arena on top.
+
+**Declined: a per-device `with_gender(false)` knob** (floated as a possible follow-up if B3 came
+in high). Measured, and rejected on correctness grounds rather than cost: it would make
+`{"device":"cpu","gender":true}` silently return no gender while the same request on `cuda`
+returns it, destroying the "same code, same weights, same outputs" property that is the entire
+justification for the superset claim. 620 MB of host RAM on a box with tens of GB is not worth a
+device-dependent output schema. Operators who want the saving can already remove the gender model
+from `models_dir` (measured: 164 MB per extra engine), which disables it uniformly.
+
+Note the plan's reference to an existing `EngineConfig::with_gender(bool)` at
+`diar-core/src/lib.rs:48-66,127` — **no such method exists**; gender is controlled by model-file
+presence via `GenderModel::load_optional`. Corrected against the code.
+
+#### Concurrency
+
+The global `Semaphore(DIAR_MAX_INFLIGHT)` is **kept as the outer admission gate**, unchanged
+semantics and default (2), so a mixed deployment cannot silently double total inflight and
+oversubscribe cores (each CPU embedding session takes up to 6 intra-op threads — §7.32). The new
+`DIAR_MAX_INFLIGHT_CPU` is an **optional inner sub-gate**: unset (default) means no inner gate
+and zero behaviour change; when set, CPU requests take global-then-CPU, always in that order, so
+there is no lock-ordering hazard. Device resolution happens *before* admission, so a bad device
+name costs a 400 and never an admission permit.
+
+Functional check, `DIAR_MAX_INFLIGHT=4 DIAR_MAX_INFLIGHT_CPU=1`, `[cuda,cpu]`: 3 concurrent CPU
+`/embed_window` returned 200 in 0.226 / 0.453 / 0.695 s — a staircase confirming serialization
+with no deadlock, all three embeddings byte-identical — while 2 concurrent CUDA requests ran
+unblocked (0.650 / 0.680 s).
+
+#### Tests
+
+- `diar-server`: **13 new unit tests, pass in BOTH builds** (default/CPU-only and
+  `--features cuda`) — device name round-trip, capability list vs `cfg`, `DIAR_MODE` path
+  unchanged (including the preserved "unset or unrecognized ⇒ cuda" quirk), `DIAR_DEVICES`
+  precedence, dedupe-preserving-order, blank-falls-back, bad-entry rejection, and the three
+  distinct error kinds. Watched fail before the fix: removing the dedupe produced
+  `left: Ok([Cpu, Cpu, Cpu]) / right: Ok([Cpu])`.
+- speakrs suite unchanged and green: **96 passed / 0 failed** (`--no-default-features
+  --features openblas-system,online`). No vendored edit was needed — `git diff HEAD` in
+  `vendor/speakrs` is byte-identical to `patches/0001-cuda-performance-patch-set.patch`, so the
+  patch file did not need regenerating. (CLAUDE.md still says "94 tests"; the real count has been
+  96 since §7.33 un-skipped the split-primary test.)
+
+#### NOT measured here — pending a quiet window
+
+The box was at load average 26–44 throughout (an `otfresh-demo` OpenTranscribe stack plus a vLLM
+container). Per `docs/BENCHMARK_PROTOCOL.md` no timed leg was run. Everything above is a
+capability or memory assertion, which load does not invalidate. Wall times that appear above are
+incidental and are **not** benchmark numbers. Still owed, one timed leg at a time on a quiet
+machine:
+
+- **B1 — does `--features cuda` slow down CPU-mode inference?** Single variable = the `ort-sys`
+  prebuilt distribution. `diar-cli --mode cpu` from a default-features build vs a `--features
+  cuda` build, control corpus AMI `EN2002c` first 360 s, compared against the logged §7.32 CPU
+  leg (57.8 / 59.2 / 67.7 s, 6.1× RT). Accuracy check is **output identity**: MD5 of the RTTMs
+  must EQUAL the §7.32 CPU-leg MD5 — proven, never asserted.
+- **B2 — CUDA no-regression with both engines resident.** `DIAR_DEVICES=cuda,cpu` vs `cuda`,
+  control = §7.32's logged CUDA leg 4.83 / 4.86 s. B3 already shows the VRAM side is zero.
+- **B4 — mixed-device concurrency.** Adapt `validation/t9a_concurrency.sh` (serial/concurrent
+  legs + during-run VRAM sampling already at lines 17–45): N concurrent CUDA `/diarize` alongside
+  M concurrent CPU `/embed_window`; pass = CUDA leg wall time within noise of CUDA-only.
+
+Never re-run: §4.12 (CPU parity), §7.32, §7.7 DER legs, the T9a identity gate.
+
+#### Consumer-side (transcribe-app — reported, NOT changed here)
+
+Confirmed: the live service does **not** run a `diar-server` image. `docker-compose.diar-native.yml:26-27`
+runs `opentranscribe-backend:latest` with `command: ["diar-server"]`, and the binary arrives via a
+build stage in `backend/Dockerfile.prod:20`,
+`FROM davidamacey/diar-native@sha256:544a6a6536464729834dd1b51dc6d76b538776da23a22682501f220cf2ff999c`.
+**What reaches production is the BINARY, not the image** — that digest pin must be bumped for any
+of this to ship. `Dockerfile.prod:196-199` copies only `diar-server` plus
+`libonnxruntime.so.1.24.2` / `_providers_cuda.so` / `_providers_shared.so`, which is sufficient:
+the CPU EP is inside the binary.
+
+The compose healthcheck is `["CMD-SHELL", "curl -sf http://localhost:8701/healthz || exit 1"]`
+(line 69) — status-only, so the `/healthz` JSON change is **non-breaking**, verified by reading
+it rather than assuming.
+
+`DIAR_MODE=${DIAR_NATIVE_MODE:-cuda}` is always set explicitly there, so behaviour is unchanged.
+Note that adding `ENV DIAR_DEVICES=cuda` to `Dockerfile.server` was **deliberately not done**: it
+would win over compose's `DIAR_MODE` and silently break a `DIAR_NATIVE_MODE=cpu` deployment.
+
+#### Incidental fix: both Dockerfiles were broken by the concurrent provisioning work
+
+Caught while rebuilding the CPU image. `crates/diar-core/src/provision/exporter.rs:44-48`
+`include_str!`s five `scripts/provision/*.py` files, but neither Dockerfile's builder stage
+copied `scripts/` — only `Cargo.toml`, `Cargo.lock`, `crates/` and `vendor/speakrs/`. Result:
+
+```
+error: couldn't read `crates/diar-core/src/provision/../../../../scripts/provision/provision.py`:
+       No such file or directory (os error 2)
+error: could not compile `diar-core` (lib) due to 5 previous errors
+```
+
+This is **not** from the multi-device work (which touches only `crates/diar-server/`). It arrived
+with `94b8b8e feat(provision): add model provisioning core` at 07:49, and it breaks **both**
+`docker/Dockerfile.server` and `docker/Dockerfile.server-cpu`. The CUDA image built clean earlier
+in this session only because that build finished at ~07:40, before the provisioning commit
+landed — a nice illustration of why the image build, not just `cargo build`, is the gate.
+
+Fixed by adding `COPY scripts/ ./scripts/` to both builder stages. Both images then build.
+
+### 7.35 Model provisioning: the export recipe reconstructed, and five things it was hiding (issue #2)
+
+`diar-native` had no supported way for a third party to obtain its weights — the last blocker
+to self-hosted OpenTranscribe running the native diarizer (OpenTranscribe #639). Adding
+`diar-server provision-models` required first working out what the shipped `models_folded/`
+actually IS, which turned out not to be documented anywhere.
+
+**The recipe is 5 steps, not 1.** `vendor/speakrs/scripts/export_models.py` emits 20 files;
+`models_folded/` has 24, and 3 of the 20 are subsequently REPLACED. Reconstructed by md5:
+
+| step | what | evidence |
+| --- | --- | --- |
+| 2a | base export | 20 files |
+| 2b | onnxsim constant-fold the 3 segmentation graphs, written under the PLAIN names | `models/segmentation-3.0-sim.onnx` == `models_folded/segmentation-3.0.onnx` (`48dae792…`); same for `-b32` (`f4bc2e0c…`) and `-b64` (`318d91ff…`) |
+| 2c | `wespeaker-multimask-tail-b64.onnx` = byte COPY of `-b32` | both `8c990f3b16ee74280d2b4591033b2c45` |
+| 2d | genuine b64 tail export | `fe325df9…`, matches `vendor/speakrs/fixtures/models/` |
+| 2e | gender classifier + fp16 conversion | see below |
+
+Step 2b was the biggest gap: **folding is mandatory and was undocumented as a provisioning
+step.** Not folding costs ~2x on segmentation and reintroduces the ORT-CUDA `Sin`/`Cos`
+CPU-fallback tax (§4.1, §4.10 item 2), with no error anywhere.
+
+**Verified reproducibility:** re-running onnxsim 0.7.3 over the unfolded graphs reproduces all
+three folded artifacts **byte-identically** (md5 match). Node census on the shipped artifact is
+144 → 40, not the 179 → 40 recorded in §4.1 — §4.1's "179" was measured on a different export
+and does not describe what we ship. Folded op histogram: `Abs`×1 `Conv`×3 `Gemm`×3
+`InstanceNormalization`×4 `LSTM`×4 `LeakyRelu`×5 `LogSoftmax`×1 `MaxPool`×3 `Reshape`×10
+`Transpose`×6; `Sin`/`Cos`/`If` all zero.
+
+**TOOLCHAIN BLOCKER — onnxsim cannot install on the target image.** The OpenTranscribe backend
+image is **Python 3.13.12 with no cmake/gcc/g++/make**. onnxsim publishes **zero cp313 wheels
+at every version** (0.4.x–0.7.3: 13 wheels each, none cp313) and is a C++ extension, so
+`pip install onnxsim` there must build from source and fails. Two fallbacks measured:
+
+| folder | installs on 3.13 | nodes | Sin/Cos/If | max_abs_diff vs unfolded | byte-identical to shipped |
+| --- | --- | --- | --- | --- | --- |
+| onnxsim 0.7.3 | NO (sdist only) | 40 | 0/0/0 | 0.0 | **yes** |
+| ORT `ORT_ENABLE_EXTENDED` | yes (built in) | 50 | 0/0/**1** | — | no |
+| onnxslim (py3-none-any wheel) | **yes** | 37 | 0/0/0 | **0.0** | no |
+
+ORT's own optimizer is **not** an adequate fallback: it leaves `If` in the graph. onnxslim is
+adopted as the 3.13 fallback — numerically bit-exact and it eliminates the same ops — but it
+emits `MatMul`+`Add` where onnxsim emits `Gemm`, so its output is functionally equivalent and
+NOT byte-comparable. `fold_segmentation.py` prefers onnxsim and records the choice in the
+marker's `toolchain.folder`. **Open item: the onnxslim-folded graph has not had a CUDA perf leg
+run against the onnxsim one.** Do not assume the 2x holds for it.
+
+**The gender model is FP16, and the docs said otherwise.** `docs/DETAILED_SPECS.md` records
+`optimum-cli export onnx` as its provenance, which yields ~361 MB of fp32. The shipped
+artifact is 189,431,659 bytes with **all 213 initializers `FLOAT16`** and fp32 I/O preserved by
+2 `Cast` nodes — i.e. §7.18's `onnxconverter_common.float16(keep_io_types=True)` step, which
+was never written into any export recipe. An exporter following the documented route would
+have produced a 2x-larger, differently-quantized model that still worked, so nothing would have
+complained.
+
+**PLDA dtypes cannot be inferred from file size, and the obvious guess is wrong.** Headers
+parsed from `models_folded/`:
+
+| file | bytes | actual |
+| --- | --- | --- |
+| `plda_lda.npy` | 131200 | (256,128) **f32** |
+| `plda_tr.npy` | 131200 | (128,128) **f64** |
+| `plda_mu.npy` / `plda_psi.npy` | 1152 | (128,) **f64** |
+| `plda_mean1.npy` | 2176 | (256,) **f64** |
+| `plda_mean2.npy` | 640 | (128,) **f32** |
+
+`plda_lda` and `plda_tr` are the same size with different dtype AND shape. The verifier parses
+`.npy` headers rather than checking lengths.
+
+**Fail-open fixed in the copied exporter.** Upstream `export_plda()` hardcoded
+`~/.cache/huggingface/hub/…`, blind-scanned blobs for a `PK` magic, and wrapped everything in a
+bare `except: pass`; a cache miss merely printed "skipping". Under a container `HF_HOME` this
+silently produced a models directory with **no PLDA files at all** and exit status 0.
+Now resolved via `hf_hub_download`, loaded by name from `plda/plda.npz` +
+`plda/xvec_transform.npz`, with all six arrays asserted.
+
+**Gate detection cannot use the model-info API.** Measured:
+`GET /api/models/pyannote/speaker-diarization-community-1` returns **200 with no token and
+200 with a garbage token**. The discriminating call is a file resolve
+(`/resolve/main/config.yaml` → 401 `x-error-code: GatedRepo`), and `/api/whoami-v2` is what
+separates "bad token" from "valid token, terms not accepted" so the message names the right
+remedy. Both are in Rust, so a traceback on this path is structurally impossible.
+
+**Smoke test results (CPU, `vendor/speakrs/fixtures/test.wav`, 26.0 s):**
+
+| set | graphs | speakers/segments | 3a fbank b1-vs-b32 | 3b fused-vs-split | 3c multimask-vs-tail | 3e tail-b64 invariance |
+| --- | --- | --- | --- | --- | --- | --- |
+| `models_folded` (fast) | 16 | 2 / 7 | 3.43e-5 | **0.00e0** | **0.00e0** | 3.58e-7 |
+| `models_small` | 12 | 2 / 7 | 3.43e-5 | 0.00e0 | 0.00e0 | n/a |
+
+3e's 3.58e-7 is consistent with §7.33's 7.8e-08 for the same property. Bar is 1e-4 throughout.
+
+**Injected-bug verification (the check that the checks work).** Two corruptions:
+
+1. 4096 flipped bytes inside `wespeaker-voxceleb-resnet34-tail.onnx` → **stage 1** fails and
+   names the file.
+2. One entire initializer zeroed (`resnet.seg_1.weight`, (256,5120) f32) via
+   `validation/make_corrupt_fixture.py`. The graph **still loads with an unchanged signature**
+   — confirmed in the fixture builder — so stages 1 and 2 both PASS it. Only **stage 3b**
+   catches it, at **9.222e-1** against the 1e-4 bar. This is the evidence that the numeric
+   stage is more than a protobuf parse.
+
+`scripts/compare_model_sets.py` on the same fixture: Tier A (inventory/size) **passes** it —
+the file is the same length — and Tier B catches it at 1/84 initializers differing, max |Δ|
+2.703e-01. Control (`models_folded` vs itself): equivalent at Tier B across all 24 files.
+
+**Ordering defect found by a test.** With stage 5 (PLDA headers) running last, truncating
+`plda_tr.npy` by 64 bytes reported `STAGE 4 FAILED: pipeline init: reached EOF before reading
+all data` — no filename, no hint PLDA was involved. Stages now run structural-before-
+end-to-end, giving `plda_tr.npy is 131136 bytes, expected 131200`. A verifier that emits
+unactionable errors defeats its own purpose.
+
+**Seeding bug found by a unit test.** The mask probe used `seed | 1`, which maps every even
+seed onto its odd successor; stage 3e walks `0xA5A5..0xA5A5+64`, so half of its 64 probe rows
+would have been duplicates and the batch-invariance check quietly half-strength.
+
+**Health contract.** `/healthz` stays **200 in all four model states**. Verified callers
+inspect status only — `docker-compose.diar-native.yml:69` (`curl -sf .../healthz || exit 1`)
+and `diarizer_native.py` (`resp.status == 200`) — so changing the BODY is safe and changing
+the CODE is not. Every models directory deployed today has no marker; a 503 for "unverified"
+would have failed every existing healthcheck on ship day and silently reverted the stack to
+in-process PyAnnote, which is the exact regression this issue exists to prevent. `/readyz` is
+the new endpoint that 503s on unverified.
+
+Tests: 50/50 diar-core unit, 7/7 provisioning integration. `vendor/speakrs` untouched
+(`git diff HEAD --stat` unchanged at 23 files / 1359 insertions / 256 deletions) — the export
+scripts are adapted COPIES under `scripts/provision/`, so
+`patches/0001-cuda-performance-patch-set.patch` needs no regeneration.
