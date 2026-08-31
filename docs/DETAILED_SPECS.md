@@ -106,9 +106,15 @@ unforced behavior bit-identical to current (feature is pure addition).
 ## S-T11: TensorRT EP inside ort (multimask + segmentation sessions)
 
 **IMPLEMENTED + MEASURED 2026-08-19, then ROLLED BACK by operator decision (RESULTS §7.26 has the numbers and the recipe).**
+**Nothing below is live.** `SPEAKRS_TRT` and `SPEAKRS_TRT_CACHE` have ZERO read sites in
+`vendor/speakrs/src/` or `crates/`; `docker/Dockerfile.server` actively `rm -f`s
+`libonnxruntime_providers_tensorrt.so`; and the `--build-arg WITH_TENSORRT=1` referenced below
+no longer exists. Setting those variables does nothing. Kept as the recipe if this is ever
+revisited — see RESULTS §7.26.
 Corrections learned: (a) the ORT 1.24.2 tarball DOES ship the TRT provider — what's missing is
-`libnvinfer.so.10`/`libnvonnxparser.so.10` (now behind `--build-arg WITH_TENSORRT=1`, TRT
-10.16.1 cuda12.9 — the repo's cuda13 default candidate will not load); (b) the bit-parity gate
+`libnvinfer.so.10`/`libnvonnxparser.so.10` (at the time, behind a since-removed
+`--build-arg WITH_TENSORRT=1`, TRT 10.16.1 cuda12.9 — the repo's cuda13 default candidate will
+not load); (b) the bit-parity gate
 below is unachievable in principle: TRT kernels shift logits at the last ulp and binarized
 boundaries move ~1 frame. Measured cost/benefit: 1.33-1.48× warm diarization speed; AMI-16
 full +0.030 pp, exclusive +0.006 pp, Karpathy −0.002 pp; runs byte-deterministic within TRT;
