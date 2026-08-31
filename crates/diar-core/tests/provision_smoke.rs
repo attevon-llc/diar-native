@@ -211,3 +211,115 @@ fn a_multimask_b64_that_is_not_a_copy_of_b32_is_rejected() {
     assert!(msg.contains("byte-for-byte") || msg.contains("STAGE"), "{msg}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// F1: the graph production actually executes on every batched job.
+///
+/// `wespeaker-multimask-tail-b32.onnx` was verified by NOTHING numeric. Stage 3c checks the
+/// *batch-1* multimask; stage 3d only asserts the b64 file is a byte copy of this one. So the
+/// copy relationship could be perfect and both files be wrong together.
+///
+/// The fixture corrupts b32 AND b64 identically, on purpose: corrupting b32 alone would be
+/// caught by the sha256 equality in stage 3d, and the test would pass for the wrong reason,
+/// proving nothing about numeric coverage. Built by
+/// `validation/make_corrupt_fixture.py <src> <dst> wespeaker-multimask-tail-b32.onnx`.
+#[test]
+#[ignore = "needs DIAR_TEST_ZEROED_MULTIMASK_DIR from validation/make_corrupt_fixture.py"]
+fn a_zeroed_multimask_b32_is_caught_numerically_not_by_the_hash_check() {
+    let dir = PathBuf::from(
+        std::env::var("DIAR_TEST_ZEROED_MULTIMASK_DIR")
+            .expect("set DIAR_TEST_ZEROED_MULTIMASK_DIR"),
+    );
+    // Premise: the two multimask files must still agree, or stage 3d catches this first and
+    // the numeric stage is never reached.
+    let a = std::fs::read(dir.join("wespeaker-multimask-tail-b32.onnx")).unwrap();
+    let b = std::fs::read(dir.join("wespeaker-multimask-tail-b64.onnx")).unwrap();
+    assert_eq!(a, b, "fixture must keep b64 a byte copy of b32");
+
+    let err = verify::run(&opts(&dir, ModelSet::Fast))
+        .expect_err("a wrong multimask graph must not pass verification");
+    let msg = format!("{err:#}");
+    println!("multimask error: {msg}");
+    assert!(
+        msg.contains("STAGE 3e"),
+        "the batch-32 multimask is the production hot path and must be caught by the NUMERIC \
+         stage that was added for it, not incidentally by something else. Got: {msg}"
+    );
+}
+
+/// F2: `verify-models` reported success on a directory with NO marker.
+///
+/// `Marker::read` returns `Ok(None)` when the file is absent, so the drift loop was skipped
+/// entirely and `drift` stayed empty — indistinguishable from "every hash matched". The CLI
+/// printed "OK: … verified." and exited 0 having compared zero bytes against zero recorded
+/// hashes, which is the exact scenario (a `/models` directory of unknown provenance) the
+/// command exists for.
+#[test]
+#[ignore = "needs DIAR_TEST_MODELS_DIR"]
+fn deep_verification_distinguishes_a_missing_marker_from_a_clean_one() {
+    let Some(src) = models_dir() else {
+        panic!("set DIAR_TEST_MODELS_DIR");
+    };
+    let with_marker = PathBuf::from(
+        std::env::var("DIAR_TEST_MARKED_MODELS_DIR")
+            .expect("set DIAR_TEST_MARKED_MODELS_DIR to a provisioned dir WITH a marker"),
+    );
+
+    let marked = verify::verify_deep(&opts(&with_marker, ModelSet::Fast)).expect("must pass");
+    println!("marked: hashed={} drift={:?}", marked.hashed, marked.drift);
+    assert!(marked.marker_present);
+    assert!(marked.hashed > 0, "a marker must cause files to be hashed");
+    assert!(marked.drift.is_empty(), "{:?}", marked.drift);
+    assert!(marked.fully_verified());
+
+    // The same directory with the marker removed must NOT report as verified.
+    let stripped = linked_dir(&with_marker, "nomarker");
+    std::fs::remove_file(stripped.join("diar-provision.json")).unwrap();
+    let bare = verify::verify_deep(&opts(&stripped, ModelSet::Fast)).expect("smoke still passes");
+    println!("stripped: hashed={} drift={:?}", bare.hashed, bare.drift);
+    assert!(!bare.marker_present, "there is no marker");
+    assert_eq!(bare.hashed, 0, "nothing could be compared");
+    assert!(
+        !bare.fully_verified(),
+        "a directory with no marker has NOT been verified against anything — reporting it as \
+         verified is the fail-open this tier exists to prevent"
+    );
+    let _ = std::fs::remove_dir_all(&stripped);
+
+    // And an unmarked directory is not simply 'clean': drift is empty in BOTH cases, so the
+    // marker's presence is what carries the distinction.
+    assert_eq!(bare.drift.len(), marked.drift.len());
+    let _ = std::fs::remove_dir_all(&src.join("__never__"));
+}
+
+/// C1: an execution device this build/machine cannot use is an ENVIRONMENT failure, and must
+/// never be recorded against the models.
+///
+/// Reproduced without needing a GPU-less host: on a build without the `coreml` feature,
+/// `Mode::CoreMl` cannot validate, exactly as `Mode::Cuda` cannot on a box with no visible
+/// GPU. The classifier proves the models are fine by loading the same directory on the CPU
+/// execution provider, so it is the code path, not the specific device, that is under test.
+#[test]
+#[ignore = "needs DIAR_TEST_MODELS_DIR"]
+#[cfg(not(feature = "coreml"))]
+fn an_unusable_device_is_reported_as_an_environment_failure_not_a_model_failure() {
+    let Some(dir) = models_dir() else {
+        panic!("set DIAR_TEST_MODELS_DIR");
+    };
+    let mut o = opts(&dir, ModelSet::Fast);
+    o.mode = Mode::CoreMl;
+
+    let err = verify::run(&o).expect_err("a device this build cannot serve must fail");
+    let msg = format!("{err:#}");
+    println!("device error: {msg}");
+    assert!(
+        verify::is_device_unavailable(&err),
+        "an unusable device must be classified as an environment problem — otherwise \
+         provision-models writes `smoke.status: fail` into the models directory and every \
+         later server start exits non-zero about files that are perfectly good. Got: {msg}"
+    );
+    assert!(
+        !diar_core::provision::should_record_failure(&err),
+        "and therefore it must never be recorded as a smoke failure"
+    );
+    assert!(msg.contains("NOT implicated"), "{msg}");
+}

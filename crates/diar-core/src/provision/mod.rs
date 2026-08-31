@@ -40,11 +40,61 @@ pub mod exit {
     pub const EXPORT_FAILED: i32 = 4;
     /// Token missing/invalid, or the repo gate has not been accepted.
     pub const TOKEN_DENIED: i32 = 5;
-    /// No usable python export environment — and, at serve time, a models directory too
-    /// broken to start against.
+    /// No usable python export environment: the interpreter is missing, or it cannot import
+    /// torch / pyannote.audio / onnx. The fix is `pip install`.
     pub const NO_EXPORTER_ENV: i32 = 6;
     /// The models directory is not writable.
     pub const NOT_WRITABLE: i32 = 7;
+    /// Serve time only: the models directory is too broken to start against. Split out of
+    /// `NO_EXPORTER_ENV`, which it used to share — a supervisor branching on exit codes could
+    /// not tell "install torch into the exporter" from "provision the models", and those have
+    /// nothing to do with each other. Serving does not need python at all.
+    pub const MODELS_UNUSABLE: i32 = 8;
+    /// The requested execution device is not usable here (no GPU visible, backend not
+    /// compiled in). Distinct from `SMOKE_FAILED` on purpose: it says nothing about the
+    /// models, and unlike a smoke failure it never marks them known-bad.
+    pub const DEVICE_UNAVAILABLE: i32 = 9;
+    /// `verify-models` only: the directory works, but there is no marker to verify it
+    /// AGAINST, so no content was compared to any recorded hash. Not `OK` — the deep tier
+    /// did not run — and not `SMOKE_FAILED` — nothing is known to be wrong.
+    pub const UNVERIFIABLE: i32 = 10;
+}
+
+/// Where the smoke clip lives, in preference order.
+///
+/// Resolved LATE (just before the export, after every cheap check) rather than at argument
+/// parse time. `INSTALL_NATIVE.md` steers operators to provision from OpenTranscribe's
+/// backend image, and that image copies only the binary and three ORT `.so`s out of the
+/// diar-native image — not the clip. Resolving first meant the documented command died with
+/// "no smoke clip found" (exit 2) before it had so much as looked at the token.
+pub const CLIP_CANDIDATES: &[&str] = &[
+    "/usr/local/share/diar-native/smoke.wav",
+    "vendor/speakrs/fixtures/test.wav",
+];
+
+/// Find the smoke clip, or explain exactly how to supply one.
+pub fn resolve_clip(explicit: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(p) = explicit {
+        return if p.exists() {
+            Ok(p.to_path_buf())
+        } else {
+            Err(format!("--smoke-clip {} does not exist", p.display()))
+        };
+    }
+    for candidate in CLIP_CANDIDATES {
+        let p = PathBuf::from(candidate);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(format!(
+        "no smoke clip found (looked at {}). The end-to-end verification stage needs one 16 \
+         kHz mono WAV of at least 10 seconds containing speech; it is baked into the \
+         diar-server images but NOT into images that merely copy the binary out of them \
+         (OpenTranscribe's backend image is one). Pass `--smoke-clip /path/to/clip.wav` — any \
+         short recording will do, it is never redistributed and only ever read.",
+        CLIP_CANDIDATES.join(" and ")
+    ))
 }
 
 /// Escape hatch for the startup gate. Set to `1`/`true` to downgrade its fatal cases to
@@ -95,8 +145,31 @@ pub enum StartupGate {
 /// FILE is fatal (the server genuinely cannot serve), but a MISSING MARKER is only a
 /// warning. Every models directory deployed before this feature shipped has no marker, and
 /// refusing to start on those would turn a provenance improvement into an outage.
-pub fn startup_gate(models_dir: &Path, set: ModelSet, wanted: ModelSet) -> StartupGate {
-    startup_gate_with(models_dir, set, wanted, allow_unverified_from_env())
+pub fn startup_gate(models_dir: &Path, explicit: Option<ModelSet>) -> StartupGate {
+    let set = serving_set(models_dir, explicit);
+    startup_gate_with(models_dir, set, set, allow_unverified_from_env())
+}
+
+/// Which model set this directory should be judged against.
+///
+/// Read from the MARKER, not defaulted to `Fast`. Defaulting to `Fast` made
+/// `provision-models --set small` self-defeating: provisioning exits 0 having deliberately
+/// deleted the four batch-64 graphs (`provision.py` FAST_ONLY), and the server then refused
+/// to start because four "required" files were missing — with remediation text that
+/// interpolated `--set fast`, i.e. telling a laptop operator to build the tier they had just
+/// declined. The directory itself records which tier it is; believing it is strictly better
+/// than guessing, and the guess was wrong in the one case anybody would notice.
+///
+/// `explicit` (from `DIAR_MODEL_SET`) still wins, for the operator who wants to assert that a
+/// directory *ought* to be the fast set and get a loud complaint when it is not.
+pub fn serving_set(models_dir: &Path, explicit: Option<ModelSet>) -> ModelSet {
+    if let Some(set) = explicit {
+        return set;
+    }
+    match marker::Marker::read(models_dir) {
+        Ok(Some(m)) => m.model_set().unwrap_or(ModelSet::Fast),
+        _ => ModelSet::Fast,
+    }
 }
 
 pub fn allow_unverified_from_env() -> bool {
@@ -129,7 +202,9 @@ pub fn startup_gate_with(
              HF_TOKEN=<your token> diar-server provision-models --models-dir {} --set {set}\n\n\
              You will need a HuggingFace read token \
              (https://huggingface.co/settings/tokens) and to accept the terms at \
-             https://huggingface.co/{} (free, CC-BY-4.0, auto-approved).",
+             https://huggingface.co/{} (free, CC-BY-4.0, auto-approved).\n\n\
+             (This server is requiring the '{set}' set. That comes from the directory's own \
+             marker when it has one, else '{}'; override it with DIAR_MODEL_SET=fast|small.)",
             missing.len(),
             models_dir.display(),
             shown.join("\n  "),
@@ -140,6 +215,7 @@ pub fn startup_gate_with(
             },
             models_dir.display(),
             preflight::PIPELINE_REPO,
+            ModelSet::Fast,
         );
         return if allow_unverified {
             StartupGate::Proceed {
@@ -192,7 +268,9 @@ pub struct ProvisionOptions {
     pub python: Option<String>,
     pub force: bool,
     pub skip_gender: bool,
-    pub clip: PathBuf,
+    /// `None` => resolve from [`CLIP_CANDIDATES`] when the smoke stage needs it, which is
+    /// after the writability / idempotency / token / python checks and before the download.
+    pub clip: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -206,6 +284,11 @@ pub struct ProvisionOutcome {
     pub message: Option<String>,
     pub elapsed_ms: u64,
     pub bytes: u64,
+    /// `"fp16"` / `"fp32"` / `None` when the gender classifier was skipped. Surfaced here
+    /// because it is a ~500 MiB VRAM difference (RESULTS §7.18) that was measured by the
+    /// exporter and then reported to nobody.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gender_precision: Option<String>,
 }
 
 /// A provisioning failure, carrying the exit code the CLI should use.
@@ -251,6 +334,10 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
                 )),
                 elapsed_ms: started.elapsed().as_millis() as u64,
                 bytes: dir_bytes(&opts.models_dir),
+                gender_precision: marker::Marker::read(&opts.models_dir)
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.toolchain.gender_precision),
             });
         }
     }
@@ -268,6 +355,12 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
     let python = exporter::resolve_python(opts.python.as_deref());
     let python_version = exporter::check_python_env(&python, with_gender)
         .map_err(|e| ProvisionFailure::new(exit::NO_EXPORTER_ENV, e.message()))?;
+
+    // 4b. Is there a clip to verify WITH? Late enough that the operator has already been told
+    //     about a bad token or a missing torch, early enough that nobody downloads 470 MB
+    //     only to be told at the end that the last step cannot run.
+    let clip = resolve_clip(opts.clip.as_deref())
+        .map_err(|e| ProvisionFailure::new(exit::USAGE, e))?;
 
     // 5. Export.
     let report = exporter::run_export(&exporter::ExportRequest {
@@ -291,17 +384,37 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
         set: opts.set,
         with_gender,
         mode: opts.mode,
-        clip: opts.clip.clone(),
+        clip: clip.clone(),
     };
     let smoke = match verify::run(&smoke_opts) {
         Ok(r) => r,
+        // An unusable DEVICE is an environment problem, not a verdict on the files. Returning
+        // early here — before any marker is written — is the whole point: the previous code
+        // wrote `smoke.status: "fail"` into the models directory, and `startup_gate` then
+        // refused to serve those (perfectly good) models forever after. On a GPU-less host,
+        // or in the CPU-only image where CUDA can never validate, that made a successful
+        // export permanently self-destruct.
+        Err(e) if !should_record_failure(&e) => {
+            return Err(ProvisionFailure::new(
+                exit::DEVICE_UNAVAILABLE,
+                format!(
+                    "The models in {} were exported successfully and have NOT been marked \
+                     bad — but the end-to-end verification stage could not run here.\n\n{e:#}\n\n\
+                     Nothing has been recorded about their correctness. Re-run \
+                     `diar-server verify-models --models-dir {} --mode cpu` to finish \
+                     verifying and stamp the marker.",
+                    opts.models_dir.display(),
+                    opts.models_dir.display(),
+                ),
+            ));
+        }
         Err(e) => {
             // Record the failure so a later startup reports `failed` with the reason,
             // rather than silently serving models we already know are bad.
             let failed = marker::SmokeRecord {
                 status: "fail".into(),
                 mode: verify::mode_name(opts.mode).into(),
-                clip_sha256: sha256_file(&opts.clip).unwrap_or_default(),
+                clip_sha256: sha256_file(&clip).unwrap_or_default(),
                 num_speakers: 0,
                 segments: 0,
                 duration_ms: 0,
@@ -387,11 +500,82 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
         message: None,
         elapsed_ms: started.elapsed().as_millis() as u64,
         bytes,
+        gender_precision: report.gender_precision.clone(),
     })
 }
 
 fn generated_by() -> String {
     format!("diar-server {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// May this smoke failure be written into the marker as `fail`?
+///
+/// `fail` is a permanent, load-bearing accusation: [`startup_gate`] treats it as known-bad and
+/// refuses to serve, so a directory stamped with it is out of service until someone re-exports
+/// it. That is the right response to "the models are wrong" and exactly the wrong response to
+/// "this machine has no GPU" — and the two arrived at the same code path.
+pub fn should_record_failure(err: &anyhow::Error) -> bool {
+    !verify::is_device_unavailable(err)
+}
+
+/// Outcome of trying to stamp a passing deep verification onto the existing marker.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "result", content = "detail")]
+pub enum Attestation {
+    /// The marker's smoke record was refreshed from this run.
+    Updated(String),
+    /// Nothing to attest to — there is no marker. Deliberately NOT auto-created: a marker
+    /// records provenance (which pipeline revision, which toolchain, which folder), and none
+    /// of that is knowable from a directory that is merely sitting there. Inventing one would
+    /// manufacture exactly the false confidence this whole feature exists to remove.
+    NoMarker,
+    /// The directory is read-only, or the write failed. Verification still succeeded.
+    NotWritten(String),
+}
+
+/// Record a passing deep verification in the existing marker.
+///
+/// This is the RECOVERY PATH, and its absence was a dead end. `verify-models` used to be
+/// read-only with respect to the marker, so a directory carrying `smoke.status: "fail"` — from
+/// a transient stage-4 failure, or from the GPU-less provisioning run described above — could
+/// not be rehabilitated by the obvious command. `verify-models` would print "OK: … verified.",
+/// exit 0, and the server would go on exiting non-zero with "recorded as known-bad" about
+/// models that had just passed every check. The only escape was a full `--force` re-export:
+/// re-download, re-export, minutes, for files that were never wrong.
+///
+/// Only the smoke record moves. Provenance (`upstream`, `toolchain`, `speakrs`) is left
+/// exactly as the exporting run wrote it, because this run did not export anything and has
+/// nothing truthful to say about where the bytes came from.
+pub fn attest(models_dir: &Path, deep: &verify::DeepReport) -> Attestation {
+    let mut marker = match marker::Marker::read(models_dir) {
+        Ok(Some(m)) => m,
+        Ok(None) => return Attestation::NoMarker,
+        Err(e) => return Attestation::NotWritten(e),
+    };
+    let was = marker.smoke.status.clone();
+    marker.smoke = marker::SmokeRecord {
+        status: "pass".into(),
+        mode: deep.smoke.mode.clone(),
+        clip_sha256: deep.smoke.clip_sha256.clone(),
+        num_speakers: deep.smoke.num_speakers,
+        segments: deep.smoke.segments,
+        duration_ms: deep.smoke.duration_ms,
+        checked_at: now_rfc3339(),
+        error: None,
+    };
+    // Idempotent: verify-models can be run any number of times without the field growing a
+    // tail of identical suffixes.
+    const REATTESTED: &str = " (re-attested by verify-models)";
+    if !marker.generated_by.ends_with(REATTESTED) {
+        marker.generated_by.push_str(REATTESTED);
+    }
+    match marker.write(models_dir) {
+        Ok(()) => Attestation::Updated(format!(
+            "marker smoke record updated: {was} -> pass (mode {})",
+            deep.smoke.mode
+        )),
+        Err(e) => Attestation::NotWritten(e),
+    }
 }
 
 fn toolchain_of(r: &exporter::ExportReport, python_version: &str) -> marker::Toolchain {
@@ -408,6 +592,7 @@ fn toolchain_of(r: &exporter::ExportReport, python_version: &str) -> marker::Too
         pyannote_audio: r.pyannote_audio.clone(),
         transformers: r.transformers.clone(),
         folder: r.folder.clone(),
+        gender_precision: r.gender_precision.clone(),
     }
 }
 
@@ -544,6 +729,202 @@ mod tests {
             _ => panic!("a zero-length model must be treated as missing"),
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn marker_recording(dir: &Path, set: ModelSet, smoke_status: &str) {
+        let names = files::required_files(set, false);
+        Marker {
+            schema: MARKER_SCHEMA,
+            generated_at: now_rfc3339(),
+            generated_by: "test".into(),
+            model_set: set.to_string(),
+            exporter_version: EXPORT_RECIPE_VERSION,
+            with_gender: false,
+            upstream: Default::default(),
+            toolchain: Default::default(),
+            speakrs: Default::default(),
+            files: marker::file_records(dir, &names).unwrap(),
+            smoke: marker::SmokeRecord {
+                status: smoke_status.into(),
+                mode: "cpu".into(),
+                clip_sha256: "abc".into(),
+                num_speakers: 2,
+                segments: 9,
+                duration_ms: 10,
+                checked_at: now_rfc3339(),
+                error: (smoke_status != "pass").then(|| "device was busy".to_string()),
+            },
+        }
+        .write(dir)
+        .unwrap();
+    }
+
+    /// C2: `provision-models --set small` deletes the four batch-64 graphs on purpose. The
+    /// startup gate used to demand the FAST set regardless, so the server refused to start on
+    /// a directory provisioning had just declared complete — and told the operator to run
+    /// `--set fast`, the tier they had deliberately not asked for.
+    #[test]
+    fn a_small_set_directory_starts_and_is_verified() {
+        let d = scratch();
+        write_all_required(&d, ModelSet::Small);
+        marker_recording(&d, ModelSet::Small, "pass");
+
+        match startup_gate_with(&d, ModelSet::Small, ModelSet::Small, false) {
+            StartupGate::Proceed { status, warning } => {
+                assert_eq!(status.state, ModelsState::Verified, "{:?}", status.reason);
+                assert!(warning.is_none(), "{warning:?}");
+            }
+            StartupGate::Fatal(m) => panic!("a small-set directory must serve: {m}"),
+        }
+        // And the set really is read off the marker rather than assumed.
+        assert_eq!(serving_set(&d, None), ModelSet::Small);
+        assert_eq!(
+            serving_set(&d, Some(ModelSet::Fast)),
+            ModelSet::Fast,
+            "DIAR_MODEL_SET must still be able to override"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn with_no_marker_the_serving_set_still_defaults_to_fast() {
+        let d = scratch();
+        assert_eq!(serving_set(&d, None), ModelSet::Fast);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C1: a device that is not usable HERE says nothing about the models, and must never be
+    /// recorded as a smoke failure — a `fail` marker takes the directory out of service until
+    /// someone re-exports 470 MB.
+    #[test]
+    fn an_unusable_device_is_never_recorded_as_a_model_failure() {
+        let device = anyhow::Error::new(verify::DeviceUnavailable {
+            mode: "cuda".into(),
+            detail: "CUDA session load failed".into(),
+        })
+        .context("STAGE 4 FAILED: wrapped in context, as the real call site does");
+        assert!(!should_record_failure(&device));
+        let msg = format!("{device:#}");
+        assert!(msg.contains("not usable on this machine"), "{msg}");
+        assert!(msg.contains("NOT implicated"), "{msg}");
+
+        // A genuine model problem is still recorded.
+        let models = anyhow::anyhow!("STAGE 3b FAILED: fused and split paths disagree");
+        assert!(should_record_failure(&models));
+    }
+
+    /// C3: the recovery path. A directory carrying a stale `fail` record must be
+    /// rehabilitatable without a full re-export.
+    #[test]
+    fn a_passing_verification_clears_a_stale_failure_marker() {
+        let d = scratch();
+        write_all_required(&d, ModelSet::Small);
+        marker_recording(&d, ModelSet::Small, "fail");
+        assert_eq!(marker::evaluate(&d, ModelSet::Small).state, ModelsState::Failed);
+
+        let deep = verify::DeepReport {
+            smoke: verify::SmokeReport {
+                stages: vec![],
+                num_speakers: 2,
+                segments: 7,
+                duration_ms: 1234,
+                clip_sha256: "deadbeef".into(),
+                mode: "cpu".into(),
+            },
+            drift: vec![],
+            hashed: 18,
+            marker_present: true,
+            marker_recorded_failure: true,
+        };
+        assert!(deep.fully_verified());
+        match attest(&d, &deep) {
+            Attestation::Updated(detail) => assert!(detail.contains("fail -> pass"), "{detail}"),
+            other => panic!("expected an update, got {other:?}"),
+        }
+        assert_eq!(marker::evaluate(&d, ModelSet::Small).state, ModelsState::Verified);
+
+        // Provenance is NOT invented or overwritten, and repeat runs do not grow the field.
+        let m = Marker::read(&d).unwrap().unwrap();
+        assert_eq!(m.generated_by, "test (re-attested by verify-models)");
+        attest(&d, &deep);
+        let m = Marker::read(&d).unwrap().unwrap();
+        assert_eq!(m.generated_by, "test (re-attested by verify-models)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn attesting_a_directory_with_no_marker_does_not_invent_one() {
+        let d = scratch();
+        let deep = verify::DeepReport {
+            smoke: verify::SmokeReport {
+                stages: vec![],
+                num_speakers: 1,
+                segments: 1,
+                duration_ms: 1,
+                clip_sha256: String::new(),
+                mode: "cpu".into(),
+            },
+            drift: vec![],
+            hashed: 0,
+            marker_present: false,
+            marker_recorded_failure: false,
+        };
+        assert!(!deep.fully_verified(), "no marker is not full verification");
+        assert_eq!(attest(&d, &deep), Attestation::NoMarker);
+        assert!(!Marker::path_in(&d).exists(), "must not fabricate provenance");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C4: the message has to name the flag, because the primary documented environment
+    /// (OpenTranscribe's backend image) copies the binary out of our image without the clip.
+    #[test]
+    fn a_missing_smoke_clip_names_the_flag_that_fixes_it() {
+        let err = resolve_clip(Some(Path::new("/nonexistent/clip.wav"))).unwrap_err();
+        assert!(err.contains("--smoke-clip"), "{err}");
+
+        // The no-candidates path only reproduces where neither baked path exists.
+        if !CLIP_CANDIDATES.iter().any(|c| Path::new(c).exists()) {
+            let err = resolve_clip(None).unwrap_err();
+            assert!(err.contains("--smoke-clip"), "{err}");
+            assert!(err.contains("16 kHz mono"), "{err}");
+        }
+    }
+
+    /// C6: a supervisor must be able to tell "install torch" from "provision the models".
+    #[test]
+    fn exit_codes_are_distinct() {
+        let codes = [
+            exit::OK,
+            exit::USAGE,
+            exit::SMOKE_FAILED,
+            exit::EXPORT_FAILED,
+            exit::TOKEN_DENIED,
+            exit::NO_EXPORTER_ENV,
+            exit::NOT_WRITABLE,
+            exit::MODELS_UNUSABLE,
+            exit::DEVICE_UNAVAILABLE,
+            exit::UNVERIFIABLE,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for c in codes {
+            assert!(seen.insert(c), "exit code {c} is used for two different things");
+        }
+    }
+
+    /// F3: the precision the exporter measured has to survive the trip into the marker.
+    #[test]
+    fn gender_precision_reaches_the_marker() {
+        let report: exporter::ExportReport = serde_json::from_str(
+            r#"{"python":"3.12.3","torch":"2.13.0","gender_precision":"fp32"}"#,
+        )
+        .unwrap();
+        assert_eq!(report.gender_precision.as_deref(), Some("fp32"));
+        let tc = toolchain_of(&report, "Python 3.12.3");
+        assert_eq!(
+            tc.gender_precision.as_deref(),
+            Some("fp32"),
+            "measured by export_gender.py, dropped by serde, reported to nobody"
+        );
     }
 
     #[test]

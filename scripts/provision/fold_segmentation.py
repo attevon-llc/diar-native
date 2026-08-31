@@ -93,6 +93,17 @@ def _op_histogram(model: onnx.ModelProto) -> Counter:
     return Counter(n.op_type for n in model.graph.node)
 
 
+#: Batch each target is exported at. b1 is dynamic in the sample axis; the other two are
+#: fixed, which is exactly why they need their own parity check — they are DIFFERENT
+#: protobufs, folded independently, and a folder bug can land on the static-shaped graphs
+#: while leaving the dynamic one correct.
+TARGET_BATCH = {
+    "segmentation-3.0.onnx": 1,
+    "segmentation-3.0-b32.onnx": 32,
+    "segmentation-3.0-b64.onnx": 64,
+}
+
+
 def _numeric_parity(src_path: str, folded_path: str, batch: int, samples: int) -> float:
     """Run both graphs on the same input and return max|Δ|. Expected to be exactly 0.0."""
     import onnxruntime as ort
@@ -144,21 +155,40 @@ def fold_all(models_dir: str, verify_numeric: bool = True) -> str:
         staged = path + ".folding"
         onnx.save(folded, staged)
 
-        if verify_numeric and filename == "segmentation-3.0.onnx":
-            # Only the batch-1 graph is checked numerically. The fold is the same
-            # transformation over the same weights for b32/b64, and running 64 sequences of
-            # 4-layer LSTM twice on CPU costs minutes for no additional signal; those two
-            # are covered structurally here and by smoke stages 1-2 in Rust.
-            diff = _numeric_parity(path, staged, batch=1, samples=160000)
+        if verify_numeric:
+            # EVERY folded graph is checked numerically, not just b1.
+            #
+            # This used to run on `segmentation-3.0.onnx` alone, on the reasoning that the
+            # fold is "the same transformation over the same weights" for b32/b64 and that
+            # those were "covered structurally here and by smoke stages 1-2 in Rust". Both
+            # halves were wrong. Smoke stage 1 is a protobuf parse and stage 2 checks names
+            # and shapes; neither looks at a single output value, so nothing anywhere
+            # compared the folded b32/b64 graphs against the graphs they were folded FROM.
+            # And they are not the same protobuf: b1 is dynamic in the sample axis while
+            # b32/b64 are fully static, so a folder can rewrite them differently. On CPython
+            # 3.13 the folder is onnxslim, which turns `Gemm` into `MatMul`+`Add` — a rewrite
+            # that could plausibly land wrong on static shapes only. The result would be
+            # correct single-window segmentation, wrong batched segmentation, five green
+            # smoke stages, a `pass` marker, a 200 from /readyz, and silently worse DER on
+            # every file longer than one window.
+            #
+            # It costs what it costs (two extra CPU forward passes each at batch 32 and 64).
+            # Folding runs once per provisioning run, behind a ~470 MB download; buying the
+            # only check that can see this class of bug is worth minutes there.
+            batch = TARGET_BATCH[filename]
+            diff = _numeric_parity(path, staged, batch=batch, samples=160000)
             if diff != 0.0:
                 os.unlink(staged)
                 raise RuntimeError(
-                    f"{filename}: folded graph differs from the original by {diff:.3e}. "
-                    f"Folding must be BIT-EXACT (RESULTS §4.1 measured 0.000e+00); a "
-                    f"non-zero difference means the folder rewrote semantics, not just "
-                    f"constants. Folder={name}."
+                    f"{filename}: folded graph differs from the original by {diff:.3e} at "
+                    f"batch {batch}. Folding must be BIT-EXACT (RESULTS §4.1 measured "
+                    f"0.000e+00); a non-zero difference means the folder rewrote semantics, "
+                    f"not just constants. Folder={name}."
                 )
-            print(f"  {filename}: {before} -> {after} nodes, max_abs_diff = {diff:.3e}")
+            print(
+                f"  {filename}: {before} -> {after} nodes, "
+                f"max_abs_diff = {diff:.3e} at batch {batch}"
+            )
         else:
             print(f"  {filename}: {before} -> {after} nodes, Sin/Cos/If eliminated")
 

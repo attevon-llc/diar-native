@@ -87,6 +87,16 @@ pub struct Toolchain {
     /// differently-shaped graph. Recorded because "which folder" is otherwise invisible in
     /// the output and would turn into an unexplainable diff months later.
     pub folder: Option<String>,
+    /// Precision the gender classifier was written at: `"fp16"` or `"fp32"`.
+    ///
+    /// Not decoration — it is a VRAM fact. The fp32 classifier is 378 MB on disk and costs
+    /// ~500 MiB more VRAM than the fp16 one (RESULTS §7.18: 5396 -> 4890 MiB), which on a
+    /// 6 GB card decides whether gender jobs run or OOM. `export_gender.py` falls back to
+    /// fp32 whenever `onnxconverter_common` cannot convert the graph torch emits — the
+    /// normal case under the pinned torch 2.13 — so a directory that "has gender" says
+    /// nothing about which one you got unless it is written down here.
+    #[serde(default)]
+    pub gender_precision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -31,7 +31,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::files::ModelSet;
 
@@ -50,7 +50,9 @@ const SCRIPTS: &[(&str, &str)] = &[
 
 /// What the python side reports back, via a JSON file rather than stdout scraping (stdout
 /// carries progress and torch's own warnings, and parsing it would be fragile).
-#[derive(Debug, Clone, Deserialize, Default)]
+/// `Serialize` is here for the round-trip test that pins "every key provision.py writes is a
+/// field of this struct" — the check that would have caught `gender_precision` being dropped.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExportReport {
     #[serde(default)]
     pub python: Option<String>,
@@ -76,6 +78,19 @@ pub struct ExportReport {
     pub gender_repo: Option<String>,
     #[serde(default)]
     pub gender_revision: Option<String>,
+    /// `"fp16"` or `"fp32"` — which precision the gender classifier was actually written at.
+    ///
+    /// `export_gender.py` measures this and its own docstring says it is "REPORTED, so the
+    /// marker and /healthz can say so rather than implying fp16". It was reported into a
+    /// struct with no such field and (serde ignoring unknown keys by default) silently
+    /// dropped, so it reached nothing. This is not an edge case: `requirements.txt` pins
+    /// `torch==2.13.0`, and `onnxconverter_common.float16` cannot convert the graph that
+    /// torch emits, so every directory provisioned today gets the 378 MB fp32 classifier —
+    /// ~500 MiB more VRAM than the fp16 one (RESULTS §7.18: 5396 -> 4890 MiB). On a 6 GB
+    /// card that is the difference between working and OOM, and nothing recorded which one
+    /// you had.
+    #[serde(default)]
+    pub gender_precision: Option<String>,
 }
 
 #[derive(Debug)]
@@ -94,15 +109,94 @@ impl ExportError {
     }
 }
 
-/// Modules the export genuinely needs, with the reason each is required — so a missing one
-/// produces an install line rather than an ImportError.
-const REQUIRED_MODULES: &[(&str, &str)] = &[
-    ("torch", "runs the checkpoints and drives torch.onnx.export"),
-    ("pyannote.audio", "loads the community-1 pipeline"),
-    ("numpy", "writes the PLDA .npy parameter files"),
-    ("onnx", "reads back and rewrites the exported graphs"),
-    ("onnxscript", "required by torch.onnx.export(dynamo=True)"),
-    ("transformers", "loads the gender classifier checkpoint"),
+/// One import requirement: any ONE of `alternatives` satisfies it.
+pub struct ModuleReq {
+    /// Interchangeable modules. Satisfied if at least one imports.
+    pub alternatives: &'static [&'static str],
+    /// Why the export needs it — printed so a missing one produces a reason, not an
+    /// ImportError three minutes into a download.
+    pub why: &'static str,
+    /// Only needed when the gender classifier is being exported.
+    pub gender_only: bool,
+}
+
+/// Modules the export genuinely needs.
+///
+/// The point of this list is that `check_python_env` runs BEFORE anything downloads. Three
+/// modules the scripts actually import were missing from it, and each failed in its own bad
+/// way:
+///
+/// * `onnxconverter_common` — absence raises NOTHING. `export_gender.py` catches it and
+///   silently produces the fp32 classifier, ~500 MiB more VRAM (RESULTS §7.18) with no
+///   diagnostic anywhere.
+/// * `onnxsim`/`onnxslim` — absence raises a good error, but only from step 2b, i.e. after
+///   the full ~470 MB download and the entire base export have already run.
+/// * `onnxruntime` — lazily imported by the fold parity check; same wasted work.
+///
+/// `torchaudio` and `huggingface_hub` are also imported (`export_models.py` uses
+/// `torchaudio.compliance.kaldi.get_mel_banks` and `hf_hub_download`) and are separate
+/// distributions from torch and pyannote.audio, so they are probed rather than assumed.
+pub const REQUIRED_MODULES: &[ModuleReq] = &[
+    ModuleReq {
+        alternatives: &["torch"],
+        why: "runs the checkpoints and drives torch.onnx.export",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["torchaudio"],
+        why: "supplies get_mel_banks for the fbank graph (a separate wheel from torch)",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["pyannote.audio"],
+        why: "loads the community-1 pipeline",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["huggingface_hub"],
+        why: "resolves the gated PLDA npz files and the pipeline revision",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["numpy"],
+        why: "writes the PLDA .npy parameter files",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["onnx"],
+        why: "reads back and rewrites the exported graphs",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["onnxscript"],
+        why: "required by torch.onnx.export(dynamo=True)",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["onnxruntime"],
+        why: "runs the fold parity check that proves constant-folding was bit-exact",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["onnxsim", "onnxslim"],
+        why: "the constant folder (step 2b). onnxsim is preferred and reproduces the shipped \
+              bytes exactly; onnxslim is the pure-python fallback for CPython 3.13. EITHER \
+              satisfies this — folding itself is NOT optional (an unfolded segmentation graph \
+              is ~2x slower on CUDA and silently falls back to CPU for Sin/Cos)",
+        gender_only: false,
+    },
+    ModuleReq {
+        alternatives: &["transformers"],
+        why: "loads the gender classifier checkpoint",
+        gender_only: true,
+    },
+    ModuleReq {
+        alternatives: &["onnxconverter_common"],
+        why: "fp16-quantizes the gender classifier. WITHOUT IT THERE IS NO ERROR — the export \
+              silently falls back to the 378 MB fp32 model, ~500 MiB more VRAM (RESULTS \
+              §7.18). Pass --skip-gender if you do not want the classifier at all",
+        gender_only: true,
+    },
 ];
 
 pub fn resolve_python(explicit: Option<&str>) -> String {
@@ -142,29 +236,29 @@ pub fn check_python_env(python: &str, need_gender: bool) -> Result<String, Expor
         }
     };
 
-    let mut missing: Vec<&str> = Vec::new();
-    for (module, _why) in REQUIRED_MODULES {
-        if !need_gender && *module == "transformers" {
+    let mut missing: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+    for req in REQUIRED_MODULES {
+        if req.gender_only && !need_gender {
             continue;
         }
-        let ok = Command::new(python)
-            .arg("-c")
-            .arg(format!("import {module}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            missing.push(module);
+        let satisfied = req.alternatives.iter().any(|module| {
+            Command::new(python)
+                .arg("-c")
+                .arg(format!("import {module}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        });
+        if !satisfied {
+            let label = req.alternatives.join(" or ");
+            reasons.push(format!("  {label} — {}", req.why));
+            missing.push(label);
         }
     }
     if !missing.is_empty() {
-        let reasons: Vec<String> = REQUIRED_MODULES
-            .iter()
-            .filter(|(m, _)| missing.contains(m))
-            .map(|(m, why)| format!("  {m} — {why}"))
-            .collect();
         return Err(ExportError::NoExporterEnv(format!(
             "`{python}` ({version}) cannot import: {}\n{}\n\nInstall them into that \
              interpreter (see scripts/provision/requirements.txt), or run the provisioning \
@@ -266,7 +360,14 @@ pub fn run_export(req: &ExportRequest<'_>) -> Result<ExportReport, ExportError> 
         .stderr(Stdio::piped())
         // Unbuffered, or progress arrives in one lump at the end.
         .env("PYTHONUNBUFFERED", "1")
-        .env("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1");
+        .env("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+        // The export scripts gate real invariants on `assert` (the multi-mask parity check in
+        // export_models.py among them). `PYTHONOPTIMIZE` compiles every assert out, so a
+        // value inherited from the environment or baked into a base image would delete those
+        // gates silently — the checks would not fail, they would not exist. The asserts that
+        // matter have been converted to explicit `raise`, and this makes the inherited-flag
+        // hazard impossible for any that are added back.
+        .env_remove("PYTHONOPTIMIZE");
     if !req.with_gender {
         cmd.arg("--skip-gender");
     }
@@ -311,9 +412,7 @@ pub fn run_export(req: &ExportRequest<'_>) -> Result<ExportReport, ExportError> 
         .wait()
         .map_err(|e| ExportError::Failed(format!("waiting for the exporter: {e}")))?;
 
-    let report = std::fs::read(&report_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<ExportReport>(&b).ok());
+    let report = read_report(&report_path);
     let _ = std::fs::remove_dir_all(&work);
 
     if !status.success() {
@@ -322,7 +421,49 @@ pub fn run_export(req: &ExportRequest<'_>) -> Result<ExportReport, ExportError> 
             tail.join("\n")
         )));
     }
-    Ok(report.unwrap_or_default())
+
+    // A successful export that produced no readable report is a FAILED export, not a
+    // successful one with blank provenance.
+    //
+    // The previous code was `read(..).ok().and_then(|b| from_slice(..).ok())` followed by
+    // `unwrap_or_default()`: two swallowed errors and an all-`None` report. Provisioning then
+    // printed "Provisioned … Smoke test passed.", exited 0, and wrote a marker claiming
+    // `verified` whose `toolchain.folder` was `null` — the single field
+    // `fold_segmentation.py` records "because an unexplained byte difference months later is
+    // exactly the kind of thing that costs a day". The one artifact whose entire job is
+    // saying where the bytes came from would have said nothing, and said it confidently.
+    report.map_err(ExportError::Failed)
+}
+
+/// Read the exporter's provenance report, distinguishing "no file" from "bad file".
+///
+/// They have different causes (the write never happened vs. the write was truncated or the
+/// schema drifted) and different fixes, and a message that conflated them would send the
+/// operator looking in the wrong place.
+fn read_report(path: &Path) -> Result<ExportReport, String> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        format!(
+            "the export reported success but wrote no readable provenance report at {} \
+             ({e}). Its own record of which torch, which onnx and which constant folder \
+             produced these bytes is therefore missing, so the models cannot be vouched for. \
+             This usually means the temp filesystem filled up or the process was interrupted \
+             between the last export step and the report write. Re-run \
+             `provision-models --force`.",
+            path.display()
+        )
+    })?;
+    serde_json::from_slice::<ExportReport>(&bytes).map_err(|e| {
+        format!(
+            "the export wrote a provenance report at {} that could not be parsed ({e}). The \
+             file exists but is truncated or is not the JSON this build expects — an \
+             exporter/binary version mismatch would look exactly like this. Refusing to write \
+             a marker with empty provenance. Re-run `provision-models --force`; if it \
+             persists, the embedded scripts and this binary have diverged, which should be \
+             impossible (they are the same bytes) unless --dump-scripts output is being run \
+             by hand.",
+            path.display()
+        )
+    })
 }
 
 /// Is `dir` writable? Checked UP FRONT, because live compose mounts `/models` read-only and
@@ -441,6 +582,178 @@ mod tests {
             assert!(p.exists(), "{} missing", p.display());
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Top-level packages the embedded scripts import at run time, extracted from their
+    /// source. Nested (function-local) imports count — `onnxruntime` and `onnxconverter_common`
+    /// are both function-local, and being function-local is precisely why their absence
+    /// surfaced late (or, for `onnxconverter_common`, not at all).
+    fn imported_top_level_packages() -> std::collections::BTreeSet<String> {
+        const STDLIB: &[&str] = &[
+            "__future__",
+            "argparse",
+            "collections",
+            "importlib",
+            "json",
+            "os",
+            "shutil",
+            "sys",
+            "typing",
+        ];
+        // The scripts import each other; those are files we materialize, not dependencies.
+        let local: Vec<&str> = SCRIPTS
+            .iter()
+            .map(|(n, _)| n.trim_end_matches(".py"))
+            .collect();
+
+        let mut found = std::collections::BTreeSet::new();
+        for (_, body) in SCRIPTS {
+            for line in body.lines() {
+                let t = line.trim();
+                let spec = if let Some(rest) = t.strip_prefix("from ") {
+                    rest.split(" import ").next().unwrap_or("")
+                } else if let Some(rest) = t.strip_prefix("import ") {
+                    rest.split(" as ").next().unwrap_or("")
+                } else {
+                    continue;
+                };
+                for part in spec.split(',') {
+                    let root = part.trim().split('.').next().unwrap_or("").trim();
+                    if root.is_empty()
+                        || STDLIB.contains(&root)
+                        || local.contains(&root)
+                        || !root.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        continue;
+                    }
+                    found.insert(root.to_string());
+                }
+            }
+        }
+        found
+    }
+
+    /// F4: the preflight probe exists so a missing dependency produces a pip line BEFORE a
+    /// ~470 MB download. Three modules the scripts import were absent from it — most damaging
+    /// `onnxconverter_common`, whose absence raises nothing at all and silently downgrades the
+    /// gender classifier to fp32. This pins the list against the scripts themselves, so adding
+    /// an import without adding a probe fails here rather than in the field.
+    #[test]
+    fn the_probe_covers_every_module_the_scripts_import() {
+        let probed: std::collections::BTreeSet<String> = REQUIRED_MODULES
+            .iter()
+            .flat_map(|r| r.alternatives)
+            .map(|m| m.split('.').next().unwrap_or(m).to_string())
+            .collect();
+        let imported = imported_top_level_packages();
+        assert!(
+            !imported.is_empty(),
+            "the import scanner found nothing — it has stopped working"
+        );
+        let unprobed: Vec<&String> = imported.difference(&probed).collect();
+        assert!(
+            unprobed.is_empty(),
+            "the export scripts import {unprobed:?}, which check_python_env never probes for. \
+             A missing one is discovered mid-export (or, for onnxconverter_common, never). \
+             Add it to REQUIRED_MODULES. Probed: {probed:?}"
+        );
+    }
+
+    #[test]
+    fn the_constant_folder_requirement_is_satisfied_by_either_wheel() {
+        let folder = REQUIRED_MODULES
+            .iter()
+            .find(|r| r.alternatives.contains(&"onnxsim"))
+            .expect("the constant folder must be probed for");
+        assert!(
+            folder.alternatives.contains(&"onnxslim"),
+            "onnxsim has no CPython 3.13 wheel; onnxslim must satisfy the same requirement"
+        );
+        // And the gender-only modules must not be demanded when gender is skipped.
+        let gender_only: Vec<&str> = REQUIRED_MODULES
+            .iter()
+            .filter(|r| r.gender_only)
+            .flat_map(|r| r.alternatives)
+            .copied()
+            .collect();
+        assert!(gender_only.contains(&"transformers"), "{gender_only:?}");
+        assert!(gender_only.contains(&"onnxconverter_common"), "{gender_only:?}");
+    }
+
+    /// F11: `assert` is not a gate. `PYTHONOPTIMIZE=1` in the environment or a base image
+    /// compiles every one of them out, and `run_export` inherits the environment — so a
+    /// parity check written as an assert would not fail, it would cease to exist.
+    #[test]
+    fn no_embedded_script_gates_an_invariant_on_a_bare_assert() {
+        for (name, body) in SCRIPTS {
+            for (i, line) in body.lines().enumerate() {
+                assert!(
+                    !line.trim_start().starts_with("assert "),
+                    "{name}:{} uses `assert` as a gate: {}. Use an explicit `raise` — under \
+                     PYTHONOPTIMIZE this check silently disappears.",
+                    i + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    /// F6: two swallowed errors used to turn "the report is unreadable" into an all-`None`
+    /// report and a `verified` marker with blank provenance.
+    #[test]
+    fn an_unreadable_export_report_is_a_hard_error_that_names_the_cause() {
+        let missing = std::env::temp_dir().join("diar-report-that-does-not-exist.json");
+        let _ = std::fs::remove_file(&missing);
+        let err = read_report(&missing).unwrap_err();
+        assert!(err.contains("wrote no readable provenance report"), "{err}");
+        assert!(err.contains("--force"), "must name the remedy: {err}");
+
+        let bad = std::env::temp_dir().join(format!("diar-report-bad-{}.json", std::process::id()));
+        std::fs::write(&bad, b"{ this is not json").unwrap();
+        let err2 = read_report(&bad).unwrap_err();
+        assert!(err2.contains("could not be parsed"), "{err2}");
+        assert_ne!(
+            err.contains("could not be parsed"),
+            err2.contains("could not be parsed"),
+            "an IO error and a parse error must not read the same — they have different fixes"
+        );
+        let _ = std::fs::remove_file(&bad);
+    }
+
+    /// F3: every key the python driver writes must land in a field. serde drops unknown keys
+    /// silently, which is how a measured `gender_precision` reached nothing at all.
+    #[test]
+    fn every_key_the_exporter_writes_is_consumed() {
+        // The full key set written by provision.py's `report` dict plus the dict
+        // export_gender.export() returns into it.
+        let full = serde_json::json!({
+            "python": "3.12.3",
+            "torch": "2.13.0",
+            "torchaudio": "2.11.0",
+            "onnx": "1.22.0",
+            "onnxscript": "0.7.1",
+            "onnxsim": "0.7.3",
+            "pyannote_audio": "4.0.7",
+            "transformers": "4.57.0",
+            "folder": "onnxsim",
+            "pipeline_revision": "abc123",
+            "gender_repo": "some/repo",
+            "gender_revision": "def456",
+            "gender_precision": "fp32",
+        });
+        let obj = full.as_object().unwrap().clone();
+        let report: ExportReport = serde_json::from_value(full.clone()).unwrap();
+        // Round-trip each key through the struct: anything serde dropped comes back as None.
+        let back = serde_json::to_value(&report).unwrap();
+        let back = back.as_object().unwrap();
+        for (key, value) in &obj {
+            assert_eq!(
+                back.get(key),
+                Some(value),
+                "provision.py writes `{key}`, but ExportReport does not carry it — serde \
+                 dropped it silently, exactly as it dropped gender_precision"
+            );
+        }
     }
 
     #[test]

@@ -44,6 +44,52 @@ const FBANK_FRAMES: usize = 998;
 const FBANK_FEATURES: usize = 80;
 const MASK_FRAMES: usize = 589;
 const EMBED_DIM: usize = 256;
+/// Segmentation output is `[batch, 589, 7]` for a 10 s chunk.
+const SEG_CLASSES: usize = 7;
+
+/// The row compared in every fixed-batch check. Deliberately NOT 0: a graph exported with a
+/// batch-coupling bug (or one that only wires row 0 to the real compute) would pass a row-0
+/// comparison and fail on every other row, which is the shape of the bug these checks exist
+/// to find.
+const PROBE_ROW: usize = 5;
+
+/// The device asked for is not usable on this machine — as distinct from the models being
+/// wrong.
+///
+/// This distinction is load-bearing, not cosmetic. `provision-models` writes a `fail` marker
+/// when the smoke test rejects a directory, and a `fail` marker makes every later
+/// `diar-server` start exit non-zero. Conflating "this box has no GPU" with "these 470 MB of
+/// models are bad" therefore takes a perfectly good models directory permanently out of
+/// service (and, on the CPU-only image, would do so on EVERY provisioning run). Whenever this
+/// error is raised, the same directory has just been proven to load on the CPU EP.
+#[derive(Debug)]
+pub struct DeviceUnavailable {
+    pub mode: String,
+    pub detail: String,
+}
+
+impl std::fmt::Display for DeviceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the `{}` execution device is not usable on this machine, so the end-to-end \
+             stage could not run here. The models themselves are NOT implicated — the same \
+             directory loaded successfully on the CPU execution provider moments ago. \
+             Re-run with `--mode cpu` (the default for provisioning), or give the container \
+             a device (`docker run --gpus all …`).\n\nUnderlying error: {}",
+            self.mode, self.detail
+        )
+    }
+}
+
+impl std::error::Error for DeviceUnavailable {}
+
+/// Was this failure caused by a missing/unusable device rather than by the models?
+///
+/// Walks the whole `anyhow` chain, so it keeps working when callers add context.
+pub fn is_device_unavailable(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| e.is::<DeviceUnavailable>())
+}
 
 #[derive(Debug, Clone)]
 pub struct SmokeOptions {
@@ -408,10 +454,184 @@ fn stage3_numeric(opts: &SmokeOptions, audio: &[f32]) -> Result<StageResult> {
             );
         }
         details.push("3d multimask-b64 is a byte copy of b32".to_string());
+    }
 
-        // --- 3e: genuine b64 tail is batch-invariant against the b1 tail ---
-        // This one IS a real export (RESULTS §7.33 measured 7.8e-08), so it is checked
-        // numerically rather than by hash — the opposite treatment to 3d, on purpose.
+    // --- 3e: the batch-32 MULTIMASK tail, against the batch-1 multimask ---
+    //
+    // THE PRODUCTION HOT PATH, and until now verified by nothing but its I/O shape. Live
+    // compose sets `SPEAKRS_LAZY_SESSIONS=1`; the multimask sessions are the ones speakrs
+    // loads REGARDLESS of that flag (`inference/embedding/load/sessions.rs`, which gates the
+    // primary/split-tail batched sessions on `!lazy_sessions` but not this one). So this
+    // graph runs on every batched job in production, while stage 3d only proved the b64 file
+    // is a copy of it and stage 3c only checked the *batch-1* multimask.
+    //
+    // Feeding 32 DISTINCT masks (rather than 32 copies of one) is what makes this a real
+    // probe: it is comparing row PROBE_ROW of a genuinely heterogeneous batch.
+    let mut mm32 = cpu_session(&dir.join("wespeaker-multimask-tail-b32.onnx"))?;
+    let mut fb32_in = Vec::with_capacity(32 * row);
+    let mut mm_masks = Vec::with_capacity(96 * MASK_FRAMES);
+    for i in 0..32 {
+        fb32_in.extend_from_slice(&fb1[..row]);
+        for s in 0..3 {
+            // Row PROBE_ROW, speaker 0 gets the same mask stage 3c used, so the two graphs
+            // are being asked the identical question.
+            if i == PROBE_ROW && s == 0 {
+                mm_masks.extend_from_slice(&mask);
+            } else {
+                mm_masks.extend(seeded_mask(MASK_FRAMES, 0xB100 + (i * 3 + s) as u64));
+            }
+        }
+    }
+    let (_, mm32_out) = run_f32(
+        &mut mm32,
+        ort::inputs![
+            "fbank" => Tensor::from_array(Array3::from_shape_vec((32, FBANK_FRAMES, FBANK_FEATURES), fb32_in)?)?,
+            "masks" => Tensor::from_array(Array2::from_shape_vec((96, MASK_FRAMES), mm_masks)?)?
+        ],
+        "output",
+    )?;
+    let probe = PROBE_ROW * 3 * EMBED_DIM;
+    let d3e = max_abs_diff(&mm32_out[probe..probe + EMBED_DIM], &mm_out[..EMBED_DIM]);
+    if d3e > TOL {
+        bail!(
+            "STAGE 3e FAILED: wespeaker-multimask-tail-b32.onnx row {PROBE_ROW} disagrees \
+             with wespeaker-multimask-tail.onnx by {d3e:.3e} (bar {TOL:.0e}) under an \
+             identical mask. This is the graph production actually executes on every \
+             batched job — a wrong one degrades DER on every file longer than one window, \
+             silently."
+        );
+    }
+    details.push(format!("3e multimask-b32-vs-b1 {d3e:.2e}"));
+
+    // --- 3f: the fixed-batch SEGMENTATION graph, against the batch-1 graph ---
+    //
+    // Folding is applied to all three segmentation graphs by `fold_segmentation.py`, and the
+    // b32/b64 graphs have STATIC shapes where the b1 graph is dynamic — so they are not the
+    // same protobuf and a folder bug can hit one and not the other. On CPython 3.13 the
+    // folder is `onnxslim`, which rewrites `Gemm` into `MatMul`+`Add`; that rewrite landing
+    // wrong on only the static-shaped graphs would leave every multi-window file segmented
+    // by a broken graph with every other check still green.
+    let mut seg1 = cpu_session(&dir.join("segmentation-3.0.onnx"))?;
+    let (_, seg1_out) = run_f32(
+        &mut seg1,
+        ort::inputs!["input" => Tensor::from_array(Array3::from_shape_vec((1, 1, SAMPLES_10S), clip.clone())?)?],
+        "output",
+    )?;
+    let mut seg32 = cpu_session(&dir.join("segmentation-3.0-b32.onnx"))?;
+    let mut seg_wide = Vec::with_capacity(32 * SAMPLES_10S);
+    for _ in 0..32 {
+        seg_wide.extend_from_slice(&clip);
+    }
+    let (_, seg32_out) = run_f32(
+        &mut seg32,
+        ort::inputs!["input" => Tensor::from_array(Array3::from_shape_vec((32, 1, SAMPLES_10S), seg_wide)?)?],
+        "output",
+    )?;
+    let seg_row = MASK_FRAMES * SEG_CLASSES;
+    if seg1_out.len() < seg_row || seg32_out.len() < seg_row {
+        bail!(
+            "STAGE 3f FAILED: segmentation output is {} / {} values, expected at least \
+             {seg_row} ({MASK_FRAMES}x{SEG_CLASSES})",
+            seg1_out.len(),
+            seg32_out.len()
+        );
+    }
+    let d3f = max_abs_diff(&seg1_out[..seg_row], &seg32_out[..seg_row]);
+    if d3f > TOL {
+        bail!(
+            "STAGE 3f FAILED: segmentation-3.0.onnx and segmentation-3.0-b32.onnx disagree \
+             on identical audio by {d3f:.3e} (bar {TOL:.0e}). One of the two segmentation \
+             graphs was folded or exported wrongly; every file longer than a single window \
+             is segmented by the b32 graph."
+        );
+    }
+    details.push(format!("3f segmentation b1-vs-b32 {d3f:.2e}"));
+
+    // --- 3g: the fixed-batch tails (b3, b32) against the batch-1 tail ---
+    // b3 is what the 3-speaker boundary path uses and b32 is the batched embedding tail.
+    // Cheap to fold in here: the b1 reference (`split_out` above) is already computed, so
+    // each costs exactly one forward pass.
+    for (file, batch) in [
+        ("wespeaker-voxceleb-resnet34-tail-b3.onnx", 3usize),
+        ("wespeaker-voxceleb-resnet34-tail-b32.onnx", 32usize),
+    ] {
+        let probe_row = PROBE_ROW.min(batch - 1);
+        let mut sess = cpu_session(&dir.join(file))?;
+        let mut fb = Vec::with_capacity(batch * row);
+        let mut wts = Vec::with_capacity(batch * MASK_FRAMES);
+        for i in 0..batch {
+            fb.extend_from_slice(&fb1[..row]);
+            if i == probe_row {
+                wts.extend_from_slice(&mask);
+            } else {
+                wts.extend(seeded_mask(MASK_FRAMES, 0xC200 + i as u64));
+            }
+        }
+        let (_, out) = run_f32(
+            &mut sess,
+            ort::inputs![
+                "fbank" => Tensor::from_array(Array3::from_shape_vec((batch, FBANK_FRAMES, FBANK_FEATURES), fb)?)?,
+                "weights" => Tensor::from_array(Array2::from_shape_vec((batch, MASK_FRAMES), wts)?)?
+            ],
+            "output",
+        )?;
+        let at = probe_row * EMBED_DIM;
+        let d = max_abs_diff(&out[at..at + EMBED_DIM], &split_out);
+        if d > TOL {
+            bail!(
+                "STAGE 3g FAILED: {file} row {probe_row} disagrees with \
+                 wespeaker-voxceleb-resnet34-tail.onnx by {d:.3e} (bar {TOL:.0e}) on \
+                 identical input. That graph was exported from a different checkpoint, is \
+                 batch-coupled, or was corrupted."
+            );
+        }
+        details.push(format!("3g {} b{batch}-vs-b1 {d:.2e}", short(file)));
+    }
+
+    // --- 3h: the fused batch-32 embedding graph against the fused batch-1 graph ---
+    // `wespeaker-voxceleb-resnet34-b32.onnx` is its own export (fbank ∘ tail baked into one
+    // graph), not a composition of graphs checked elsewhere, so nothing else covers it.
+    let mut fused32 = cpu_session(&dir.join("wespeaker-voxceleb-resnet34-b32.onnx"))?;
+    let mut wave_wide = Vec::with_capacity(32 * SAMPLES_10S);
+    let mut fused_w = Vec::with_capacity(32 * MASK_FRAMES);
+    for i in 0..32 {
+        wave_wide.extend_from_slice(&clip);
+        if i == PROBE_ROW {
+            fused_w.extend_from_slice(&mask);
+        } else {
+            fused_w.extend(seeded_mask(MASK_FRAMES, 0xD300 + i as u64));
+        }
+    }
+    let (_, fused32_out) = run_f32(
+        &mut fused32,
+        ort::inputs![
+            "waveform" => Tensor::from_array(Array3::from_shape_vec((32, 1, SAMPLES_10S), wave_wide)?)?,
+            "weights" => Tensor::from_array(Array2::from_shape_vec((32, MASK_FRAMES), fused_w)?)?
+        ],
+        "output",
+    )?;
+    let at = PROBE_ROW * EMBED_DIM;
+    let d3h = max_abs_diff(&fused32_out[at..at + EMBED_DIM], &fused_out);
+    if d3h > TOL {
+        bail!(
+            "STAGE 3h FAILED: wespeaker-voxceleb-resnet34-b32.onnx row {PROBE_ROW} \
+             disagrees with wespeaker-voxceleb-resnet34.onnx by {d3h:.3e} (bar {TOL:.0e}) \
+             on identical input."
+        );
+    }
+    details.push(format!("3h fused b32-vs-b1 {d3h:.2e}"));
+
+    // --- 3i: the batch-64 family, LAST and deliberately minimal ---
+    //
+    // Cost rebalance, on purpose. This is the most expensive check in the whole smoke test
+    // (a 64x998x80 CPU forward pass) and it covers a graph that live compose does NOT load:
+    // `SPEAKRS_LAZY_SESSIONS=1` gates `split_primary_tail_batched_session` on
+    // `!lazy_sessions`. It still has to be CORRECT — someone turning lazy sessions off must
+    // not get silently wrong embeddings — so it keeps a real numeric check (RESULTS §7.33
+    // measured 7.8e-08). But it runs after every graph production actually executes has
+    // already been checked, so a failure in the hot path is reported first and the operator
+    // does not wait through this to hear about it.
+    if opts.set == ModelSet::Fast {
         let mut tail64 = cpu_session(&dir.join("wespeaker-voxceleb-resnet34-tail-b64.onnx"))?;
         let mut fb64 = Vec::with_capacity(64 * row);
         let mut mk64 = Vec::with_capacity(64 * MASK_FRAMES);
@@ -436,22 +656,28 @@ fn stage3_numeric(opts: &SmokeOptions, audio: &[f32]) -> Result<StageResult> {
             ],
             "output",
         )?;
-        let d3e = max_abs_diff(&out64[7 * EMBED_DIM..8 * EMBED_DIM], &out1);
-        if d3e > TOL {
+        let d3i = max_abs_diff(&out64[7 * EMBED_DIM..8 * EMBED_DIM], &out1);
+        if d3i > TOL {
             bail!(
-                "STAGE 3e FAILED: wespeaker-voxceleb-resnet34-tail-b64.onnx row 7 disagrees \
-                 with the batch-1 tail on the same row by {d3e:.3e} (bar {TOL:.0e}). The \
+                "STAGE 3i FAILED: wespeaker-voxceleb-resnet34-tail-b64.onnx row 7 disagrees \
+                 with the batch-1 tail on the same row by {d3i:.3e} (bar {TOL:.0e}). The \
                  b64 graph is batch-coupled, which would make split-primary batching \
                  numerically wrong rather than merely absent."
             );
         }
-        details.push(format!("3e tail-b64 batch-invariance {d3e:.2e}"));
+        details.push(format!("3i tail-b64 batch-invariance {d3i:.2e}"));
     }
 
     Ok(StageResult {
         stage: "3-numeric".into(),
         detail: details.join("; "),
     })
+}
+
+/// Trim the shared `wespeaker-` prefix and the `.onnx` suffix for compact stage detail lines.
+fn short(file: &str) -> &str {
+    file.trim_start_matches("wespeaker-")
+        .trim_end_matches(".onnx")
 }
 
 /// STAGE 5 — PLDA parameter files.
@@ -565,8 +791,31 @@ fn extract_between<'a>(hay: &'a str, after: &str, until: &str) -> Option<&'a str
 /// STAGE 4 — the real thing: load the engine and diarize the clip.
 fn stage4_end_to_end(opts: &SmokeOptions, audio: &[f32]) -> Result<(StageResult, usize, usize)> {
     let gender_present = opts.models_dir.join(GENDER_MODEL).exists();
-    let mut engine = DiarEngine::load(&EngineConfig::new(&opts.models_dir, opts.mode))
-        .context("STAGE 4 FAILED: the engine could not load these models")?;
+    let mut engine = match DiarEngine::load(&EngineConfig::new(&opts.models_dir, opts.mode)) {
+        Ok(e) => e,
+        Err(e) if opts.mode != Mode::Cpu => {
+            // Discriminate DEVICE from MODELS by experiment rather than by string-matching an
+            // ORT error. The CPU execution provider is statically linked into every build, so
+            // if the SAME directory loads on CPU, the files are fine and the accelerator is
+            // not. Only the second case may be recorded as a smoke failure — see
+            // `DeviceUnavailable` for why conflating them takes good models out of service.
+            match DiarEngine::load(&EngineConfig::new(&opts.models_dir, Mode::Cpu)) {
+                Ok(_) => {
+                    return Err(anyhow::Error::new(DeviceUnavailable {
+                        mode: mode_name(opts.mode).to_string(),
+                        detail: format!("{e:#}"),
+                    }))
+                }
+                Err(_) => {
+                    return Err(e)
+                        .context("STAGE 4 FAILED: the engine could not load these models")
+                }
+            }
+        }
+        Err(e) => {
+            return Err(e).context("STAGE 4 FAILED: the engine could not load these models")
+        }
+    };
     let out = engine
         .diarize_with(audio, "smoke", gender_present)
         .context("STAGE 4 FAILED: diarization errored on the smoke clip")?;
@@ -735,13 +984,48 @@ pub fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+/// What a deep verification found.
+///
+/// `hashed` is reported separately from `drift` because "zero files differ" and "zero files
+/// were compared" are the same value of `drift.len()` and radically different facts.
+#[derive(Debug, Clone)]
+pub struct DeepReport {
+    pub smoke: SmokeReport,
+    /// Files whose sha256 no longer matches the marker.
+    pub drift: Vec<String>,
+    /// How many files were actually compared against a recorded hash. `0` with no marker.
+    pub hashed: usize,
+    /// Was there a marker to compare against at all?
+    pub marker_present: bool,
+    /// Marker recorded a FAILED smoke test before this run.
+    pub marker_recorded_failure: bool,
+}
+
+impl DeepReport {
+    /// Did every tier pass — including the tier that needs a marker to exist?
+    pub fn fully_verified(&self) -> bool {
+        self.marker_present && self.drift.is_empty()
+    }
+}
+
 /// Deep verification: everything the smoke test does, plus full sha256 of every file
 /// against the marker. This is the tier that actually detects a silent rewrite.
-pub fn verify_deep(opts: &SmokeOptions) -> Result<(SmokeReport, Vec<String>)> {
+///
+/// A MISSING MARKER IS NOT SUCCESS. `Marker::read` returns `Ok(None)` for an absent file, and
+/// the obvious `if let Some(marker)` here used to skip the entire drift loop, leaving `drift`
+/// empty — which the CLI printed as "OK: … verified." after comparing exactly zero bytes
+/// against exactly zero recorded hashes. An operator who copied a `/models` directory from an
+/// unknown source got a clean bill of health from the one command whose stated job is
+/// detecting a silent rewrite. The marker's presence is now part of the result.
+pub fn verify_deep(opts: &SmokeOptions) -> Result<DeepReport> {
     let mut drift = Vec::new();
-    if let Some(marker) = super::marker::Marker::read(&opts.models_dir).map_err(|e| anyhow!("{e}"))? {
+    let mut hashed = 0usize;
+    let marker = super::marker::Marker::read(&opts.models_dir).map_err(|e| anyhow!("{e}"))?;
+    let marker_recorded_failure = marker.as_ref().is_some_and(|m| !m.smoke.passed());
+    if let Some(marker) = &marker {
         for rec in &marker.files {
             let p = opts.models_dir.join(&rec.name);
+            hashed += 1;
             match super::sha256_file(&p) {
                 Ok(h) if h == rec.sha256 => {}
                 Ok(h) => drift.push(format!(
@@ -753,9 +1037,25 @@ pub fn verify_deep(opts: &SmokeOptions) -> Result<(SmokeReport, Vec<String>)> {
                 Err(e) => drift.push(format!("{}: {e}", rec.name)),
             }
         }
+        // A marker that vouches for nothing is the same hole wearing a hat.
+        if marker.files.is_empty() {
+            drift.push(format!(
+                "{}: the marker records NO file hashes, so nothing could be compared. It \
+                 was written by a run that failed before hashing. Re-run \
+                 `diar-server provision-models --models-dir {} --force`.",
+                super::MARKER_FILE,
+                opts.models_dir.display()
+            ));
+        }
     }
-    let report = run(opts)?;
-    Ok((report, drift))
+    let smoke = run(opts)?;
+    Ok(DeepReport {
+        smoke,
+        drift,
+        hashed,
+        marker_present: marker.is_some(),
+        marker_recorded_failure,
+    })
 }
 
 /// The files a caller should hash when writing a marker.

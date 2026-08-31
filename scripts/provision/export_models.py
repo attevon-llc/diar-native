@@ -63,7 +63,17 @@ def main(models_dir: str | None = None) -> Any:
                 pipeline = from_pretrained("pyannote/speaker-diarization-community-1")
     else:
         pipeline = from_pretrained("pyannote/speaker-diarization-community-1")
-    assert pipeline is not None
+    # `raise`, not `assert`: `python -O` / PYTHONOPTIMIZE=1 compiles asserts out entirely, so
+    # every gate written as one silently ceases to exist. The exporter runs as a subprocess of
+    # diar-server, which inherits the environment; a PYTHONOPTIMIZE baked into a base image
+    # would have deleted the parity check below without a word. (diar-server now also clears
+    # the variable — belt and braces, because this file is runnable by hand too.)
+    if pipeline is None:
+        raise RuntimeError(
+            "Pipeline.from_pretrained returned None for "
+            "pyannote/speaker-diarization-community-1. This normally means the token was "
+            "accepted but the repo gate has not been, or the cached config is corrupt."
+        )
     pipeline.to(torch.device("cpu"))
 
     export_segmentation(pipeline, models_dir)
@@ -262,13 +272,26 @@ def export_embedding(pipeline: Any, models_dir: str) -> None:
     dummy_weights = torch.ones(1, 589)
     dummy_fbank = fbank_wrapper(dummy_waveform)
 
-    # verify multi-mask parity with existing tail wrapper
+    # Verify multi-mask parity with the existing tail wrapper.
+    #
+    # An explicit `raise`, matching export_tail_b64.py, NOT an `assert`. Under
+    # PYTHONOPTIMIZE this whole gate would compile out and the multimask graphs — the ones
+    # production executes on every batched job — would be exported with nothing checking they
+    # agree with the single-mask tail they are supposed to reproduce.
+    MULTI_MASK_PARITY_TOL = 1e-6
     with torch.no_grad():
         tail_output = tail_wrapper(dummy_fbank, dummy_weights)
         multi_masks = dummy_weights.repeat(NUM_SPEAKERS, 1)
         multi_output = multi_mask_wrapper(dummy_fbank, multi_masks)
         max_diff = (tail_output - multi_output[0:1]).abs().max().item()
-        assert max_diff < 1e-6, f"multi-mask parity check failed: max diff = {max_diff}"
+        if not max_diff < MULTI_MASK_PARITY_TOL:
+            raise RuntimeError(
+                f"multi-mask parity check failed: max diff = {max_diff:.3e} "
+                f"(bar {MULTI_MASK_PARITY_TOL:.0e}). The multi-mask wrapper does not "
+                f"reproduce the single-mask tail, so every batched embedding would be "
+                f"computed by a graph that disagrees with the reference path. Refusing to "
+                f"export."
+            )
         print(f"  multi-mask parity check passed (max diff = {max_diff:.2e})")
 
     with torch.no_grad():
