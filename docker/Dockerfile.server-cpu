@@ -1,10 +1,17 @@
 # syntax=docker/dockerfile:1.7
 # diar-server CPU-only runtime image — multi-arch (linux/amd64, linux/arm64).
-# No CUDA anywhere in this file: Apple Silicon has no NVIDIA GPU, and this codebase has no
-# CoreML/Metal execution path wired in yet (README §6: "Apple Silicon is future work"), so
-# there is no GPU acceleration to target on arm64 regardless of base image choice. This image
-# validates cross-platform correctness (ORT CPU EP) — see README T1 tier: "CPU-only works,
-# ≈ eager-torch parity measured".
+# No CUDA anywhere in this file: Apple Silicon has no NVIDIA GPU, and CoreML/Metal is not
+# reachable through Docker at all (no Metal access on macOS regardless of image arch), so
+# there is no GPU acceleration to target on arm64 regardless of base image choice.
+#
+# This is NOT a correctness carve-out. On amd64 the CUDA image (docker/Dockerfile.server) is a
+# strict SUPERSET: the ORT CPU EP is statically linked into the binary in every build, so that
+# image serves `cuda` and `cpu` from one process, per request. This file exists for the two
+# things the CUDA image cannot do — build for arm64 (its base image and ORT tarball are x86-64
+# only), and be small (189 MB vs 3.46 GB, no NVIDIA runtime or driver needed). Prefer the CUDA
+# image on amd64 GPU hosts; use this one for arm64, and for amd64 hosts with no GPU where the
+# 3.3 GB is not worth paying. The Rust source is identical — only the ort-sys prebuilt
+# distribution and the runtime base differ.
 #   docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.server-cpu \
 #     -t <tag> --push .
 # Build context: repo root (diar-native/).

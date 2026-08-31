@@ -2,6 +2,20 @@
 # diar-server runtime image (T1 sidecar). Build context: repo root (diar-native/).
 #   docker build -f docker/Dockerfile.server -t diar-server:latest .
 # Requires the workspace binaries to have been built already OR builds them here.
+#
+# This image serves BOTH `cuda` and `cpu` — it is a superset of Dockerfile.server-cpu on
+# amd64, at zero extra bytes and with no extra libraries. The ORT CPU execution provider is
+# STATICALLY LINKED into the binary by ort-sys (the onnxruntime_mlas kernel library is part of
+# the core static objects), which is why `ldd diar-server` shows no ONNX Runtime NEEDED entry
+# at all; `--features cuda` only selects a different prebuilt ort-sys distribution and adds the
+# dlopen'd provider .so files below. Do NOT add the CPU ORT tarball to get a CPU path: it is
+# already there, and its libonnxruntime.so.1.24.2 would collide with the GPU tarball's.
+# Pick devices at runtime with DIAR_DEVICES (e.g. `cuda,cpu`; first entry is the default) or
+# per request with the `device` field; `/healthz` reports both loaded and supported devices.
+#
+# amd64 ONLY: the base image and the onnxruntime-linux-x64-gpu tarball below are both x86-64,
+# and there is no arm64 equivalent. docker/Dockerfile.server-cpu remains the deliberate
+# minimal/arm64 artifact (189 MB vs 3.46 GB, no NVIDIA runtime or driver required).
 
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive

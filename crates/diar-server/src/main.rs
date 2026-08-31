@@ -1,46 +1,72 @@
 //! diar-server — T1 sidecar (PLAN.md deployment tier 1).
 //!
 //! Stateless executor: Celery (or any client) POSTs a job; orchestration/queueing stays
-//! upstream (PLAN decision #3). One set of shared ORT sessions (weights + arenas load
-//! once — PLAN decision #4 / T9a); each request runs on its own cheap engine handle, so
+//! upstream (PLAN decision #3). One set of shared ORT sessions per device (weights + arenas
+//! load once — PLAN decision #4 / T9a); each request runs on its own cheap engine handle, so
 //! jobs execute concurrently up to the admission semaphore instead of serializing on an
 //! engine mutex. Compute runs on blocking threads.
 //! Audio arrives BY PATH on a shared volume (matches the compose topology).
+//!
+//! One process can serve several execution devices at once (see [`engines`]): the CUDA build
+//! is a superset of the CPU build, so `{"device": "cpu"}` on a GPU deployment runs the same
+//! code over the same weights the CPU-only image runs. `DIAR_DEVICES` picks which engines get
+//! loaded; with it unset the server loads exactly one engine from `DIAR_MODE`, which is what
+//! it has always done.
+
+mod engines;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use diar_core::{DiarEngine, DiarizeOutput, EngineConfig, Mode};
+use diar_core::{DiarEngine, DiarizeOutput};
+use engines::{Device, EngineRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+/// Response header naming the device a request actually ran on. A header, not a body field:
+/// `DiarizeOutput` is the consumer's parsed schema and adding to it is not free, whereas this
+/// costs nothing and is readable by anything that can see response headers.
+const DEVICE_HEADER: &str = "x-diar-device";
+
+/// `Ok` side carries the device header alongside the JSON body.
+type ApiResult<T> = Result<([(&'static str, &'static str); 1], Json<T>), (StatusCode, String)>;
+
 struct AppState {
-    /// Prototype holding the shared sessions. Never runs jobs itself — the mutex is held
-    /// only long enough to `clone_shared` a per-request handle (buffers, microseconds).
-    engine: Mutex<DiarEngine>,
+    /// Every loaded engine, keyed by device. Each prototype holds that device's shared
+    /// sessions and never runs jobs itself.
+    engines: EngineRegistry,
+    /// Global admission gate (`DIAR_MAX_INFLIGHT`). Unchanged semantics and default: it bounds
+    /// TOTAL inflight work across all devices, so enabling a second engine cannot silently
+    /// double concurrency and oversubscribe the box.
     gate: Semaphore,
+    /// Optional inner sub-gate for CPU work (`DIAR_MAX_INFLIGHT_CPU`). `None` — the default —
+    /// means no inner gate at all and therefore no behaviour change. When set, CPU requests
+    /// take the global permit FIRST and this one SECOND, always in that order, so there is no
+    /// lock-ordering hazard against requests that only take the global one.
+    cpu_gate: Option<Semaphore>,
 }
 
 impl AppState {
-    /// Run `f` against the engine. Off coreml, this clones a cheap per-request handle and
+    /// Run `f` against `device`'s engine. Off coreml, this clones a cheap per-request handle and
     /// releases the mutex immediately, so jobs run concurrently up to the admission
     /// semaphore (T9a). speakrs cfg's `clone_shared` out under `coreml` — CoreML models
     /// aren't wrapped in diar-native's `Arc<Mutex<Session>>` scheme, and speakrs' own
     /// `SegmentationModel`/`EmbeddingModel` document themselves as single-thread-at-a-time
     /// under coreml (`unsafe impl Send`, not `Sync`) — so this path holds the mutex for the
     /// whole request instead. Correct, but serializes all coreml jobs; DIAR_MAX_INFLIGHT has
-    /// no effect in this mode.
+    /// no effect in this mode. The mutex is per-engine, so the serialization is per-device.
     #[cfg(not(feature = "coreml"))]
-    fn with_engine<R>(
+    fn with_engine_on<R>(
         &self,
+        device: Device,
         f: impl FnOnce(&mut DiarEngine) -> anyhow::Result<R>,
     ) -> anyhow::Result<R> {
         let mut handle = self
-            .engine
+            .engine_for(device)?
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone_shared()?;
@@ -48,15 +74,24 @@ impl AppState {
     }
 
     #[cfg(feature = "coreml")]
-    fn with_engine<R>(
+    fn with_engine_on<R>(
         &self,
+        device: Device,
         f: impl FnOnce(&mut DiarEngine) -> anyhow::Result<R>,
     ) -> anyhow::Result<R> {
         let mut guard = self
-            .engine
+            .engine_for(device)?
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut guard)
+    }
+
+    /// Only reachable with a device that came from `EngineRegistry::resolve`, so a miss here is
+    /// an internal bug rather than a client error.
+    fn engine_for(&self, device: Device) -> anyhow::Result<&std::sync::Mutex<DiarEngine>> {
+        self.engines
+            .engine(device)
+            .ok_or_else(|| anyhow::anyhow!("no {device} engine loaded"))
     }
 }
 
@@ -73,6 +108,12 @@ struct DiarizeRequest {
     /// dropped — saves the caller a second fetch, decode and model host.
     #[serde(default)]
     gender: bool,
+    /// Execution device for this request ("cuda", "cpu", …). Omitted/null = the server's
+    /// default device. Deliberately `Option<String>` and not a derived enum: axum 0.7 turns a
+    /// serde variant mismatch into a bare 422 with no useful body, whereas parsing it
+    /// ourselves yields a 400 that names the devices this build actually serves.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +129,9 @@ struct EmbedRequest {
     start_s: Option<f64>,
     #[serde(default)]
     end_s: Option<f64>,
+    /// Execution device for this request; see `DiarizeRequest::device`.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 fn decode_samples_b64(b64: &str) -> anyhow::Result<Vec<f32>> {
@@ -158,15 +202,46 @@ fn load_wav(path: &PathBuf) -> anyhow::Result<Vec<f32>> {
     })
 }
 
-async fn diarize(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<DiarizeRequest>,
-) -> Result<Json<DiarizeOutput>, (StatusCode, String)> {
-    let _permit = state
+/// Acquire the admission permits for `device`: the global gate always, then the CPU sub-gate
+/// if one is configured and this is CPU work. Order is fixed (global → device) so a mixed
+/// deployment has no lock-ordering hazard.
+async fn admit<'a>(
+    state: &'a AppState,
+    device: Device,
+) -> Result<
+    (
+        tokio::sync::SemaphorePermit<'a>,
+        Option<tokio::sync::SemaphorePermit<'a>>,
+    ),
+    (StatusCode, String),
+> {
+    let global = state
         .gate
         .acquire()
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    let device_permit = match (device, &state.cpu_gate) {
+        (Device::Cpu, Some(cpu_gate)) => Some(
+            cpu_gate
+                .acquire()
+                .await
+                .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?,
+        ),
+        _ => None,
+    };
+    Ok((global, device_permit))
+}
+
+async fn diarize(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<DiarizeRequest>,
+) -> ApiResult<DiarizeOutput> {
+    // Resolve BEFORE admission: a bad device name must cost a 400, not an admission permit.
+    let device = state
+        .engines
+        .resolve(req.device.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _permits = admit(&state, device).await?;
     let state2 = Arc::clone(&state);
     let out = tokio::task::spawn_blocking(move || -> anyhow::Result<DiarizeOutput> {
         let audio = load_audio(&req.wav_path)?;
@@ -179,23 +254,25 @@ async fn diarize(
                     .map(|s| s.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "file".into());
-        state2.with_engine(|engine| engine.diarize_with(&audio, &file_id, req.gender))
+        state2.with_engine_on(device, |engine| {
+            engine.diarize_with(&audio, &file_id, req.gender)
+        })
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
-    Ok(Json(out))
+    Ok(([(DEVICE_HEADER, device.as_str())], Json(out)))
 }
 
 async fn embed_window(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EmbedRequest>,
-) -> Result<Json<EmbedResponse>, (StatusCode, String)> {
-    let _permit = state
-        .gate
-        .acquire()
-        .await
-        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+) -> ApiResult<EmbedResponse> {
+    let device = state
+        .engines
+        .resolve(req.device.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _permits = admit(&state, device).await?;
     let state2 = Arc::clone(&state);
     let embedding = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<f32>> {
         let clip: Vec<f32> = if let Some(b64) = &req.samples_b64 {
@@ -214,16 +291,51 @@ async fn embed_window(
         } else {
             anyhow::bail!("embed_window requires wav_path or samples_b64");
         };
-        state2.with_engine(|engine| engine.embed_window(&clip))
+        state2.with_engine_on(device, |engine| engine.embed_window(&clip))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")))?;
-    Ok(Json(EmbedResponse { embedding }))
+    Ok((
+        [(DEVICE_HEADER, device.as_str())],
+        Json(EmbedResponse { embedding }),
+    ))
 }
 
-async fn healthz() -> &'static str {
-    "ok"
+/// `/healthz` body. Was the bare string "ok"; the compose healthcheck is `curl -sf .../healthz`,
+/// which only inspects the HTTP status, so returning JSON is non-breaking.
+///
+/// Consumers should gate on this before sending a `device` field: neither request struct uses
+/// `deny_unknown_fields`, so an OLD diar-server silently IGNORES `"device": "cpu"` and runs the
+/// job on its default device. `supported_devices` is the negotiation point.
+///
+/// Additive by design — new fields are safe to append.
+#[derive(Serialize)]
+struct HealthResponse {
+    /// Always "ok" today; a field rather than an implicit 200 so richer states can be added.
+    status: &'static str,
+    /// Device used when a request omits `device`.
+    default_device: &'static str,
+    /// Devices loaded in THIS process and serving requests right now. First entry is the
+    /// default. A device here is guaranteed to work.
+    devices: Vec<&'static str>,
+    /// Devices this BUILD can serve — a compile-time capability, a superset of `devices`.
+    /// One listed here but absent from `devices` needs a `DIAR_DEVICES` change, not a rebuild.
+    supported_devices: Vec<&'static str>,
+}
+
+async fn healthz(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        default_device: state.engines.default_device().as_str(),
+        devices: state
+            .engines
+            .devices()
+            .iter()
+            .map(|d| d.as_str())
+            .collect(),
+        supported_devices: engines::supported().iter().map(|d| d.as_str()).collect(),
+    })
 }
 
 fn main() -> anyhow::Result<()> {
@@ -242,22 +354,34 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let models_dir =
         std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
-    let mode = match std::env::var("DIAR_MODE").as_deref() {
-        Ok("cpu") => Mode::Cpu,
-        Ok("coreml") => Mode::CoreMl,
-        Ok("coreml_fast") => Mode::CoreMlFast,
-        _ => Mode::Cuda,
-    };
     let max_inflight: usize = std::env::var("DIAR_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
+    // Opt-in inner gate; a 0 would deadlock every CPU request, so treat it as unset.
+    let max_inflight_cpu: Option<usize> = std::env::var("DIAR_MAX_INFLIGHT_CPU")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0);
     let bind = std::env::var("DIAR_BIND").unwrap_or_else(|_| "0.0.0.0:8701".to_string());
 
-    let engine = DiarEngine::load(&EngineConfig::new(models_dir, mode))?;
+    // Every engine loads here, serially, before `axum::serve` — DiarEngine::load calls
+    // std::env::set_var, which cannot safely run alongside live tokio workers. See engines.rs.
+    let engines = EngineRegistry::load_from_env(&models_dir)?;
+    eprintln!(
+        "diar-server devices: [{}] (default {})",
+        engines
+            .devices()
+            .iter()
+            .map(|d| d.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        engines.default_device()
+    );
     let state = Arc::new(AppState {
-        engine: Mutex::new(engine),
+        engines,
         gate: Semaphore::new(max_inflight),
+        cpu_gate: max_inflight_cpu.map(Semaphore::new),
     });
 
     let app = Router::new()
