@@ -14,9 +14,18 @@ coreml = ["speakrs/coreml", "ort/coreml"]
 speakrs = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 ort = { workspace = true }
 ndarray = { workspace = true }
 tracing = { workspace = true }
+# Provisioning (provision/). `ureq` rather than `reqwest`: preflight makes exactly two
+# blocking GETs, and reqwest would drag tokio into diar-core (which the CLI links too) for
+# no benefit. rustls keeps it free of a C toolchain.
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
+time = { version = "0.3", default-features = false, features = ["std", "formatting"] }
+# Reading the smoke clip; also already used by diar-server and the tests.
+hound = { workspace = true }
 # Native media ingest (audio.rs): decode original media in-process instead of requiring a
 # pre-decoded 16 kHz WAV. The app's WAV handoff path does not touch these.
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }

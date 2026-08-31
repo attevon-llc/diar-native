@@ -19,7 +19,11 @@ use std::sync::{Arc, Mutex};
 /// Model filename in the models dir; absence disables the feature.
 pub const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
 /// `config.id2label` of prithivMLmods/Common-Voice-Gender-Detection, index-ordered.
-const ID2LABEL: [&str; 2] = ["female", "male"];
+///
+/// Public so provisioning can cross-check it against the `gender-wav2vec2.meta.json` written
+/// beside the model. Nothing reads that file at runtime, so without that check an upstream
+/// relabelling would invert every verdict silently.
+pub const ID2LABEL: [&str; 2] = ["female", "male"];
 /// Windows per speaker to vote over — mirrors the app (speaker_attribute_task.py:317-320).
 const MAX_WINDOWS_PER_SPEAKER: usize = 5;
 /// Clips shorter than this are too unreliable to vote with (the app uses the same floor).

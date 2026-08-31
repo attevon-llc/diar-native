@@ -1,0 +1,45 @@
+# Export environment for `diar-server provision-models`.
+#
+# These are the versions the shipped models_folded/ set was produced with, merged from the
+# two local environments that produced it: venv-export/ (python 3.12 — torch, pyannote,
+# onnxscript) and venv/ (python 3.11 — onnxsim). The exporter has no single environment
+# upstream, which is part of why the recipe was undocumented.
+#
+# Install CPU-only torch. The export never touches a GPU — export_models.py does
+# `pipeline.to(torch.device("cpu"))` — and the CUDA wheels are ~5 GB of nvidia_* packages
+# that would be downloaded and never executed:
+#
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# For OpenTranscribe's backend image, most of this is ALREADY PRESENT (torch, torchaudio,
+# pyannote.audio, onnx, numpy, transformers). Only the two marked ADD are actually missing.
+
+torch==2.13.0
+torchaudio==2.11.0
+numpy==2.5.2
+onnx==1.22.0
+onnxruntime==1.29.0
+pyannote.audio==4.0.7
+huggingface_hub==1.28.0
+transformers                      # gender classifier checkpoint (step 2e)
+onnxconverter-common              # fp16 conversion for the gender model (step 2e)
+
+# ADD: required by torch.onnx.export(dynamo=True), which every embedding graph uses.
+onnxscript==0.7.1
+
+# ADD: the constant folder (step 2b). Pick ONE of the two.
+#
+# onnxsim is PREFERRED: it reproduces the shipped models_folded/ segmentation graphs
+# BYTE-IDENTICALLY (md5-verified for b1/b32/b64). But it is a C++ extension and publishes NO
+# wheel for CPython 3.13 at any version (0.4.x-0.7.3: 13 wheels, zero cp313), so on 3.13 it
+# needs cmake and a compiler.
+#
+# onnxslim is the FALLBACK: a pure-python py3-none-any wheel that installs on any
+# interpreter. It is numerically bit-exact (measured max_abs_diff 0.0) and eliminates every
+# Sin/Cos/If, but emits a differently-shaped graph (37 nodes with MatMul+Add where onnxsim
+# emits 40 with Gemm), so its output is NOT byte-comparable to models_folded/.
+#
+# fold_segmentation.py prefers onnxsim and records which one ran in the marker's
+# toolchain.folder.
+onnxsim==0.7.3 ; python_version < "3.13"
+onnxslim ; python_version >= "3.13"

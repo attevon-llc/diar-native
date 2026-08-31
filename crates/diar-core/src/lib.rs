@@ -15,6 +15,7 @@ use speakrs::ExecutionMode;
 
 pub mod audio;
 pub mod gender;
+pub mod provision;
 use gender::{GenderModel, GenderVerdict};
 
 /// Frame count of the segmentation mask grid (10 s window @ SincNet stride).
