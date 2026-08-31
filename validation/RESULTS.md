@@ -2089,6 +2089,7 @@ against a verified models dir `/healthz` and `/readyz` both return 200 with
 needs no network and no python): with a valid marker, `provision-models` and NO token exits
 **0** with "already provisioned and verified (recipe v1)"; adding `--force` on the same
 directory proceeds to preflight and exits **5** naming the token page.
+
 ### 7.37 diar-server had no log subscriber at all — structured logging, and two things measuring it found
 
 **No timed leg. No benchmark number is claimed, retracted or affected here**; the box was
@@ -2174,3 +2175,298 @@ left for an operator decision rather than silently changed here.
 Tests: **76 diar-core + 28 diar-server**, all passing (this work added the `logging` and
 `reqlog` suites; the counts also include §7.38's additions). The default-filter test was
 watched failing against the old policy first — it reported `info was dropped: ""`.
+
+### 7.38 Provisioning audit fixes — a GPU-less run no longer self-destructs, and the graphs production runs are now verified (issue #2)
+
+Two adversarial audits of the provisioning subsystem shipped in §7.35/§7.36. Ten confirmed
+defects, all fixed in `f35fdfa`. Nothing here retracts a number from §7.35/§7.36 — the
+measurements there stand; what changes is what the code does on paths those runs did not take
+(a host with no GPU, a `--set small` directory, a directory with no marker, a corrupted
+fixed-batch graph).
+
+**The one that mattered most, measured.** A models directory whose
+`wespeaker-multimask-tail-b32.onnx` has its largest initializer (`resnet.seg_1.weight`,
+256x5120 f32) zeroed — built by
+`validation/make_corrupt_fixture.py models_folded /tmp/models_zeroed_mm wespeaker-multimask-tail-b32.onnx`,
+which also mirrors the corruption into the b64 byte copy so stage 3d's sha256 equality still
+passes. Against the PRE-FIX smoke test this produced a **fully green report**:
+
+```
+1-parse        16 ONNX graphs loaded on the CPU EP
+2-io-contract  16 signatures matched the compiled-in contract
+5-plda         6 PLDA arrays + min_num_samples=400
+3-numeric      3a fbank b1-vs-b32 3.43e-5; 3b fused-vs-split 0.00e0;
+               3c multimask-vs-tail 0.00e0; 3d multimask-b64 is a byte copy of b32;
+               3i tail-b64 batch-invariance 3.58e-7
+4-end-to-end   2 speakers, 7 segments, 8 exclusive, gender=2
+```
+
+i.e. `smoke.status: "pass"`, a `verified` marker, 200 from `/readyz`, and every file longer
+than one window embedded by a graph with a zeroed weight tensor. Post-fix:
+
+```
+STAGE 3e FAILED: wespeaker-multimask-tail-b32.onnx row 5 disagrees with
+wespeaker-multimask-tail.onnx by 9.222e-1 (bar 1e-4) under an identical mask.
+```
+
+That graph is the production hot path: `vendor/speakrs/src/inference/embedding/load/sessions.rs`
+gates `primary_batched_session`, `split_tail_batched_session` and
+`split_primary_tail_batched_session` on `!lazy_sessions`, but NOT the multimask sessions — and
+live compose sets `SPEAKRS_LAZY_SESSIONS=1`.
+
+**Stage 3 coverage, before and after** (fast set, `models_folded/`, CPU EP, 10 s clip):
+
+| check | graph | before | after |
+|---|---|---|---|
+| 3a | `wespeaker-fbank{,-b32}` | 3.43e-5 | 3.43e-5 |
+| 3b | fused vs split (b1) | 0.00e0 | 0.00e0 |
+| 3c | `multimask-tail` (b1) | 0.00e0 | 0.00e0 |
+| 3d | `multimask-tail-b64` == b32 (sha256) | pass | pass |
+| **3e** | **`multimask-tail-b32` vs b1** | **nothing** | **2.38e-7** |
+| **3f** | **`segmentation-3.0-b32` vs b1** | **nothing** | **0.00e0** |
+| **3g** | **`-tail-b3`, `-tail-b32` vs b1** | **nothing** | **2.38e-7, 2.38e-7** |
+| **3h** | **`resnet34-b32` vs b1** | **nothing** | **2.58e-6** |
+| 3i | `-tail-b64` batch invariance | 3.58e-7 (ran first) | 3.58e-7 (runs last) |
+
+Bar is 1e-4 throughout; 3i's 3.58e-7 is unchanged and consistent with §7.33's 7.8e-08 for the
+same property. **Cost: full smoke 14.7 s -> 29.5 s on the CPU EP** (busy box, single run, not a
+benchmark leg). The b64 tail check — the single most expensive one, on a graph live compose
+never loads — now runs LAST, so a hot-path failure is reported without waiting for it.
+
+**The fold parity comment was wrong on the facts.** `fold_segmentation.py` checked only the b1
+graph, on the stated grounds that b32/b64 were "covered structurally here and by smoke stages
+1-2 in Rust" (they are not: stage 1 is a protobuf parse, stage 2 is names and shapes) and that
+running them "costs minutes for no additional signal". Measured on the shipped graphs with
+`ORT_DISABLE_ALL`, per graph pair:
+
+```
+segmentation-3.0.onnx      batch=1   max_abs_diff=0.000e+00   0.2 s
+segmentation-3.0-b32.onnx  batch=32  max_abs_diff=0.000e+00   0.9 s
+segmentation-3.0-b64.onnx  batch=64  max_abs_diff=0.000e+00   1.5 s
+```
+
+Seconds, not minutes. All three are now checked.
+
+**C1 — provisioning defaulted to a device it does not need, then blamed the models.**
+`cli.rs::parse_mode` fell through to `Mode::Cuda`, so `docker run --rm -e HF_TOKEN=... -v
+/path:/models diar-provision:<ver>` (the line `docker/Dockerfile.provision:24` documents, with
+no `--gpus`) exported ~470 MB of correct models, failed stage 4, and wrote `smoke.status:
+"fail"` into `diar-provision.json`. `startup_gate` reads that as known-bad, so every later
+`diar-server` start exited non-zero about files that were fine; on `Dockerfile.server-cpu`,
+where CUDA is not compiled in, `provision-models` could never have succeeded. Provisioning now
+defaults to CPU. The device-vs-models distinction is decided by EXPERIMENT rather than by
+string-matching an ORT error: the same directory is re-loaded on the CPU EP, and only if that
+succeeds is the device blamed. Reproduced in CI without a GPU-less host by asking a non-coreml
+build for `Mode::CoreMl`:
+
+```
+the `coreml` execution device is not usable on this machine, so the end-to-end stage could
+not run here. The models themselves are NOT implicated — the same directory loaded
+successfully on the CPU execution provider moments ago.
+Underlying error: loading segmentation model: coreml requires the `coreml` Cargo feature
+```
+
+Exit 9 (`DEVICE_UNAVAILABLE`), and **no marker is written**.
+
+**C2/C3/C4/C5/C6, in one line each.** `--set small` produced a directory the server refused to
+start against (the gate assumed `Fast` and demanded the four b64 graphs `provision.py` had just
+deleted, with remediation text saying `--set fast`) — the set now comes from the marker,
+`DIAR_MODEL_SET` remains an override and is named in the message. A passing `verify-models` was
+read-only w.r.t. the marker, so recovery from a stale `fail` needed a full `--force` re-export;
+it now re-stamps the smoke record (provenance untouched, `--no-attest` opts out). The smoke
+clip was resolved before the writability/token/python checks, so provisioning from
+OpenTranscribe's backend image — which copies the binary out of our image without the clip —
+died with exit 2 before looking at the token; resolved late now. `DIAR_DEVICES` was ignored by
+every provisioning subcommand. Exit 6 meant both "install torch" and "provision the models";
+serving now exits 8, with 9 and 10 added.
+
+**F2 — `verify-models` reported success having compared nothing.** `Marker::read` returns
+`Ok(None)` for an absent marker, so `verify_deep`'s drift loop was skipped entirely and `drift`
+stayed empty — indistinguishable from "every hash matched". `OK: /models verified.`, exit 0,
+zero bytes hashed, on the exact scenario the command exists for (a `/models` directory of
+unknown provenance). Now a distinct `unverified` status and exit 10, with `files_hashed` in the
+JSON. Verified against `/tmp/e2e1/models` (has a marker: 24 files hashed, no drift) and a
+hardlinked copy with the marker deleted (0 hashed, `fully_verified()` false, smoke still green). Against the built binary, same two directories:
+
+```
+$ diar-server verify-models --models-dir /e2e1/models --smoke-clip …
+OK: /e2e1/models verified (24 file(s) matched their recorded sha256).
+  (marker not updated: … Read-only file system (os error 30) — verification still passed;
+   this is expected on a read-only mount)
+exit=0
+
+$ diar-server verify-models --models-dir /tmp/nomarker --smoke-clip …
+UNVERIFIED: /tmp/nomarker passed every smoke stage, but there is no diar-provision.json in
+it, so NOTHING was compared against a recorded hash. …
+exit=10
+
+$ diar-server verify-models --models-dir /tmp/nomarker --json
+{"attested":null,"drift":[],"files_hashed":0,"marker_present":false, …}
+```
+
+Note the read-only arm of C3 in the first transcript: a `:ro` mount cannot be re-attested, and
+that is reported as a note rather than turned into a verification failure.
+
+C4 in the same binary, from a working directory where neither clip candidate resolves:
+`provision-models` now reaches the TOKEN check ("No HuggingFace token was supplied … gated …
+`--hf-token`") instead of exiting 2 with "no smoke clip found" before looking at anything.
+
+**F3 — `gender_precision` was measured and dropped by serde.** `ExportReport` had no such
+field, so the value `export_gender.py` computes — and whose docstring says is "REPORTED, so the
+marker and /healthz can say so rather than implying fp16" — reached nothing at all. It mattered
+most while the fp16 conversion was failing under the pinned `torch==2.13.0` (every directory
+silently got the 378 MB fp32 classifier, ~500 MiB more VRAM than fp16 — §7.18: 5396 -> 4890
+MiB); §7.37 has since made fp16 reachable again, but the fp32 fallback is still live and the
+field is what distinguishes the two. Now carried into `marker.toolchain.gender_precision` and
+printed by both subcommands. **Still outstanding: `HealthResponse` in `crates/diar-server/src/main.rs`
+needs a one-line field addition to surface it on `/healthz`; that file is owned by another
+change in flight, so it is reported rather than edited here.**
+
+**F4/F6/F11.** The pre-download python probe omitted `onnxconverter_common` (absence raises
+NOTHING and silently downgrades gender to fp32), `onnxsim`/`onnxslim` and `onnxruntime` (both
+discovered only after the full download), plus `torchaudio` and `huggingface_hub` — a test now
+pins the probe list against the imports in the scripts themselves and reports exactly that set.
+`run_export` swallowed both the IO error and the parse error on `report.json` and fell back to
+an all-`None` report, producing a `verified` marker with null provenance including
+`toolchain.folder` — the one field `fold_segmentation.py` exists to record; now a hard error
+distinguishing the two causes. `export_models.py` gated the multi-mask parity check on a bare
+`assert`, which `PYTHONOPTIMIZE` compiles out and which `run_export` inherits; converted to an
+explicit `raise`, `PYTHONOPTIMIZE` is cleared in the subprocess, and a test pins that no
+embedded script gates an invariant on an assert.
+
+**Tests.** 76 diar-core unit + 28 diar-server unit + 10 provisioning integration, all passing,
+plus the vendored speakrs suite at **96/96** (76 + 5 + 8 + 7, one ignored) to confirm no
+regression — nothing under `vendor/` was touched.
+Every one of the ten new tests was watched FAILING against a deliberately re-introduced defect
+before the fix was restored — including the F4 probe test, which named the gap itself:
+
+```
+the export scripts import ["huggingface_hub", "onnxconverter_common", "onnxruntime",
+"onnxsim", "onnxslim", "torchaudio"], which check_python_env never probes for.
+```
+
+**Not re-run, and not claimed:** no DER leg, no timed benchmark, no token-authenticated
+end-to-end `provision-models` (same operator gap as §7.35). The 29.5 s smoke figure is a single
+observation on a loaded box, recorded as an order-of-magnitude cost, not as a benchmark.
+
+### 7.37 Gender fp16 restored on torch 2.13 — the blocker was two no-op `Cast` nodes (issue #6)
+
+Closes the open item §7.36 left behind ("either pin torch 2.11 for provisioning or find a
+converter path that works on 2.13"). **No torch pin was needed.** Every directory provisioned
+since §7.36 got the 378 MB fp32 classifier — ~500 MiB more VRAM than the shipped fp16 build
+(§7.18: 5396 -> 4890 MiB). Fresh provisioning now produces fp16 again.
+
+**NOT a timed leg, and deliberately so.** The box was loud throughout: `uptime` load average
+**11.15 -> 39.91 on 48 cores**, an `otfresh-demo` stack plus a container at 774% CPU, and GPU
+0 went from 847 MiB free-and-idle to **6451 MiB** used by other work mid-session. Every claim
+below is therefore a **size, precision, or output-identity** fact, all of which are invariant
+to machine load. No wall-clock number here is offered as a benchmark.
+
+**ROOT CAUSE.** torch 2.13 emits two `Cast` nodes that torch 2.11 did not, both semantic
+no-ops: `/inner/wav2vec2/encoder/Cast_1` is `Cast(to=FLOAT)` on an already-fp32 `Transpose`
+output feeding `encoder/Add`, and `/inner/wav2vec2/encoder/Cast` is `Cast(to=INT64)` on an
+already-int64 value. They are invisible in fp32, which is why nothing noticed them.
+`onnxconverter_common.float16` treats every `Cast` as an authoritative precision boundary —
+casts are the mechanism it inserts itself to bridge fp16/fp32 under `keep_io_types` — so it
+retypes the value to fp16 and leaves `to=FLOAT` alone, and ORT rejects the contradiction.
+
+This also explains §7.36's confusing symptom pair. Reproduced here, both faces of one bug:
+
+```
+baseline               FAIL Type (tensor(float16)) of output arg
+                            (/inner/wav2vec2/encoder/Cast_1_output_0) of node
+                            (/inner/wav2vec2/encoder/Cast_1) ... expected tensor(float)
+disable_shape_infer    FAIL Type parameter (T) of Optype (Add) bound to different types
+                            (tensor(float16) and tensor(float)) in node
+                            (/inner/wav2vec2/encoder/Add)
+```
+
+`/inner/wav2vec2/encoder/Add` is precisely the node `Cast_1` feeds — §7.36's "only moves the
+error from a `Cast` to an `Add`" was the same node all along, not a second problem.
+
+**FIX.** `_elide_identity_casts` in `scripts/provision/export_gender.py` drops any `Cast`
+whose `to` already equals its input's inferred element type, before conversion. Principled,
+not a name match: an identity cast is a no-op by definition. Casts feeding a graph output are
+never elided (renaming `logits` would break `gender.rs`'s by-name lookup), and a cast whose
+input type shape inference cannot determine is left alone.
+
+**Gates, all run by the exporter itself every time — not one-off measurements.** The gate
+corpus is 6 seeded, `do_normalize`-preprocessed clips at 16k/24k/32k/48k/64k/80k samples,
+bracketing `gender.rs`'s real range (`MIN_SAMPLES` 1 s to the `DIAR_GENDER_MAX_SECONDS`
+default cap of 5 s). §7.18's 67-verdict AMI sweep was ad hoc and left nothing runnable; this
+is weaker evidence per input but it is *committed and repeatable*.
+
+| gate | bar | measured |
+| --- | --- | --- |
+| 1. fp32 ONNX vs torch | max abs logit diff < 1e-4 | **5.36e-06** (unchanged from §7.36) |
+| 2. elision is a no-op | **bitwise equal** fp32 logits, 6/6 clips | **6/6 bitwise identical**, max abs diff 0.000e+00 |
+| 3. fp16 argmax invariance | 6/6 labels unchanged | **6/6**, max abs logit delta **1.06e-02**, max abs prob delta **4.86e-04** (bar 0.05) |
+
+Gate 2 is the load-bearing one: casts are load-bearing when they are real, so the exporter
+proves these were not rather than trusting the analysis above.
+
+**Artifact.** `gender_precision: "fp16"` on the pinned torch 2.13.0 / onnx 1.22.0 /
+onnxruntime 1.29.0 stack.
+
+| | bytes | initializers | I/O | Cast nodes |
+| --- | --- | --- | --- | --- |
+| fp32 (what §7.36 shipped) | 378,529,501 | 213 FLOAT | fp32 | 2 no-op |
+| **fp16 (now)** | **189,488,828** | **213 FLOAT16, 0 FLOAT** | **fp32** | 2 (`keep_io_types` boundary) |
+| shipped torch-2.11 artifact | 189,431,659 | 213 FLOAT16, 0 FLOAT | fp32 | 2 (`keep_io_types` boundary) |
+
+**Disk: -189,040,673 bytes (-50.0%).** The regenerated graph matches the shipped torch-2.11
+artifact on every load-bearing property — 213/213 FLOAT16 initializers, fp32 in and out,
+opset 17, and the same two boundary casts by role (`input_values_cast_to_...Unsqueeze` to=10,
+`.../Gemm_cast_to_logits` to=1). It is **57,169 bytes larger** (0.03%) because torch 2.13
+emits extra graph machinery the 2.11 export did not — 12 `IsNaN` + 25 `Where` (attention NaN
+clamp) and `Range`/`Expand`/`Equal`/`GreaterOrEqual`/`ConstantOfShape` mask construction,
+1084 nodes vs 966. That difference is in the fp32 export too; it is a torch-version graph
+difference, not a conversion artifact, and it does not touch the weights.
+
+**END-TO-END under the real runtime (ort `=2.0.0-rc.12`, not just python onnxruntime).**
+`diar-server:issue1`, `--gpus "device=0"`, two containers differing ONLY by a bind-mount of
+`gender-wav2vec2.onnx` over an otherwise shared `models_folded`; `karpathy_10m.wav` (the
+§7.16/§7.18 reference clip), `{"gender":true}`. The new graph loads under ort rc.12 (the
+gender session is committed eagerly at engine load, so `/healthz` 200 is itself the proof).
+
+```
+rttm sha256 edcc5d277412b93d906b81039c5f7a81185ba3a6fd8759368bc4565df589b4ef  shipped fp16
+rttm sha256 edcc5d277412b93d906b81039c5f7a81185ba3a6fd8759368bc4565df589b4ef  regenerated fp16
+```
+
+`segments` (92), `exclusive_segments` (88), `centroids` (2), `num_speakers` (2): all equal by
+value. Gender **2/2 labels agree**:
+
+| speaker | shipped fp16 | regenerated fp16 | delta |
+| --- | --- | --- | --- |
+| SPEAKER_00 | female 0.79675186 | female 0.79675025 | 1.6e-06 |
+| SPEAKER_01 | male 0.9991439 | male 0.9991439 | 0 |
+
+These also match §7.16's recorded values for this clip at the 5 s cap (female 0.797 / male
+0.999), so the regenerated artifact lands on the historical operating point.
+
+**Cost.** The exporter does one extra shape-inference pass over a 378 MB graph, 2 extra ORT
+session loads and 12 CPU inferences: **~11 s** against §7.36's 119.5 s cold provisioning
+(~+9%). That number is load-contaminated (la 15.78) and is order-of-magnitude only — it is a
+once-per-deployment cost buying 189 MB of disk and ~500 MiB of VRAM permanently.
+
+**Rejected, with the measurement.** `op_block_list=['Cast']` cannot work and was not the
+answer: blocking the op the converter uses as its own precision boundary is what produced the
+mismatch in the first place. `disable_shape_infer=True` and clearing `graph.value_info` both
+only relocate the error (above). Pinning torch 2.11 for provisioning — §7.36's other
+suggestion — was rejected: it would freeze the export environment against the rest of the
+pinned stack to work around two no-op nodes, and OpenTranscribe's backend image (the primary
+provisioning route, which already has torch) does not get to choose its torch version.
+
+**Retraction.** §7.34's "both engines parse the same **189 MB fp32 ONNX**" is wrong on
+precision — 189 MB *is* the fp16 artifact; the fp32 one is 378 MB. The RSS attribution in
+§7.34 (gender = 74% of the +620 MB second-engine cost) was measured against `models_folded/`,
+i.e. against the **fp16** model, and stands. Stale doc comments in `provision/exporter.rs` and
+`provision/marker.rs` asserting the converter "cannot convert the graph torch emits" are
+corrected here; the fp32 fallback path itself is unchanged and still live.
+
+**Still open, unchanged:** `gender_precision` is returned by `export_gender.py` and dropped by
+serde before it reaches the marker — §7.36's claim that it is "surfaced as `models_gender` on
+`/healthz`" remains inaccurate (`models_gender` is a bool of file existence). Now that both
+precisions are reachable in the field, recording which one a directory has is worth more, not
+less.
