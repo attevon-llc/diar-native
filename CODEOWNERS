@@ -1,0 +1,18 @@
+# Code owners for diar-native. Assigned reviewers are requested automatically on PRs.
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything not matched below.
+*                       @davidamacey
+
+# Build, CI and release plumbing.
+/.github/               @davidamacey
+/docker/                @davidamacey
+/.pre-commit-config.yaml @davidamacey
+
+# The vendored-patch boundary. Changes here must be paired with a regenerated
+# patches/0001-cuda-performance-patch-set.patch (see CONTRIBUTING.md).
+/patches/               @davidamacey
+/scripts/bootstrap_vendor_speakrs.sh @davidamacey
+
+# Append-only measurement record — never edited silently.
+/validation/RESULTS.md  @davidamacey
