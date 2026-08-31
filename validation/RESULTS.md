@@ -2349,7 +2349,7 @@ the export scripts import ["huggingface_hub", "onnxconverter_common", "onnxrunti
 end-to-end `provision-models` (same operator gap as §7.35). The 29.5 s smoke figure is a single
 observation on a loaded box, recorded as an order-of-magnitude cost, not as a benchmark.
 
-### 7.37 Gender fp16 restored on torch 2.13 — the blocker was two no-op `Cast` nodes (issue #6)
+### 7.39 Gender fp16 restored on torch 2.13 — the blocker was two no-op `Cast` nodes (issue #6)
 
 Closes the open item §7.36 left behind ("either pin torch 2.11 for provisioning or find a
 converter path that works on 2.13"). **No torch pin was needed.** Every directory provisioned
@@ -2465,8 +2465,10 @@ i.e. against the **fp16** model, and stands. Stale doc comments in `provision/ex
 `provision/marker.rs` asserting the converter "cannot convert the graph torch emits" are
 corrected here; the fp32 fallback path itself is unchanged and still live.
 
-**Still open, unchanged:** `gender_precision` is returned by `export_gender.py` and dropped by
-serde before it reaches the marker — §7.36's claim that it is "surfaced as `models_gender` on
-`/healthz`" remains inaccurate (`models_gender` is a bool of file existence). Now that both
-precisions are reachable in the field, recording which one a directory has is worth more, not
-less.
+**Still open (narrowed).** The serde drop is fixed — `gender_precision` now reaches
+`Toolchain` (`marker.rs`) and the provisioning report, and `provision-models` prints it
+(`cli.rs`); `provision::tests::gender_precision_reaches_the_marker` covers it. What is still
+inaccurate is §7.36's specific wording "surfaced as `models_gender` on `/healthz`":
+`HealthResponse.models_gender` is a **bool of file existence** and carries no precision. Now
+that both precisions are genuinely reachable in the field, a served directory still cannot be
+asked which one it has without reading the marker off disk.

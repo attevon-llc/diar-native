@@ -92,9 +92,11 @@ pub struct Toolchain {
     /// Not decoration — it is a VRAM fact. The fp32 classifier is 378 MB on disk and costs
     /// ~500 MiB more VRAM than the fp16 one (RESULTS §7.18: 5396 -> 4890 MiB), which on a
     /// 6 GB card decides whether gender jobs run or OOM. `export_gender.py` falls back to
-    /// fp32 whenever `onnxconverter_common` cannot convert the graph torch emits — the
-    /// normal case under the pinned torch 2.13 — so a directory that "has gender" says
-    /// nothing about which one you got unless it is written down here.
+    /// fp32 whenever `onnxconverter_common` cannot convert the graph torch emits. Under the
+    /// pinned torch 2.13 that was every run until RESULTS §7.39 elided the exporter's two
+    /// no-op `Cast` nodes; fp16 is the expected outcome now, but the fallback is still live,
+    /// so a directory that "has gender" says nothing about which one you got unless it is
+    /// written down here.
     #[serde(default)]
     pub gender_precision: Option<String>,
 }

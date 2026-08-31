@@ -83,12 +83,10 @@ pub struct ExportReport {
     /// `export_gender.py` measures this and its own docstring says it is "REPORTED, so the
     /// marker and /healthz can say so rather than implying fp16". It was reported into a
     /// struct with no such field and (serde ignoring unknown keys by default) silently
-    /// dropped, so it reached nothing. This is not an edge case: `requirements.txt` pins
-    /// `torch==2.13.0`, and `onnxconverter_common.float16` cannot convert the graph that
-    /// torch emits, so every directory provisioned today gets the 378 MB fp32 classifier —
-    /// ~500 MiB more VRAM than the fp16 one (RESULTS §7.18: 5396 -> 4890 MiB). On a 6 GB
-    /// card that is the difference between working and OOM, and nothing recorded which one
-    /// you had.
+    /// dropped, so it reached nothing. It still matters now that fp16 is reachable again
+    /// (RESULTS §7.39): the fp32 fallback is 378 MB and costs ~500 MiB more VRAM than the
+    /// fp16 build (RESULTS §7.18: 5396 -> 4890 MiB), which on a 6 GB card is the difference
+    /// between working and OOM — and nothing records which one you got.
     #[serde(default)]
     pub gender_precision: Option<String>,
 }

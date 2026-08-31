@@ -25,11 +25,10 @@ still runs when the pipeline gate is the thing that failed.
    5396 -> 4890 MiB. Note this is the OPPOSITE conclusion to §4.18, where fp16 was rejected
    for the diarization graph.
 
-   The conversion here is **best-effort with a validated fp32 fallback**, because
-   `onnxconverter_common.float16` cannot convert the graph torch 2.13 emits (see the comment
-   at the conversion site). Both precisions are functionally correct; fp16 only saves VRAM
-   and disk, so a failed conversion degrades rather than aborts, and the precision actually
-   produced is reported back for the marker.
+   The conversion is **best-effort with a validated fp32 fallback** — both precisions are
+   functionally correct, so a failed conversion degrades rather than aborts and the precision
+   actually produced is reported back for the marker. It does succeed on torch 2.13 once the
+   exporter's no-op `Cast` nodes are elided first; see `_elide_identity_casts`.
 
 `optimum` is deliberately not used (upstream's documented route was
 `optimum-cli export onnx`): it drags in a large dependency tree to wrap the same
@@ -58,6 +57,81 @@ PARITY_TOL = 1e-4
 #: fp16 loses precision by design; §7.18 measured max Δ 0.0118 on probabilities with zero
 #: label flips. The gate that matters is that the ARGMAX never moves.
 FP16_PROB_TOL = 0.05
+
+#: Clip lengths the fp16 gate is evaluated over, in samples at 16 kHz. These bracket
+#: `gender.rs`'s real operating range: `MIN_SAMPLES` (1 s) to the `DIAR_GENDER_MAX_SECONDS`
+#: default cap (5 s). A single trace-length input cannot catch a length-dependent conversion
+#: fault, and §7.18's original 67-verdict AMI sweep was ad hoc and left nothing runnable.
+FP16_GATE_LENGTHS = (16_000, 24_000, 32_000, 48_000, 64_000, 80_000)
+
+
+def _elide_identity_casts(model: Any) -> tuple[Any, list[str]]:
+    """Drop `Cast` nodes whose `to` already equals their input's element type.
+
+    torch 2.13 emits two such no-op casts in wav2vec2 that torch 2.11 did not — one
+    `Cast(to=FLOAT)` on an already-fp32 `Transpose` output feeding `encoder/Add`, and one
+    `Cast(to=INT64)` on an already-int64 value. They are semantically invisible in fp32,
+    which is why nothing noticed them, but they break fp16 conversion: `onnxconverter_common`
+    treats every `Cast` as an authoritative precision boundary (casts are the mechanism it
+    inserts itself to bridge fp16/fp32), so it retypes the value to fp16 while leaving
+    `to=FLOAT` alone. ORT then rejects the model — as a `Cast` type error with shape
+    inference on, or, with `disable_shape_infer=True`, as the same contradiction surfacing
+    one node later at the `Add` the cast feeds.
+
+    Elision is a pure no-op on the fp32 graph, and the caller proves that bitwise rather than
+    trusting it. `onnx.shape_inference` supplies the input types; a cast whose input type is
+    unknown is left alone.
+    """
+    import onnx
+
+    inferred = onnx.shape_inference.infer_shapes(model)
+    types: dict[str, int] = {}
+    for vi in (*inferred.graph.input, *inferred.graph.value_info, *inferred.graph.output):
+        if vi.type.HasField("tensor_type"):
+            types[vi.name] = vi.type.tensor_type.elem_type
+    for init in model.graph.initializer:
+        types[init.name] = init.data_type
+    for node in model.graph.node:
+        if node.op_type == "Constant":
+            for attr in node.attribute:
+                if attr.name == "value":
+                    types[node.output[0]] = attr.t.data_type
+
+    outputs = {o.name for o in model.graph.output}
+    removed: list[str] = []
+    rewire: dict[str, str] = {}
+    kept = []
+    for node in model.graph.node:
+        if node.op_type == "Cast":
+            to = next((a.i for a in node.attribute if a.name == "to"), None)
+            # Follow chains: an elided cast's input is what a later cast really reads.
+            src = rewire.get(node.input[0], node.input[0])
+            # Renaming a graph output would break the caller's `outputs["logits"]` lookup.
+            if to is not None and types.get(src) == to and node.output[0] not in outputs:
+                rewire[node.output[0]] = src
+                removed.append(f"{node.name} (to={to})")
+                continue
+        kept.append(node)
+
+    del model.graph.node[:]
+    model.graph.node.extend(kept)
+    for node in model.graph.node:
+        for i, name in enumerate(node.input):
+            if name in rewire:
+                node.input[i] = rewire[name]
+    # Inferred types cached on the graph would now contradict the rewiring.
+    del model.graph.value_info[:]
+    return model, removed
+
+
+def _gate_inputs() -> list[Any]:
+    """Seeded, `do_normalize`-preprocessed clips spanning gender.rs's real clip lengths."""
+    clips = []
+    for seed, n in enumerate(FP16_GATE_LENGTHS):
+        raw = np.random.default_rng(seed).standard_normal((1, n)).astype(np.float32)
+        # Mirrors GenderModel::classify: zero mean, unit variance, eps 1e-7.
+        clips.append(((raw - raw.mean()) / np.sqrt(raw.var() + 1e-7)).astype(np.float32))
+    return clips
 
 
 def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
@@ -145,18 +219,15 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
     # fp16 with keep_io_types: the graph runs in half precision while still accepting and
     # returning fp32, so gender.rs needs no change at all.
     #
-    # BEST-EFFORT, with a validated fp32 fallback. `onnxconverter_common.float16` does not
-    # successfully convert this graph as emitted by torch 2.13: it produces a model ORT
-    # refuses to load ("Type parameter (T) of Optype (Add) bound to different types
-    # (tensor(float16) and tensor(float))"), and neither `disable_shape_infer=True` nor
-    # `op_block_list=['Cast']` fixes it. The shipped models_folded/ artifact was produced
-    # under torch 2.11.0, whose graph the converter handles.
+    # Still BEST-EFFORT with a validated fp32 fallback. fp16 is a real but non-blocking win —
+    # §7.18 measured VRAM 5396 -> 4890 MiB and disk 361 -> 181 MB with 67/67 labels identical
+    # — so failing the whole provisioning run over it would trade a working deployment for a
+    # smaller file. The fp32 model is correct and is what `gender.rs` loads either way; only
+    # VRAM and disk differ. Which precision was produced is REPORTED for the marker.
     #
-    # fp16 is a real but non-blocking win — §7.18 measured VRAM 5396 -> 4890 MiB and disk
-    # 361 -> 181 MB with 67/67 labels identical — so failing the whole provisioning run over
-    # it would trade a working deployment for a smaller file. The fp32 model is correct and
-    # is what `gender.rs` loads either way; only VRAM and disk differ. Which precision was
-    # produced is REPORTED, so the marker and /healthz can say so rather than implying fp16.
+    # The blocker on torch 2.13 was two no-op `Cast` nodes; `_elide_identity_casts` explains
+    # the mechanism. Everything below the elision is unchanged in intent, only widened from
+    # one trace input to FP16_GATE_LENGTHS.
     out_path = os.path.join(models_dir, MODEL_FILE)
     precision = "fp32"
 
@@ -165,41 +236,75 @@ def export(models_dir: str, write_meta: bool = True) -> dict[str, Any]:
     try:
         from onnxconverter_common import float16
 
+        elided, removed = _elide_identity_casts(onnx.load(fp32_path))
+        elided_path = out_path + ".elided"
+        onnx.save(elided, elided_path)
+
+        # Gate 2: the elision must be invisible. Casts are load-bearing when they are real,
+        # so prove these were not — bitwise, over every gate clip, before converting.
+        gate_clips = _gate_inputs()
+        base = ort.InferenceSession(fp32_path, providers=["CPUExecutionProvider"])
+        elided_sess = ort.InferenceSession(elided_path, providers=["CPUExecutionProvider"])
+        fp32_logits = [base.run(None, {"input_values": c})[0] for c in gate_clips]
+        for clip, want in zip(gate_clips, fp32_logits):
+            got = elided_sess.run(None, {"input_values": clip})[0]
+            if not np.array_equal(got, want):
+                raise RuntimeError(
+                    f"eliding {len(removed)} no-op Cast(s) changed the fp32 output by "
+                    f"{np.abs(got - want).max():.3e} — not a no-op, refusing to convert"
+                )
+        del base, elided_sess
+        print(
+            f"  elided {len(removed)} no-op Cast node(s) [{', '.join(removed)}]; "
+            f"fp32 output bitwise unchanged on {len(gate_clips)} clips"
+        )
+
         fp16_path = out_path + ".fp16"
         onnx.save(
-            float16.convert_float_to_float16(onnx.load(fp32_path), keep_io_types=True),
+            float16.convert_float_to_float16(onnx.load(elided_path), keep_io_types=True),
             fp16_path,
         )
-        fp16_logits = ort.InferenceSession(
-            fp16_path, providers=["CPUExecutionProvider"]
-        ).run(None, {"input_values": dummy.numpy()})[0]
+        fp16_sess = ort.InferenceSession(fp16_path, providers=["CPUExecutionProvider"])
 
-        # Parity gate 2: fp16 must not move the decision. Probabilities may drift; the
-        # argmax must not — that is the property §7.18 actually validated.
-        if int(np.argmax(fp16_logits)) != int(np.argmax(onnx_logits)):
-            raise RuntimeError("fp16 conversion changed the predicted class")
-        prob_delta = float(np.abs(softmax(fp16_logits[0]) - softmax(onnx_logits[0])).max())
+        # Gate 3: fp16 must not move the decision. Probabilities may drift; the argmax must
+        # not — that is the property §7.18 actually validated.
+        prob_delta = 0.0
+        logit_delta = 0.0
+        for i, (clip, want) in enumerate(zip(gate_clips, fp32_logits)):
+            got = fp16_sess.run(None, {"input_values": clip})[0]
+            if int(np.argmax(got)) != int(np.argmax(want)):
+                raise RuntimeError(
+                    f"fp16 conversion changed the predicted class on clip {i} "
+                    f"({len(clip[0])} samples)"
+                )
+            logit_delta = max(logit_delta, float(np.abs(got - want).max()))
+            prob_delta = max(
+                prob_delta, float(np.abs(softmax(got[0]) - softmax(want[0])).max())
+            )
         if prob_delta > FP16_PROB_TOL:
             raise RuntimeError(
                 f"fp16 moved probabilities by {prob_delta:.3e} (bar {FP16_PROB_TOL})"
             )
+        del fp16_sess
 
         os.replace(fp16_path, out_path)
         precision = "fp16"
         print(
-            f"  fp16 conversion: max Δp = {prob_delta:.2e}, label unchanged, "
+            f"  fp16 conversion: {len(gate_clips)}/{len(gate_clips)} labels unchanged, "
+            f"max Δlogit = {logit_delta:.2e}, max Δp = {prob_delta:.2e}, "
             f"{os.path.getsize(fp32_path) / 1e6:.0f} MB -> "
             f"{os.path.getsize(out_path) / 1e6:.0f} MB"
         )
     except Exception as exc:
-        for stale in (out_path + ".fp16",):
-            if os.path.isfile(stale):
-                os.unlink(stale)
         print(
-            f"  fp16 conversion unavailable ({str(exc)[:120]}); keeping fp32. "
+            f"  fp16 conversion unavailable ({str(exc)[:160]}); keeping fp32. "
             f"The classifier is correct either way — it costs ~500 MiB more VRAM and "
             f"~190 MB more disk than the fp16 build (RESULTS §7.18)."
         )
+    finally:
+        for stale in (out_path + ".fp16", out_path + ".elided"):
+            if os.path.isfile(stale):
+                os.unlink(stale)
 
     if precision == "fp32":
         os.replace(fp32_path, out_path)
