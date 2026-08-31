@@ -25,6 +25,10 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY vendor/speakrs/ ./vendor/speakrs/
+# Required: diar-core's provision module `include_str!`s scripts/provision/*.py
+# (crates/diar-core/src/provision/exporter.rs). Without this the build fails with
+# "couldn't read .../scripts/provision/provision.py".
+COPY scripts/ ./scripts/
 RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cargo-registry \
     cargo build --release --features cuda -p diar-server && \
     mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/

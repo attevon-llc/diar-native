@@ -37,6 +37,10 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY vendor/speakrs/ ./vendor/speakrs/
+# Required: diar-core's provision module `include_str!`s scripts/provision/*.py
+# (crates/diar-core/src/provision/exporter.rs). Without this the build fails with
+# "couldn't read .../scripts/provision/provision.py".
+COPY scripts/ ./scripts/
 # No --features cuda: cuda is purely additive (diar-core/Cargo.toml), the default build is
 # already CPU-mode via openblas-system (pinned in the workspace root Cargo.toml's speakrs dep).
 RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-registry-${TARGETARCH} \
