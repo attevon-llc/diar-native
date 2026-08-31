@@ -89,12 +89,6 @@ fn fail(log: RequestLog, class: &'static str, status: StatusCode, message: Strin
     (status, [(reqlog::REQUEST_ID_HEADER, id)], message)
 }
 
-/// The last path component, or `None`. NEVER the full path: it is a user's filename on a
-/// shared volume and the rest of it is not ours to log.
-fn basename(path: &Path) -> Option<String> {
-    path.file_name().map(|s| s.to_string_lossy().into_owned())
-}
-
 struct AppState {
     /// Every loaded engine, keyed by device. Each prototype holds that device's shared
     /// sessions and never runs jobs itself.
@@ -312,9 +306,9 @@ async fn diarize(
     // Opened before admission so a request that spent time queued reports that time.
     let log = RequestLog::new("/diarize", &headers);
     log.set_gender(req.gender);
-    if let Some(name) = basename(&req.wav_path) {
-        log.set_audio(&name);
-    }
+    // Records the basename on the span AND registers the full path for redaction out of any
+    // error text — I/O errors interpolate the path they were handed.
+    log.set_audio(&req.wav_path);
 
     // Resolve BEFORE admission: a bad device name must cost a 400, not an admission permit.
     let device = match state.engines.resolve(req.device.as_deref()) {
@@ -394,8 +388,8 @@ async fn embed_window(
     Json(req): Json<EmbedRequest>,
 ) -> ApiResult<EmbedResponse> {
     let log = RequestLog::new("/embed_window", &headers);
-    if let Some(name) = req.wav_path.as_deref().and_then(basename) {
-        log.set_audio(&name);
+    if let Some(path) = req.wav_path.as_deref() {
+        log.set_audio(path);
     }
 
     let device = match state.engines.resolve(req.device.as_deref()) {

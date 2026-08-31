@@ -17,7 +17,16 @@
 //!
 //! Never the full media path — it is a user's filename on a shared volume. The basename is the
 //! most that goes in, and only because "which file failed" is the first question anyone asks.
+//!
+//! Keeping the *span field* to a basename is not sufficient on its own, and assuming otherwise
+//! was a live bug: the underlying I/O errors interpolate the path they were given, so a failed
+//! decode logged `opening /audio/private/Board Meeting Q3 - CONFIDENTIAL.wav: No such file`
+//! through the `error` field while the `audio` field dutifully said `smoke.wav`. Error text is
+//! therefore redacted through [`RequestLog::redact`] before it is logged. The HTTP *response*
+//! keeps the full path — the caller supplied it, so it is not a disclosure to them, and
+//! trimming it would break error handling that already parses these messages.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -93,6 +102,10 @@ pub struct RequestLog {
     endpoint: &'static str,
     span: tracing::Span,
     started: Instant,
+    /// `(full path, basename)` for this request, once known. `OnceLock` because it is set once,
+    /// from `&self`, and the log then crosses a `spawn_blocking` boundary — so it has to be
+    /// `Send + Sync` without a lock on the hot path.
+    audio_path: OnceLock<(String, String)>,
 }
 
 impl RequestLog {
@@ -117,6 +130,7 @@ impl RequestLog {
             endpoint,
             span,
             started: Instant::now(),
+            audio_path: OnceLock::new(),
         }
     }
 
@@ -134,10 +148,27 @@ impl RequestLog {
         self.span.record("device", device);
     }
 
-    /// Basename ONLY. Callers must not pass a full path: these are user filenames on a shared
-    /// volume, and the directory layout is not ours to publish.
-    pub fn set_audio(&self, basename: &str) {
-        self.span.record("audio", basename);
+    /// Record the request's media path. Only its **basename** reaches the span; the full path is
+    /// retained solely so [`Self::redact`] can strip it back out of error text.
+    pub fn set_audio(&self, path: &Path) {
+        let Some(base) = path.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+            return;
+        };
+        self.span.record("audio", base.as_str());
+        let full = path.to_string_lossy().into_owned();
+        if full != base {
+            let _ = self.audio_path.set((full, base));
+        }
+    }
+
+    /// Replace this request's full media path with its basename wherever it appears. Applied to
+    /// every message that gets logged, because the path is interpolated into I/O errors far from
+    /// here and there is no practical way to stop that at the source.
+    fn redact(&self, message: &str) -> String {
+        match self.audio_path.get() {
+            Some((full, base)) => message.replace(full.as_str(), base),
+            None => message.to_string(),
+        }
     }
 
     pub fn set_gender(&self, gender: bool) {
@@ -150,6 +181,20 @@ impl RequestLog {
         let ms = self.started.elapsed().as_secs_f64() * 1000.0;
         let ms = (ms * 10.0).round() / 10.0;
         let endpoint = self.endpoint;
+        let outcome = match outcome {
+            // Redact BEFORE the record is built, so there is no window in which the raw path
+            // reaches a subscriber.
+            Outcome::Failed {
+                class,
+                status,
+                message,
+            } => Outcome::Failed {
+                class,
+                status,
+                message: self.redact(&message),
+            },
+            other => other,
+        };
         self.span.in_scope(|| match outcome {
             Outcome::Diarize {
                 num_speakers,
@@ -247,6 +292,37 @@ mod tests {
         let long = "a".repeat(500);
         let id = sanitize_id(&long).unwrap();
         assert_eq!(id.len(), MAX_ID_LEN);
+    }
+
+    /// Regression: verbatim from a live run before the fix. The span field said `smoke.wav`
+    /// while the error field published the whole path, which is exactly the disclosure the
+    /// basename rule exists to prevent.
+    #[test]
+    fn an_error_message_cannot_republish_the_full_media_path() {
+        let log = RequestLog::new("/diarize", &HeaderMap::new());
+        log.set_audio(Path::new("/audio/private/Board Meeting Q3 - CONFIDENTIAL.wav"));
+        let leaked = "opening /audio/private/Board Meeting Q3 - CONFIDENTIAL.wav: \
+                      No such file or directory (os error 2)";
+        let redacted = log.redact(leaked);
+        assert!(!redacted.contains("/audio/private"), "{redacted}");
+        assert!(!redacted.contains("private"), "{redacted}");
+        // The basename survives: "which file failed" must still be answerable.
+        assert!(redacted.contains("Board Meeting Q3 - CONFIDENTIAL.wav"), "{redacted}");
+        assert!(redacted.starts_with("opening Board Meeting"), "{redacted}");
+    }
+
+    #[test]
+    fn redaction_is_a_no_op_when_there_is_no_path() {
+        // /embed_window with samples_b64 has no path at all.
+        let log = RequestLog::new("/embed_window", &HeaderMap::new());
+        assert_eq!(log.redact("invalid base64"), "invalid base64");
+    }
+
+    #[test]
+    fn a_bare_filename_needs_no_redaction_and_is_not_mangled() {
+        let log = RequestLog::new("/diarize", &HeaderMap::new());
+        log.set_audio(Path::new("smoke.wav"));
+        assert_eq!(log.redact("opening smoke.wav: boom"), "opening smoke.wav: boom");
     }
 
     #[test]
