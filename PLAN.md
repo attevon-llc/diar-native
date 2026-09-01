@@ -37,8 +37,11 @@ overhead, which is what limits media under a minute.
 4. **Shared weights are a core requirement**, not an option: Arc-shared ORT sessions (thread-safe
    `run()`, weights loaded once) + per-request scratch buffers → N concurrent diarizations
    without N× VRAM (parity with the old Celery shared-weights PyTorch pattern).
-5. **End-state removes the pyannote fork** for diarization: Rust binary + ORT + ~33 MB ONNX
-   models replace the pinned fork; fork path stays config-flagged until shadow-mode proves T1,
+5. **End-state removes the pyannote fork** for diarization: Rust binary + ORT + ONNX models
+   replace the pinned fork. (The two core graphs are ~33 MB, but a deployable `fast` set is
+   **~484 MB** — the batched variants and the 189.5 MB gender classifier dominate; `--skip-gender`
+   brings it to ~294 MB. Still against a ~9 GB image with full torch.)
+   Fork path stays config-flagged until shadow-mode proves T1,
    then retires (ends fork maintenance). Torch may remain in the backend image for OTHER
    features (alignment/NLP) — separate audit later.
 6. Production repos (`transcribe-app`, `pyannote-audio-fork`) are read-only from this project.
@@ -65,10 +68,14 @@ Repo layout target (crates to be created here):
 crates/diar-core/    # speakrs wrapper: Arc-shared sessions + per-request buffers (decision #4),
                      #   per-speaker centroids out, embed_window(), num/min/max-speaker
                      #   constraints (port VBxClustering L1004-1024 k-means path),
-                     #   dual outputs (full + exclusive diarization)
-crates/diar-server/  # T1 sidecar: HTTP/gRPC /diarize /embed_window /healthz, admission
+                     #   dual outputs (full + exclusive diarization); logging.rs, ort_compat.rs,
+                     #   provision/ (the model exporter, marker and five-stage smoke test —
+                     #   here, not in diar-server, so it is integration-testable)
+crates/diar-server/  # T1 sidecar: HTTP /diarize /embed_window /healthz /readyz, admission
                      #   semaphore, CUDA + CPU-only builds; engines.rs = device registry,
-                     #   one process serves cuda + cpu, selected per request (issue #1)
+                     #   one process serves cuda + cpu, selected per request (issue #1);
+                     #   cli.rs = provision-models / verify-models / check-token subcommands
+                     #   and the startup model gate (no subcommand = serve)
 crates/diar-cli/     # bench/ops runner (RTTM out, --dump-stages)
 crates/diar-ffi/     # C-ABI cdylib → T2 Triton custom backend (Triton backend API is C)
 ```
@@ -121,6 +128,28 @@ Milestones:
     the rendering, logs go to stdout, and every `/diarize` / `/embed_window` request gets a
     span (`request_id`, device, duration, outcome, `error_class`) that speakrs' own events
     nest under. Policy lives in `diar_core::logging` so the server and the CLI cannot drift.
+  - **Model provisioning (issue #2): DONE 2026-08-31 (RESULTS §7.35, §7.36, §7.38)** — the last
+    blocker to self-hosted OpenTranscribe running the native diarizer: there was no supported way
+    for a third party to obtain the weights. `diar-server` gained `provision-models`,
+    `verify-models` and `check-token`, all writing machine-readable JSON. Working out what
+    `models_folded/` actually IS came first — the recipe is **5 steps, not 1**, and step 2b
+    (onnxsim constant-folding the segmentation graphs under the plain filenames) was mandatory
+    and undocumented, costing ~2x and the ORT-CUDA `Sin`/`Cos` CPU-fallback tax if skipped.
+    A cold run reproduces all 15 diarization graphs with **bit-identical initializers** and an
+    **identical RTTM sha256** (119.5 s, ~484 MB at recipe 2).
+    Provenance lands in `diar-provision.json`; `EXPORT_RECIPE_VERSION` is 2 (fp16 gender
+    restored — §7.39), and recipe-1 directories are `stale`, which is non-fatal.
+  - **Startup model gate + `/readyz`: DONE 2026-08-31** — a missing or zero-length required file
+    is now fatal (**exit 8**) with remediation text naming the provisioning command and the HF
+    gate URL, instead of one "CUDA session load failed" per device inside a crash loop that also
+    fails `up --wait`. A missing MARKER is deliberately only a warning: every directory deployed
+    before this shipped has none. `/healthz` gained the `models_*` fields and **must stay 200 in
+    every state** (the compose healthcheck and `diarizer_native.py` gate on status alone);
+    `/readyz` is the endpoint allowed to 503. `DIAR_ALLOW_UNVERIFIED_MODELS=1` is the escape
+    hatch. Ten audit defects fixed in §7.38 — the load-bearing two: provisioning **defaulted to a
+    device**, so a GPU-less host wrote a marker declaring good models known-bad and bricked
+    startup permanently; and the smoke test verified graphs production does not run, so a zeroed
+    production multimask graph passed all five stages green.
 - **M4 (T2)**: Triton repo productionization — accuracy-correct community-1 TRT engines
   (rebuild from our exports), `diar-ffi` backend or sidecar-calls-Triton, per-arch engine build
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured
