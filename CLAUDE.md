@@ -32,7 +32,7 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode, and
   `logging.rs` (the `RUST_LOG`/`DIAR_LOG_FORMAT` policy both binaries share; the sink is a
   parameter, and the library never installs a subscriber itself), `ort_compat.rs` (per-platform
-  session workarounds — currently the aarch64 fp16 GELU cap), and `provision/` (preflight,
+  session workarounds — currently the aarch64 fp16 GELU cap), `shutdown.rs`, and `provision/` (preflight,
   exporter, marker, `files.rs` = the authoritative required-file lists, `verify.rs` = the
   five-stage smoke test). Provisioning lives in diar-core, NOT diar-server: diar-server is a
   binary crate with no `tests/`, so nothing in it is integration-testable.
@@ -51,6 +51,16 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   stderr — stdout is the harness's JSONL). **This works in `diar-server` too as of §7.37**;
   before that the server installed no subscriber at all, so `RUST_LOG` was dead in the
   DEPLOYED artifact and only ever did anything in the CLI.
+- **Both binaries are `fn main() -> !` and MUST stay that way** (issue #19, RESULTS §7.51,
+  `docs/ORT_ATEXIT_TEARDOWN.md`). Every exit goes through `diar_core::shutdown::exit` /
+  `exit_main`, which terminate via `_exit`. Returning a `Result` from `main` — or calling
+  `std::process::exit` — lets libc run ort's `.fini_array` destructor, which LOGS the drop of
+  its global `Environment` after the main thread's TLS is gone; with a subscriber installed and
+  `ort::lifetime` at TRACE that aborts the process *after* the work is written and the output
+  flushed. It cost `diar-cli` exit 134 at `RUST_LOG=trace` and made `diar-server` answer a port
+  conflict with a heap-corruption abort instead of "address already in use". Not fixable
+  downstream: ort's `G_ENV` is private and strong, and the tracing dispatcher cannot be
+  uninstalled. Guarded by `crates/diar-core/tests/shutdown_teardown.rs`.
 - `upstream-work/` (gitignored) — upstream-tip clone with the 7 prepared PR branches;
   drafts in `docs/pr_drafts.md`. `origin` = `attevon-llc/speakrs` (our fork, branches pushed
   2026-08-20), `upstream` = `avencera/speakrs`. Opening PRs/issues against avencera/speakrs

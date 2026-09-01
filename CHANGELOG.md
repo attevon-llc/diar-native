@@ -22,6 +22,20 @@ Measurements referenced here are recorded in
 
 ### Fixed
 
+- **`diar-cli` and `diar-server` no longer die by signal at teardown (issue #19).** `diar-cli`
+  aborted with exit 134 (`corrupted double-linked list` / SIGABRT) *after* writing a complete,
+  correct RTTM, so any caller checking the exit code — a script, CI, a supervisor — discarded a
+  good run. `diar-server` had the same defect on its bind-failure path, where it answered a port
+  conflict with a heap-corruption abort instead of `Address already in use`. Root cause is
+  upstream and not a race: `ort` releases its process-global `Environment` from an ELF
+  `.fini_array` destructor and *logs* the drop, which runs after `main` has returned and after
+  the main thread's thread-locals are gone, so `tracing_subscriber`'s fmt layer panics where
+  unwinding cannot start. Reproducible 100% at `RUST_LOG=trace`, 0% at `debug` — the apparent
+  flakiness was two gates, not timing. Both binaries are now `fn main() -> !` and exit through
+  `diar_core::shutdown`, which terminates via `_exit` so the destructor never runs. Output was
+  never truncated (verified byte-for-byte). `ort` stays pinned `=2.0.0-rc.12`; the upstream
+  report is drafted in `docs/ORT_ATEXIT_TEARDOWN.md` and **not filed**. RESULTS §7.51.
+
 - **`release.yml` and the published tag set now agree, and the release builds the provisioning
   images (issue #20).** The workflow built `docker/Dockerfile.server-cpu` for
   `linux/amd64,linux/arm64` under the single tag `:<ver>-cpu` — a multi-arch manifest list —

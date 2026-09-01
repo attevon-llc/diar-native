@@ -26,6 +26,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ort = { workspace = true }
 ndarray = { workspace = true }
+# `shutdown` only: `_exit`, to terminate without running ort's `.fini_array` destructor.
+libc = "0.2"
 tracing = { workspace = true }
 # `logging` only *offers* an init function; nothing in this library installs a subscriber.
 # It lives here so diar-server and diar-cli share one answer to "what does an unset RUST_LOG

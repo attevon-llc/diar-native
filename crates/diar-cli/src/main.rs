@@ -71,7 +71,15 @@ fn load_wav(path: &PathBuf) -> Result<Vec<f32>> {
     Ok(samples)
 }
 
-fn main() -> Result<()> {
+/// Terminates via [`diar_core::shutdown`] rather than returning a `Result` from `main`.
+/// Returning would run libc's exit handlers, and ort's `.fini_array` destructor logs the
+/// drop of its global `Environment` from there — after the main thread's TLS is gone, which
+/// aborts the process *after* the RTTM is written (issue #19; see that module for the detail).
+fn main() -> ! {
+    diar_core::shutdown::exit_main(run())
+}
+
+fn run() -> Result<()> {
     // Engine stage traces (fbank_ms, gpu_predict_ms, clustering timing) go to STDERR — stdout
     // stays parseable JSONL for the bench harness. Same RUST_LOG/DIAR_LOG_FORMAT policy as
     // diar-server (`diar_core::logging`), only the sink differs. Note the behaviour change:

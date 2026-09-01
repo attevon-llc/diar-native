@@ -469,7 +469,7 @@ pub fn startup_gate_or_exit(models_dir: &std::path::Path) -> marker::ModelsStatu
             // its fix is `pip install`; this one means "provision the models" and serving
             // needs no python at all. A supervisor branching on exit codes could not tell
             // them apart while they shared 6.
-            std::process::exit(exit_code::MODELS_UNUSABLE);
+            diar_core::shutdown::exit(exit_code::MODELS_UNUSABLE);
         }
         provision::StartupGate::Proceed { status, warning } => {
             // Non-fatal, so it belongs in the log stream with everything else. The Fatal arm

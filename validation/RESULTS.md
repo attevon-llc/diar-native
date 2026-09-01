@@ -3512,3 +3512,202 @@ has become.
 `RuntimeConfig::fbank_pool` is a genuine speakrs API improvement, not a diar-native workaround,
 and is drafted for upstream in `docs/upstream_drafts_fbank_pool.md`. **Nothing has been filed** —
 anything outward-facing against `avencera/speakrs` needs explicit operator approval.
+
+### 7.51 `diar-cli`'s teardown abort is `ort` logging from a `.fini_array` destructor — not a race, not speakrs, and `diar-server` had it too (issue #19)
+
+**Verdict: root-caused and fixed.** The fault is 100% deterministic once the right knob is
+found; the "2 of 3 runs" in the issue was two independent gates being crossed, not a race. Fixed
+by terminating through `diar_core::shutdown::exit` (`_exit`) instead of returning from `main`.
+Output was never affected — verified byte-for-byte, not assumed.
+
+#### The reproduction is deterministic, and the discriminator is `ort`, not `speakrs`
+
+`diar-cli --mode cpu`, `clip30.wav`, `models_folded`, binary `/tmp/diar_target_qual` (pre-fix),
+3 runs per cell:
+
+| `RUST_LOG` | exit codes |
+|---|---|
+| `trace` | **134, 134, 134** |
+| `speakrs=trace,ort=trace` | **134, 134, 134** |
+| `speakrs=trace` | 0, 0, 0 |
+| `debug` | 0, 0, 0 |
+| unset (`info,ort::logging=warn`) | 0, 0, 0 |
+
+The issue's own repro line (`RUST_LOG=speakrs=trace`) is the one cell that does **not** fail here
+— 0 for 6 on this host. What fails is anything that enables the `ort` targets at TRACE. The
+level, not the source tree, was already established in the issue; this narrows it further to a
+single crate and a single target, `ort::lifetime`.
+
+#### Root cause, from the backtrace rather than inferred
+
+`RUST_BACKTRACE=full`, 5 runs of 5 identical:
+
+```
+10: std::thread::local::panic_access_error
+11: LocalKey<RefCell<String>>::with::<tracing_subscriber::fmt::fmt_layer::Layer<...>::on_event>
+12: tracing_subscriber::fmt::Subscriber<...>::event
+13: tracing_core::event::Event::dispatch
+14: <ort::environment::Environment as Drop>::drop
+15: Arc<ort::environment::Environment>::drop_slow
+16: ort::environment::release_env_on_exit
+17: _dl_call_fini
+18: _dl_fini
+19: __run_exit_handlers
+20: __GI_exit
+21: __libc_start_call_main
+```
+
+```
+cannot access a Thread Local Storage value during or after destruction: AccessError
+fatal runtime error: failed to initiate panic, error 5, aborting
+```
+
+In ort 2.0.0-rc.12: `G_ENV` (`src/environment.rs:65`) holds a **strong** `Arc<Environment>` —
+deliberately, because ORT tolerates `CreateEnv` only once per process — and its only release site
+is `release_env_on_exit`, placed in `.fini_array` (`src/environment.rs:75-83`).
+`Environment::drop` (`:240-245`) then emits `trace!(target: "ort::lifetime", "-DROP ...")`.
+`.fini_array` runs from `_dl_fini`, after `main` has returned and after the Rust runtime has
+destroyed the main thread's thread-locals, so `tracing_subscriber`'s fmt layer — which formats
+through a thread-local `RefCell<String>` — gets `AccessError` and panics where unwinding cannot
+start. Full write-up: `docs/ORT_ATEXIT_TEARDOWN.md`.
+
+**The allocation that is "double-freed" is not one.** The issue's glibc `corrupted double-linked
+list` framing pointed at a double free; the actual fault is a panic during atexit. Both are the
+same window (the process is being torn down under it), and the abort is what reproduced here.
+SIGSEGV/139 was never reproduced on this host at any of the cells above — SIGABRT/134 every time.
+The fix removes the window itself, so it covers either symptom.
+
+#### Two gates, which is why it looked intermittent
+
+1. **The event must be enabled.** `ort::lifetime` is TRACE. At `debug` or below the callsite is
+   disabled and never touches TLS.
+2. **`main` must return normally.** `std::process::exit` does *not* run TLS destructors, so the
+   thread-local is still alive when `.fini_array` fires. Measured on the isolated probe: identical
+   program, `std::process::exit(42)` → exit 42, 5 of 5; implicit return → 134, 5 of 5.
+
+Gate 2 is why `verify-models` was unaffected: it ends in `std::process::exit`, and separately
+installs no subscriber. Measured: 8 runs, exit 10 every time, with and without `RUST_LOG=trace`.
+
+#### Minimal reproduction — 8 lines, no model, no speakrs, no audio
+
+```rust
+// ort = "=2.0.0-rc.12"; tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("trace"))
+        .with_writer(std::io::stderr)
+        .init();
+    let _env = ort::environment::current().expect("env");
+}
+```
+
+Exit 134, deterministic. This is the control that rules out speakrs, BLAS threadpools, the fbank
+pool, ORT sessions and diarization entirely: none of them are present.
+
+#### `diar-server` DOES share the defect — on the bind-failure path
+
+Not in normal operation: it has no signal handler, so `docker stop` kills it before `.fini_array`
+runs. But it reaches libc `exit` with a subscriber installed and engines loaded whenever `run()`
+returns `Err` — most reachably, a port conflict. Port 18701/18702 held by another process,
+`DIAR_MODE=cpu`, `RUST_LOG=trace`, 3 runs each:
+
+| binary | exit codes | operator sees |
+|---|---|---|
+| pre-fix | **134, 134, 134** | `corrupted double-linked list` / SIGABRT |
+| post-fix | 1, 1, 1 | `Error: Address already in use (os error 98)` |
+
+So the pre-fix server answered a port conflict with a heap-corruption abort and swallowed the
+actual diagnosis. That is the more damaging half of this issue, and it was in the deployed
+artifact.
+
+#### Output was never truncated
+
+Verified rather than assumed, since the issue flagged it as the thing that would change the
+priority. Crashing run (`RUST_LOG=trace`, exit 134) vs clean run (`RUST_LOG=debug`, exit 0), same
+clip, `--json`:
+
+- RTTM: **identical** (modulo the file-id column, which carries the `--label`).
+- JSON: **identical** except the same label inside the embedded `rttm` string.
+- stdout JSONL: present and complete in both.
+
+Post-fix RTTM is likewise identical to the pre-fix clean run. The work was always finished; only
+the process's report of itself was wrong.
+
+#### The fix, and why it is a fix rather than a timing change
+
+`crates/diar-core/src/shutdown.rs`: `exit(code)` flushes stdout/stderr, then `libc::_exit`.
+`exit_main(result)` is the shared `main` epilogue (anyhow's `Error: <chain>` to stderr, then 0/1).
+`diar-cli` and `diar-server` are now `fn main() -> !`; every exit in both — including the three
+provisioning subcommands and `startup_gate_or_exit` — routes through it.
+
+`_exit` does not run libc's exit handlers, so `release_env_on_exit` never executes. This is
+structural, not a timing shift: the faulting frame is removed from the program, not raced with.
+
+No local alternative works. `G_ENV` is private and strong, so dropping every `Session` does not
+empty it. `set_global_default` cannot be undone, so the subscriber cannot be uninstalled before
+returning. Clamping `ort::lifetime` in `logging.rs`'s default filter would hide only gate 1, would
+not survive an explicit `RUST_LOG=trace` (the acceptance criterion is *any* level), and would
+silently ignore what the operator asked for.
+
+`std::process::exit` was measured and would have been sufficient for the observed abort (gate 2).
+`_exit` was chosen over it because it additionally skips `ReleaseEnv` reaching into
+`libonnxruntime.so` during `_dl_fini`, where destructor ordering across shared objects is not
+guaranteed — the plausible origin of the reported `corrupted double-linked list`. Skipping
+`ReleaseEnv` at process exit costs nothing: the kernel reclaims the address space.
+
+The real defect is upstream — emitting a `tracing` event from a `.fini_array` destructor is
+unsound for any subscriber that uses thread-locals. Report drafted in
+`docs/ORT_ATEXIT_TEARDOWN.md`. **Nothing has been filed**; anything outward-facing against
+`pykeio/ort` needs explicit operator approval. `ort` stays pinned `=2.0.0-rc.12`.
+
+#### After: `diar-cli` exits 0 at every level
+
+Same matrix, post-fix binary, 3 runs per cell:
+
+| `RUST_LOG` | pre-fix | post-fix |
+|---|---|---|
+| `trace` | 134, 134, 134 | **0, 0, 0** |
+| `speakrs=trace,ort=trace` | 134, 134, 134 | **0, 0, 0** |
+| `speakrs=trace` | 0, 0, 0 | 0, 0, 0 |
+| `debug` | 0, 0, 0 | 0, 0, 0 |
+| unset | 0, 0, 0 | 0, 0, 0 |
+
+#### Regression test
+
+`crates/diar-core/tests/shutdown_teardown.rs`, driving `crates/diar-core/src/bin/diar-teardown-fixture.rs`.
+
+The harness cannot stand in for a binary here: **libtest exits via `std::process::exit`**, which
+skips the TLS teardown and so never arms gate 2. A first attempt that re-executed the test binary
+passed for the wrong reason and was replaced. The fixture is a real `main` that arms the identical
+hazard (subscriber + live ORT environment) and differs only in how it leaves `main`:
+
+| fixture mode | exit | in CI |
+|---|---|---|
+| `exit 42` | 42 (5 of 5) | gated |
+| `ok` | 0 | gated |
+| `err` | 1, with `Error: outer context` + cause chain on stderr | gated |
+| `return` | **SIGABRT / 134 (5 of 5)** | `#[ignore]` |
+
+The `return` case is the pre-fix shape and passes — i.e. it still reproduces the abort — which is
+what makes the other three non-vacuous. It is `#[ignore]`d because it asserts an *upstream* defect
+and should start failing the day `ort` fixes it.
+
+Model-free by construction: the fixture creates a bare ORT environment and loads no graph, so this
+runs in CI with none of the gated artifacts present. The `err` case also pins that `shutdown::exit`
+flushes before terminating — `_exit` skips libc's stream flushing, and without the explicit flush
+the error message would vanish.
+
+The fixture is a `[[bin]]` of `diar-core`, which is a lib-only dependency of both images: the
+Dockerfiles build `-p diar-server -p diar-cli` and copy binaries by name, so it never ships.
+
+#### Consequence for `start.sh --cli`
+
+Its documented workaround — reporting a non-zero exit as a known teardown fault rather than
+failing the run — is now unnecessary on this binary. `start.sh` is owned by another session and
+was **not** edited here; flagged for its owner rather than changed.
+
+#### Environment
+
+x86_64, glibc 2.39, ort 2.0.0-rc.12, rustc 1.97.1, host build, default (CPU) features. Machine was
+under unrelated load (load average ~13 of 48 cores) — irrelevant to exit codes, and no timing claim
+is made in this section.

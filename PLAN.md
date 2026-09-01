@@ -234,8 +234,15 @@ Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is ju
 4b. **VBx vectorization + threaded blocked pdist** — DONE in the local patch set (8× clustering,
    4.7h 474→171.6 s, RTTMs bit-identical, parity fixtures green; RESULTS §4.22-4.24). This is
    now the flagship perf PR alongside the fbank pool.
-5. Bug report: ORT-CUDA teardown crash (`corrupted double-linked list`); batched-fbank-graph
-   numeric deviation vs single-chunk graph.
+5. ~~Bug report: ORT-CUDA teardown crash (`corrupted double-linked list`)~~ — **DONE, and it
+   was never a speakrs bug** (issue #19, RESULTS §7.51). `ort` releases its process-global
+   `Environment` from a `.fini_array` destructor and *logs* the drop; that runs after `main`
+   has returned and after the main thread's TLS is gone, so the fmt layer aborts the process
+   with its work already written. Fixed on our side by exiting through
+   `diar_core::shutdown::exit` (`_exit`) — `crates/diar-core/src/shutdown.rs`. The upstream
+   report belongs to `pykeio/ort`, not `avencera/speakrs`; drafted in
+   `docs/ORT_ATEXIT_TEARDOWN.md`, not filed. Batched-fbank-graph numeric deviation vs
+   single-chunk graph remains open.
 6. **Exclusive-diarization correctness** (RESULTS §7.7, UPSTREAM_PRS PR-7) — `make_exclusive`
    runs on binarized activations, so every overlap tie resolves to the highest cluster index
    (100.0% of 22 297 sampled AMI overlap frames). Fixed by resolving overlaps on the continuous

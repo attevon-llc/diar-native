@@ -572,7 +572,12 @@ async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, Json<HealthR
     (code, Json(body))
 }
 
-fn main() -> anyhow::Result<()> {
+/// Every exit goes through [`diar_core::shutdown`], never a `Result` returned from `main` and
+/// never `std::process::exit`. Both of those run libc's exit handlers, and ort's `.fini_array`
+/// destructor logs the drop of its global `Environment` from there — after the main thread's
+/// TLS is gone. With a subscriber installed and `RUST_LOG=trace`, that turned a plain
+/// "address already in use" into SIGABRT (issue #19; see that module for the detail).
+fn main() -> ! {
     // speakrs pipeline threads + ORT need more than the 2 MiB default thread stack
     // (measured: stack overflow in worker threads; same finding as the test suite).
     if std::env::var("RUST_MIN_STACK").is_err() {
@@ -586,11 +591,25 @@ fn main() -> anyhow::Result<()> {
         // The provisioning subcommands never construct an engine: no ORT, no VRAM, no
         // device. They must work on a box with no GPU and an empty models directory —
         // which is precisely the situation they exist to fix.
-        Some(cli::Command::ProvisionModels(args)) => std::process::exit(cli::run_provision(args)),
-        Some(cli::Command::VerifyModels(args)) => std::process::exit(cli::run_verify(args)),
-        Some(cli::Command::CheckToken(args)) => std::process::exit(cli::run_check_token(args)),
+        Some(cli::Command::ProvisionModels(args)) => {
+            diar_core::shutdown::exit(cli::run_provision(args))
+        }
+        // `verify-models` loads all 16 graphs, so it reaches teardown with a live ORT
+        // environment; it is only safe today because the provisioning path installs no
+        // subscriber. It exits the same way as everything else so that stays true by
+        // construction rather than by coincidence.
+        Some(cli::Command::VerifyModels(args)) => diar_core::shutdown::exit(cli::run_verify(args)),
+        Some(cli::Command::CheckToken(args)) => {
+            diar_core::shutdown::exit(cli::run_check_token(args))
+        }
     }
 
+    diar_core::shutdown::exit_main(serve())
+}
+
+/// Builds the runtime the server runs on. Split out of `main` so the exit code goes through
+/// exactly one path — see the note on `main`.
+fn serve() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)

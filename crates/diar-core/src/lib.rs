@@ -18,6 +18,7 @@ pub mod gender;
 pub mod logging;
 pub mod ort_compat;
 pub mod provision;
+pub mod shutdown;
 use gender::{GenderModel, GenderVerdict};
 
 /// Frame count of the segmentation mask grid (10 s window @ SincNet stride).
