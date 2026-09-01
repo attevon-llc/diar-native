@@ -3061,3 +3061,88 @@ forever — so the substitution never returns. The VRAM sampler must have its st
 away (`>/dev/null 2>&1 &`) and its PID passed via a global. Fixed in the committed harness with
 a comment; symptom to recognise is an empty output dir plus zero request lines in `docker logs`
 while the sampler log grows normally.
+
+### 7.45 B1 — `--features cuda` does NOT slow CPU-mode inference, and the CPU-leg RTTM finally has a recorded MD5 (issue #5)
+
+Second of the three timed legs §7.34 deferred. Harness:
+`validation/b1_cuda_feature_cpu_cost.sh` (committed, reusable).
+
+**The single variable is the `ort-sys` prebuilt distribution.** `ort/cuda` selects a different
+prebuilt tarball whose statically-linked MLAS — the ORT CPU EP kernel library — may have been
+compiled with different flags. Everything else is held fixed: one source tree at `96e5563`, one
+toolchain, one container image, same models, same audio, same `--mode cpu`. Both binaries were
+built by the same `diar-native-builder:bench` (**Ubuntu 24.04.4 / rustc 1.97.1**; see §7.44 on
+why the local `:latest` could not be trusted).
+
+**The premise was confirmed at the linker before it was measured.** `ldd` on both binaries is
+byte-for-byte the same set — `libopenblas`, `libstdc++`, `libgcc_s`, `libm`, `libc`,
+`libgfortran`, and **no ONNX Runtime `NEEDED` entry in either**. That is §7.34's static-linking
+claim holding for the *default-features* build too, and it is what makes this a clean
+single-variable test: the difference is entirely inside the statically-linked ORT objects.
+Binary sizes differ accordingly, 32 619 904 B (default) vs 34 006 720 B (cuda), **+1.39 MB**.
+
+**Control set.** AMI `EN2002c` first 360 s, 16 kHz mono, md5
+`e192929eef63d8f61ac525ca4c906643` (source is already 16 kHz mono `pcm_s16le`, so `-t 360` is an
+exact PCM truncation), staged on local disk — the AMI corpus lives on a **NAS mount** and its
+I/O has no business inside a timed leg. `models_folded/`, `SPEAKRS_INTRA_THREADS` at its default
+(`available_parallelism().min(6)` = 6, i.e. §7.32's "new" configuration). Legs **interleaved**
+def/cuda/def/cuda/def/cuda. Load average **8.9 → 14.3 on 48 cores** across the whole leg — the
+quietest window this session, and unusually stable for this box.
+
+| round | default-features | `--features cuda` | load avg at leg |
+| --- | --- | --- | --- |
+| 1 | 52.54 s | 51.75 s | 8.87 / 9.33 |
+| 2 | 52.66 s | 51.98 s | 10.14 / 10.77 |
+| 3 | 51.86 s | 52.46 s | 14.28 / 12.67 |
+| **median** | **52.54 s** | **51.98 s** | |
+
+Metric is the engine-reported `elapsed_s` (what §7.32 reported); container start and model load
+are excluded. Wall-clock medians were 56.77 s and 56.40 s, the same picture with a constant
+~4.3 s of process startup added.
+
+**VERDICT: PASS — no cost, and the sign points the wrong way for a regression.** The cuda-flavour
+build is **0.56 s (1.1%) FASTER** at the median. That delta is *smaller than each build's own
+round-to-round spread* (def 0.80 s, cuda 0.71 s) and the two ranges fully overlap
+(def 51.86–52.66, cuda 51.75–52.46). The honest reading is **no measurable difference**, not a
+speedup: three rounds cannot resolve 1% on this box, and round 3 reverses the ordering. What the
+leg does establish is a firm bound — whatever the MLAS flag difference is, it does not cost
+CPU-mode inference anything detectable at this resolution.
+
+**ACCURACY CHECK — output identity, proven by diffing raw records.** All six runs across both
+builds produced **one RTTM MD5 and one record hash**:
+
+```
+RTTM md5      c5a9fdf208f57a7b1129a85c5175cf86   (6/6 runs, both builds)
+record sha256 5f338c99ff19eb27…                  (segments + exclusive_segments
+                                                  + centroids + num_speakers)
+```
+
+The different ORT distribution changes neither timings nor numerics.
+
+#### The §7.32 comparison cannot be made as the plan asked, and why that is worth saying
+
+The task specified "the RTTM MD5 must EQUAL the §7.32 CPU-leg MD5". **It cannot be checked:
+§7.32 states "one MD5 across all CPU legs" but never writes the value down**, and no 360 s
+`EN2002c` artifact is committed under `results/`. Nor could the clip be reconstructed with
+certainty — §7.32 records "first 360 s" but not the tool or command that produced it, so a
+byte-identical input is not guaranteed even in principle. The identity claim above is therefore
+**internal to this leg** (def vs cuda, the actual variable) and is *not* continuity with the
+logged run. That is a real limitation, not a technicality: it means §7.32's CPU output and this
+one have never been compared and cannot now be.
+
+**Fixed going forward.** The value is recorded here — `c5a9fdf208f57a7b1129a85c5175cf86` for
+`EN2002c` first 360 s, `models_folded/`, `--mode cpu`, alongside the input md5
+`e192929eef63d8f61ac525ca4c906643` and the exact `ffmpeg -t 360 -ar 16000 -ac 1 -c:a pcm_s16le`
+that produced it. A future CPU leg on this clip has something to diff against.
+**Lesson for RESULTS entries generally: "identical MD5" without the digest, and a derived clip
+without the command that derived it, are not reproducible claims.**
+
+#### On the absolute numbers vs §7.32's 57.8 / 59.2 / 67.7 s
+
+This leg's 52.54 s median is ~11% below §7.32's 59.2 s median (6.85× vs 6.1× RT). **No speedup
+is claimed and none should be read into it.** The two are not comparable: different builder
+image, unverifiable clip provenance (above), a session's worth of dependency drift, and §7.32's
+own note that it was "not a protocol-grade quiet-machine leg" (load 9–13/48, close to this
+leg's 8.9–14.3). Same band, different conditions. The B1 verdict rests entirely on the
+**interleaved within-session A/B**, which is the only comparison here that controls its
+variables.
