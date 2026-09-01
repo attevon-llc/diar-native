@@ -523,7 +523,7 @@ table on purpose — they are compose-level indirection that expands into these
 | `DIAR_EXPORT_PYTHON` | Interpreter (with torch + pyannote.audio) used to run the export scripts. | `python3` | `--python` overrides. A non-working interpreter exits 6. |
 | `DIAR_MODE` / `DIAR_DEVICES` | Device for the end-to-end smoke stage. | **`cpu`** | Deliberately *not* the serving default. Provisioning defaulting to a GPU is what used to brick GPU-less hosts. An unrecognized name is exit 2 here, never a silent fall-through to `cuda`. |
 | `DIAR_ORT_OPT_LEVEL` | Override the ORT graph optimization level for sessions built through `ort_compat` — the gender session and the smoke test, **not** speakrs' 15 diarization graphs. | unset | `disable`\|`none`\|`0`, `basic`\|`1`, `extended`\|`2`, `all`\|`3`. Escape hatch for a platform hitting the aarch64-class problem in §6f; setting it **bypasses** the automatic aarch64 cap. |
-| `DIAR_ORT_DISABLED_OPTIMIZERS` | Pass a disable-list straight to ORT. Same scope as above. | unset | A list ORT rejects is **fatal** at session build (unlike a bad `DIAR_ORT_OPT_LEVEL`, which is silently ignored). |
+| `DIAR_ORT_DISABLED_OPTIMIZERS` | Pass a disable-list straight to ORT. Same scope as above, and it **bypasses** the automatic aarch64 cap. | unset | Three traps, all measured (§7.40): the pass you probably want is `GeluFusionL2` (`GeluFusion` and `GeluFusionL1` do nothing); the separator is **`;`**, not `,`, despite the `ort` crate's doc comment; and **a misspelled name is silently ignored** — no error, no warning, no effect. |
 
 ### Engine tuning (read by speakrs)
 
@@ -552,19 +552,35 @@ table on purpose — they are compose-level indirection that expands into these
 - **`DIAR_ALLOW_UNVERIFIED_MODELS` is case-sensitive** in a way its neighbours are not: `true`
   and `TRUE` work, `True` does not.
 
-## 6f. Platform note: the aarch64 fp16 gender model
+## 6f. Platform note: the fp16 gender model on linux/arm64
 
-The fp16 gender classifier does not load at all on aarch64 without a workaround, and the reason
-is worth knowing because it is not a bug in the model. The graph is plain opset-17 `ai.onnx` with
-no contrib domain — but it has 20 `Erf` nodes, and one of ORT's *extended* (level-2)
-optimizations rewrites that GELU pattern into `com.microsoft.Gelu`. The x86_64 ORT build ships an
-fp16 kernel for that fused contrib op; the aarch64 build ships fp32 only. The optimizer therefore
-synthesizes a node the very same runtime then refuses to execute.
+The fp16 gender classifier does not load at all on **linux/arm64** without a workaround — which
+silently disables speaker gender there while the server still answers 200. It is not a bug in the
+model. The graph is plain opset-17 `ai.onnx` with no contrib domain, but it has 20 `Erf` nodes,
+and one of ORT's *extended* (level-2) optimizations rewrites that GELU pattern into
+`com.microsoft.Gelu`, for which no fp16 kernel exists. The optimizer synthesizes a node the very
+same runtime then refuses to execute. The node named in the error **is not in the file on disk**,
+which is what makes the message confusing on first read.
 
-Naming the optimizer in a disable-list does **not** suppress the rewrite (measured — all four
-combinations); only capping below level 2 does. So `crates/diar-core/src/ort_compat.rs` caps
-optimization at `Level1` for that one model on that one architecture. The 15 diarization graphs
-keep full optimization, because they run correctly there.
+The obvious explanation — "x86_64 has the fp16 kernel, aarch64 does not" — is only half right,
+and the wrong half is the half that matters. *Every* aarch64 ORT build checked lacks that kernel,
+**including macOS arm64, where the model loads fine**. What differs is whether the fusion fires:
+
+| platform | fp16 kernel | fuses fp16? | result |
+|---|---|---|---|
+| linux/amd64 | yes | yes | loads |
+| **linux/arm64** | **no** | **yes** | **fails** |
+| macOS arm64 | no | **no** | loads |
+
+So it is a build-configuration divergence between two targets of the same ORT release, not an
+architecture property. `crates/diar-core/src/ort_compat.rs` caps optimization at `Level1` for
+that one model on aarch64 — a no-op on the platform that declines the fusion anyway. The 15
+diarization graphs keep full optimization.
+
+Full analysis, the measured alternatives, and three traps around the escape hatches (the
+optimizer is named `GeluFusionL2`, a wrong name is **silently ignored**, and the separator is
+`;` not `,`): [`docs/ORT_FUSION_FP16_AARCH64.md`](docs/ORT_FUSION_FP16_AARCH64.md) and
+RESULTS §7.40.
 
 ## 7. Ground rules
 

@@ -215,14 +215,24 @@ consumer-side decision.
   logged the full media path through the `error` field while the `audio` field dutifully said
   `smoke.wav`. Error text is now redacted before it is logged. The HTTP *response* still carries
   the full path — the caller supplied it, so it is not a disclosure to them.
-- **fp16 gender would not load at all on aarch64** (issue #14). The graph is plain opset-17
-  `ai.onnx` with no contrib domain, but it has 20 `Erf` nodes, and one of ORT's *extended*
-  (level-2) optimizations rewrites that GELU pattern into `com.microsoft.Gelu` — for which the
-  x86_64 ORT build ships an fp16 kernel and the aarch64 build ships fp32 only. The optimizer
-  synthesized a node the very same runtime then refused to execute. Naming the optimizer in a
-  disable-list does **not** suppress the rewrite (measured); only capping below level 2 does. So
-  optimization is capped at `Level1` for that one model on that one architecture, leaving the 15
-  diarization graphs at full optimization, where they run correctly.
+- **fp16 gender would not load at all on linux/arm64** (issue #14), silently disabling speaker
+  gender on that platform while still answering 200. The graph is plain opset-17 `ai.onnx` with
+  no contrib domain, but it has 20 `Erf` nodes, and one of ORT's *extended* (level-2)
+  optimizations rewrites that GELU pattern into `com.microsoft.Gelu`, for which there is no fp16
+  kernel — so the optimizer synthesized a node the very same runtime then refused to execute.
+  The node named in the error does not exist in the file on disk, which is what made it hard to
+  read. Fixed by capping optimization at `Level1` for that one model on that one architecture;
+  the 15 diarization graphs keep full optimization. See `docs/ORT_FUSION_FP16_AARCH64.md`.
+  - **It is a fusion-gate difference, not an aarch64 kernel gap** (RESULTS §7.40). *Every*
+    aarch64 ORT build checked lacks the fp16 kernel, including macOS arm64 — where the model
+    loads fine, because that build declines to apply the fusion to fp16 at all. Only
+    linux/arm64 has the losing combination. It is a build-configuration divergence between two
+    targets of the same ORT release.
+  - A disable-list **does** work, under the name `GeluFusionL2` — the pass is registered twice
+    and `GeluFusion`/`GeluFusionL1` both still fail. The level cap shipped anyway because it is
+    bitwise identical to the unoptimized graph (0.000e+00, vs 9.58e-04 for the disable-list) and
+    does not depend on an undocumented ORT-internal name that is **silently ignored when
+    misspelled** and has already been renamed once.
 - Scope `TARGETARCH` to the builder stage in the CPU Dockerfile. ARG scope is per-stage, so it
   expanded to empty and both platforms of a multi-platform buildx run shared one cargo registry
   cache id and contended on its lock.
