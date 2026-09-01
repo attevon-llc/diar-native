@@ -67,6 +67,29 @@ consumer-side decision.
   `2`. Stale is **non-fatal** — they still serve, and `/healthz` stays 200 — but they fail
   `/readyz`, log one warning, and carry the 378.5 MB fp32 gender model instead of the 189.5 MB
   fp16 one. `provision-models --force` brings them current.
+- **`DIAR_ORT_OPT_LEVEL` is now a floor, not an override — it can lower the optimization level
+  but no longer raise it.** The effective level is `min(requested, cap)`, and on **linux/arm64**
+  the gender session carries a `Level1` cap, so `DIAR_ORT_OPT_LEVEL=all` (or `extended`) no
+  longer reaches that session. On x86_64 there is no cap and nothing changes. This is deliberate,
+  but it is an observable change to a knob that shipped in 0.2.0, so it is called out here rather
+  than only in the code. **Why:** the variable is global while the bug is per-model. An operator
+  raising the level to tune the 15 *diarization* graphs was, as a side effect, raising the
+  *gender* session past the exact point where it stops loading on arm64 — silently un-doing the
+  issue #14 workaround and disabling speaker gender with no error anywhere and a 200 on every
+  request. Raising past a cap is never the thing anyone wanted; to explore above it, use
+  `validation/ort_fusion_probe`, which reports load success per configuration instead of
+  half-starting a server.
+- **An unrecognized `DIAR_ORT_OPT_LEVEL` value is now a hard error at startup** instead of being
+  ignored. A typo used to fall through in silence, leaving the operator convinced they had
+  changed something — the same failure mode this module exists to document in ORT itself.
+  Accepted values: `disable`|`none`|`0`, `basic`|`1`, `extended`|`2`, `all`|`3`. **If you are
+  setting this variable, check its spelling before upgrading**: a value that has been quietly
+  doing nothing will now stop the server.
+- **`DIAR_ORT_DISABLED_OPTIMIZERS` rejects comma-separated values.** ORT's separator is `;`,
+  despite the `ort` crate's own doc comment saying "comma-separated"; `A,B` is taken as one
+  optimizer name, matches nothing, and disables **neither** — confirmed on real linux/arm64
+  against the shipped artifact. A value that silently did nothing now fails loudly. Use
+  `GeluFusionL1;GeluFusionL2`.
 
 ### Added
 

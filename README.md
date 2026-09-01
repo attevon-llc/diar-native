@@ -522,8 +522,8 @@ table on purpose — they are compose-level indirection that expands into these
 | `HF_HUB_OFFLINE` | Read by `huggingface_hub` **inside the python exporter**, not by Rust — set it to re-export from a warm cache with no network (the §7.36 acceptance run did exactly this, and needed no token). | unset | **Not forwarded to the child.** `diar-core` explicitly sets only `PYTHONUNBUFFERED`, `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`, `HF_TOKEN` and `HF_HOME` on the export subprocess, so this only works if it is already in `diar-server`'s own environment and inherited. |
 | `DIAR_EXPORT_PYTHON` | Interpreter (with torch + pyannote.audio) used to run the export scripts. | `python3` | `--python` overrides. A non-working interpreter exits 6. |
 | `DIAR_MODE` / `DIAR_DEVICES` | Device for the end-to-end smoke stage. | **`cpu`** | Deliberately *not* the serving default. Provisioning defaulting to a GPU is what used to brick GPU-less hosts. An unrecognized name is exit 2 here, never a silent fall-through to `cuda`. |
-| `DIAR_ORT_OPT_LEVEL` | Override the ORT graph optimization level for sessions built through `ort_compat` — the gender session and the smoke test, **not** speakrs' 15 diarization graphs. | unset | `disable`\|`none`\|`0`, `basic`\|`1`, `extended`\|`2`, `all`\|`3`. Escape hatch for a platform hitting the aarch64-class problem in §6f; setting it **bypasses** the automatic aarch64 cap. |
-| `DIAR_ORT_DISABLED_OPTIMIZERS` | Pass a disable-list straight to ORT. Same scope as above, and it **bypasses** the automatic aarch64 cap. | unset | Three traps, all measured (§7.40): the pass you probably want is `GeluFusionL2` (`GeluFusion` and `GeluFusionL1` do nothing); the separator is **`;`**, not `,`, despite the `ort` crate's doc comment; and **a misspelled name is silently ignored** — no error, no warning, no effect. |
+| `DIAR_ORT_OPT_LEVEL` | **Floor** on the ORT graph optimization level for sessions built through `ort_compat` — the gender session and the smoke test, **not** speakrs' 15 diarization graphs. | unset | `disable`\|`none`\|`0`, `basic`\|`1`, `extended`\|`2`, `all`\|`3`. It can only **lower** the level: the effective value is `min(requested, cap)`, so it **composes with** the automatic aarch64 cap rather than bypassing it. Raising past that cap is the one configuration known to fail (§6f), and this variable is global while the bug is per-model — `=all`, set to tune the diarization graphs, used to disable gender on arm64 silently. An unrecognized value is a **hard error at startup**, not a silent no-op. To explore above the cap, use `validation/ort_fusion_probe`. |
+| `DIAR_ORT_DISABLED_OPTIMIZERS` | Pass a disable-list straight to ORT. Same scope as above, and it **composes with** the aarch64 cap rather than replacing it. | unset | Three traps, all measured (§7.40): the pass you probably want is `GeluFusionL2` (`GeluFusion` and `GeluFusionL1` do nothing); the separator is **`;`**, not `,`, despite the `ort` crate's doc comment — a comma-separated value is **rejected at startup**, because ORT would take the whole string as a single name and disable neither; and **a misspelled name is silently ignored by ORT** — no error, no warning, no effect, and no list of registered names to validate against, so confirm any value here with `validation/ort_fusion_probe`. |
 
 ### Engine tuning (read by speakrs)
 
@@ -547,8 +547,9 @@ table on purpose — they are compose-level indirection that expands into these
 
 - **`DIAR_MAX_INFLIGHT=0` deadlocks every request.** The global gate has no `> 0` guard, unlike
   `DIAR_MAX_INFLIGHT_CPU`, which explicitly treats `0` as unset for exactly this reason.
-- **`DIAR_ORT_OPT_LEVEL` typos are silent.** An unrecognized level is ignored with no diagnostic
-  and control falls through, whereas a bad `DIAR_ORT_DISABLED_OPTIMIZERS` is fatal.
+- **`DIAR_ORT_OPT_LEVEL` cannot raise the optimization level, only lower it.** On linux/arm64 the
+  gender session is capped at `Level1` and `=all` will not lift it — deliberately, since that is
+  the configuration that stops the model loading. Nothing warns that the request was clamped.
 - **`DIAR_ALLOW_UNVERIFIED_MODELS` is case-sensitive** in a way its neighbours are not: `true`
   and `TRUE` work, `True` does not.
 
