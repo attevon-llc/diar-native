@@ -907,7 +907,7 @@ index 59c66fd..be39d39 100644
 +    )
 +}
 diff --git a/src/inference/embedding/load/sessions.rs b/src/inference/embedding/load/sessions.rs
-index ff5ae7f..20a63f9 100644
+index ff5ae7f..add6d38 100644
 --- a/src/inference/embedding/load/sessions.rs
 +++ b/src/inference/embedding/load/sessions.rs
 @@ -3,21 +3,23 @@ use std::path::Path;
@@ -950,7 +950,37 @@ index ff5ae7f..20a63f9 100644
      split_fbank_batched_session: Option<Session>,
      split_tail_session: Option<Session>,
      split_tail_batched_session: Option<Session>,
-@@ -84,13 +87,21 @@ impl LoadedSessions {
+@@ -54,6 +57,20 @@ pub(super) struct LoadedSessions {
+     coreml: LoadedCoreMlState,
+ }
+ 
++/// Fallback sizing for the CPU fbank pool when `RuntimeConfig::fbank_pool` is `None`:
++/// the `SPEAKRS_FBANK_POOL` override if it parses, else one session per four cores
++/// (clamped to `1..=8`). Callers that set `fbank_pool` explicitly never reach the environment.
++fn auto_fbank_pool_size() -> usize {
++    std::env::var("SPEAKRS_FBANK_POOL")
++        .ok()
++        .and_then(|v| v.parse::<usize>().ok())
++        .unwrap_or_else(|| {
++            std::thread::available_parallelism()
++                .map(|c| (c.get() / 4).clamp(1, 8))
++                .unwrap_or(1)
++        })
++}
++
+ impl LoadedSessions {
+     pub(super) fn load(
+         model_path: &Path,
+@@ -67,8 +84,6 @@ impl LoadedSessions {
+         let split_primary_tail_batched_path = split_tail_model_path(model_path, PRIMARY_BATCH_SIZE);
+         #[cfg(feature = "coreml")]
+         let native_chunk_compute_units = config.chunk_emb_compute_units.to_ml_compute_units();
+-        #[cfg(not(feature = "coreml"))]
+-        let _ = config;
+         let use_split_backend = EmbeddingModel::split_backend_available(model_path);
+ 
+         #[cfg(feature = "coreml")]
+@@ -84,13 +99,21 @@ impl LoadedSessions {
              }};
          }
  
@@ -973,7 +1003,7 @@ index ff5ae7f..20a63f9 100644
                  .map(|path| EmbeddingModel::build_batched_session(&path, mode))
                  .transpose()?
          );
-@@ -116,14 +127,14 @@ impl LoadedSessions {
+@@ -116,14 +139,14 @@ impl LoadedSessions {
          let (split_tail_batched_session, split_tail_batched_elapsed) = timed!(
              use_split_backend
                  .then_some(split_tail_batched_path)
@@ -990,7 +1020,7 @@ index ff5ae7f..20a63f9 100644
                  .map(|path: std::path::PathBuf| EmbeddingModel::build_session(path.as_path(), mode))
                  .transpose()?
          );
-@@ -236,10 +247,31 @@ impl LoadedSessions {
+@@ -236,10 +259,25 @@ impl LoadedSessions {
              );
          }
  
@@ -999,14 +1029,8 @@ index ff5ae7f..20a63f9 100644
 +        // CoreML modes have a native batched fbank path that the CPU pool would shadow,
 +        // so the pool is skipped entirely there (also avoids loading unused CPU sessions).
 +        let split_fbank_pool: Vec<Session> = if use_split_backend && !mode.is_coreml() {
-+            let pool_size = std::env::var("SPEAKRS_FBANK_POOL")
-+                .ok()
-+                .and_then(|v| v.parse::<usize>().ok())
-+                .unwrap_or_else(|| {
-+                    std::thread::available_parallelism()
-+                        .map(|c| (c.get() / 4).clamp(1, 8))
-+                        .unwrap_or(1)
-+                });
++            let pool_size = config.fbank_pool.unwrap_or_else(auto_fbank_pool_size);
++            tracing::debug!(fbank_pool = pool_size, "fbank session pool");
 +            (0..pool_size)
 +                .map(|_| EmbeddingModel::build_fbank_session(&split_fbank_path, ExecutionMode::Cpu))
 +                .collect::<Result<Vec<_>, _>>()?
@@ -1022,7 +1046,7 @@ index ff5ae7f..20a63f9 100644
              split_fbank_batched_session,
              split_tail_session,
              split_tail_batched_session,
-@@ -275,6 +307,7 @@ impl LoadedSessions {
+@@ -275,6 +313,7 @@ impl LoadedSessions {
      ) -> Result<EmbeddingModel, ModelLoadError> {
          let metadata_path = model_path.with_extension("min_num_samples.txt");
  
@@ -1030,7 +1054,7 @@ index ff5ae7f..20a63f9 100644
          Ok(EmbeddingModel {
              meta: EmbeddingMeta {
                  model_path: model_path.to_path_buf(),
-@@ -285,27 +318,30 @@ impl LoadedSessions {
+@@ -285,27 +324,30 @@ impl LoadedSessions {
                  min_num_samples: read_min_num_samples(&metadata_path).unwrap_or(400),
              },
              ort: OrtEmbeddingState {
@@ -1082,7 +1106,7 @@ index ff5ae7f..20a63f9 100644
              },
              #[cfg(feature = "coreml")]
              coreml: CoreMlEmbeddingState {
-@@ -344,35 +380,7 @@ impl LoadedSessions {
+@@ -344,35 +386,7 @@ impl LoadedSessions {
                      &[MULTI_MASK_BATCH_SIZE * NUM_SPEAKERS, MASK_FRAMES],
                  ),
              },
@@ -1862,6 +1886,35 @@ index 309c2a9..e78ec1e 100644
      fn require_num_frames(
          &self,
          num_frames: Option<usize>,
+diff --git a/src/pipeline/config.rs b/src/pipeline/config.rs
+index b457960..b057ef7 100644
+--- a/src/pipeline/config.rs
++++ b/src/pipeline/config.rs
+@@ -77,6 +77,16 @@ impl PipelineConfig {
+ pub struct RuntimeConfig {
+     /// Number of chunk embedding workers
+     pub chunk_emb_workers: usize,
++    /// Size of the CPU fbank session pool used for parallel per-chunk fbank.
++    ///
++    /// `None` (the default) auto-sizes: the `SPEAKRS_FBANK_POOL` environment override when it
++    /// parses, otherwise one session per four cores clamped to `1..=8`. `Some(0)` disables the
++    /// pool and falls back to the single fbank session.
++    ///
++    /// Setting this explicitly lets an embedder size the pool **without touching the
++    /// environment**, which matters because `setenv` is not thread-safe: a host that builds
++    /// models lazily or concurrently cannot safely use the environment override.
++    pub fbank_pool: Option<usize>,
+     /// CoreML compute units for chunk embedding (CoreML modes only)
+     #[cfg(feature = "coreml")]
+     #[cfg_attr(docsrs, doc(cfg(feature = "coreml")))]
+@@ -87,6 +97,7 @@ impl Default for RuntimeConfig {
+     fn default() -> Self {
+         Self {
+             chunk_emb_workers: 1,
++            fbank_pool: None,
+             #[cfg(feature = "coreml")]
+             chunk_emb_compute_units: CoreMlComputeUnits::All,
+         }
 diff --git a/src/pipeline/post_inference.rs b/src/pipeline/post_inference.rs
 index b869ea5..088a979 100644
 --- a/src/pipeline/post_inference.rs

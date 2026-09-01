@@ -39,8 +39,14 @@ after), RTTM bit-identity between batch-1 and batched paths, crash repro with a 
 
 **Change (patches/0001).**
 - `session.rs`: `SPEAKRS_FBANK_THREADS` env override for the intra-op cap.
-- `load/sessions.rs`: build a `split_fbank_pool: Vec<Session>` (size `SPEAKRS_FBANK_POOL`,
-  default `available_parallelism/4` clamped 1–8) when the split backend is available **and the
+- `pipeline/config.rs`: `RuntimeConfig::fbank_pool: Option<usize>` — the caller pins the pool
+  size by value; `None` keeps the previous behaviour exactly (`SPEAKRS_FBANK_POOL`, else
+  `available_parallelism/4` clamped 1–8). Added for issue #3: an embedder that wants a
+  non-default pool should not have to `setenv`, which is not thread-safe and so forbids lazy or
+  concurrent model loading. See `docs/upstream_drafts_fbank_pool.md`.
+- `load/sessions.rs`: build a `split_fbank_pool: Vec<Session>` (size from
+  `RuntimeConfig::fbank_pool`, falling back to `SPEAKRS_FBANK_POOL` and then to
+  `available_parallelism/4` clamped 1–8) when the split backend is available **and the
   execution mode is not CoreML** (CoreML has a native batched fbank path the CPU pool would
   otherwise shadow — Greptile review on PR #15; the pool is skipped there, so no CPU sessions
   are loaded and no CUDA-path behaviour changes).

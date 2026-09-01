@@ -489,10 +489,13 @@ base and ORT tarball are x86-64 only, so there is no arm64 superset to fold it i
 | `DIAR_MAX_INFLIGHT_CPU` | startup | Optional inner sub-gate for CPU work only. Unset (default) = no inner gate and no behaviour change. CPU requests take the global permit first, this one second — always that order. |
 | `"device"` | per request | New optional field on `/diarize` and `/embed_window`. Omitted/null = the default device. |
 
-All engines load **serially in `run()` before the server binds** — never lazily on a request
-thread. This is not a missed optimization: `DiarEngine::load` calls `std::env::set_var`
-(`SPEAKRS_FBANK_POOL`, read back inside the same call), and glibc `setenv`/`getenv` is not
-thread-safe, so a lazy load would race live tokio workers.
+All engines load **serially in `run()` before the server binds**, so a misconfigured
+`DIAR_DEVICES` fails startup rather than the first request. This used to be a *soundness*
+requirement — `DiarEngine::load` called `std::env::set_var("SPEAKRS_FBANK_POOL", ..)` and speakrs
+read it back inside the same call, and glibc `setenv`/`getenv` is not thread-safe. Since §7.50
+the pool size is passed to speakrs through `RuntimeConfig` instead, `DiarEngine::load` mutates no
+process-global state, and lazy or concurrent loading is safe to add whenever the ~620 MB RSS of a
+resident CPU engine is worth reclaiming.
 
 Defaults are unchanged end to end: with neither new variable set, the server loads exactly one
 engine from `DIAR_MODE`, exactly as before.
@@ -722,12 +725,12 @@ table on purpose — they are compose-level indirection that expands into these
 | `SPEAKRS_INTRA_THREADS` | Intra-op threads for the embedding sessions. | `min(cores, 6)` |
 | `SPEAKRS_FBANK_THREADS` | Intra-op threads for the fbank session specifically. | `min(cores, 4)` |
 | `SPEAKRS_AHC_THREADS` | Workers for the blocked pairwise-distance computation in AHC clustering. Higher oversubscribes, since each worker also drives a multi-threaded BLAS `dot`. | `min(cores, 8)` |
+| `SPEAKRS_FBANK_POOL` | Size of the CPU fbank session pool fanned out per chunk. Read **once**, in `EngineConfig::new`, and passed to speakrs as a `RuntimeConfig` field — `diar-server` no longer overwrites it (§7.50, issue #3). `0` disables the pool and keeps the single fbank session; a malformed value warns and falls back to the default. | `1` on CPU/CoreML (the pool contends with inference for cores — §4.12), `min(cores/4, 8)` on CUDA |
 
 ### Not settable, and dead
 
 | var | status |
 |---|---|
-| `SPEAKRS_FBANK_POOL` | **Not operator-settable through `diar-server`.** `DiarEngine::load` unconditionally `set_var`s it before speakrs reads it, so the value is always diar-core's (1 for CPU/CoreML, `min(cores/4, 8)` for CUDA). It only works for a raw speakrs consumer. This is also why engine loads must stay serial before the server binds — glibc `setenv` is not thread-safe. |
 | `SPEAKRS_TRT`, `SPEAKRS_TRT_CACHE` | **Dead.** No read sites; they do nothing. Left documented only so nobody rediscovers them in the TensorRT-era notes and assumes they work (RESULTS §7.26). |
 | `ORT_DYLIB_PATH` | Not applicable to these builds — it is only read under `ort`'s `load-dynamic` feature, which is not enabled. ORT is statically linked. |
 

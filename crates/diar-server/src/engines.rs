@@ -9,15 +9,20 @@
 //! feature gate. So a `--features cuda` build has always been able to run CPU inference; it just
 //! had no way to *ask* for it after startup. This module is that way.
 //!
-//! ## The one hard constraint: engine loads are single-threaded, and stay in `run()`
+//! ## Engine loads no longer have to be single-threaded (issue #3)
 //!
-//! [`diar_core::DiarEngine::load`] calls `std::env::set_var("SPEAKRS_FBANK_POOL", ..)` and speakrs
-//! reads it back inside the same call (`inference/embedding/load/sessions.rs`, the only read
-//! site — load-time only, never at request time). glibc `setenv`/`getenv` is not thread-safe.
-//! Loading an engine lazily on a request thread would therefore race live tokio workers, so
-//! **every** engine is loaded here, serially, from `run()` before `axum::serve` starts. That is
-//! also why there is no "load on first use" path: it is not an optimization we declined, it is
-//! unsound. Two serial loads are exactly as safe as the one load the server has always done.
+//! [`diar_core::DiarEngine::load`] used to call `std::env::set_var("SPEAKRS_FBANK_POOL", ..)` and
+//! have speakrs read it back inside the same call. glibc `setenv`/`getenv` is not thread-safe, so
+//! that made "load on first use" unsound rather than merely unimplemented — and it was already
+//! shakier than it looked here, since loading device *N+1* ran `setenv` while device *N*'s ORT
+//! intra-op threads were alive.
+//!
+//! The pool size now travels as a [`diar_core::EngineConfig`] field into speakrs' `RuntimeConfig`,
+//! so `DiarEngine::load` touches no process-global state. Loads may safely be lazy or concurrent.
+//! They are still done here, serially, from `run()` before `axum::serve` — but that is now a
+//! deliberate fail-fast choice (a bad `DIAR_DEVICES` should kill startup, not the first request),
+//! not a soundness requirement. Lazy loading is unblocked: a resident CPU engine costs ~620 MB
+//! RSS (RESULTS §7.34).
 
 use std::path::PathBuf;
 use std::str::FromStr;

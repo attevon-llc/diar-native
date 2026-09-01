@@ -3386,3 +3386,129 @@ does not contain it.
 The CHANGELOG, issue #1 and the OpenTranscribe issues are corrected to state the invariant that
 holds — centroids identical, boundaries within one frame — rather than the one that does not.
 §7.34's numbers stand as measured on the clip it measured.
+
+### 7.50 `SPEAKRS_FBANK_POOL` threaded through `RuntimeConfig` — the `set_var` is gone, and the knob was a lie (issue #3)
+
+Two defects, one root cause. `DiarEngine::load` called
+`std::env::set_var("SPEAKRS_FBANK_POOL", ..)` and the patched speakrs loader read it back inside
+the same call (`inference/embedding/load/sessions.rs`).
+
+1. **Thread-safety.** glibc `setenv`/`getenv` is not thread-safe; Rust 2024 marks
+   `std::env::set_var` `unsafe` for exactly this reason. Our crates are edition 2021, so the call
+   compiled with no `unsafe` and no warning — the hazard was invisible at the call site.
+2. **The knob did not work.** The `set_var` was *unconditional* and overwrote whatever the
+   operator had set, before speakrs read it. `EngineConfig::fbank_pool` was `None` at all four
+   construction sites and nothing parsed the variable into it, so an operator setting
+   `SPEAKRS_FBANK_POOL=1` to stop the pool contending on a shared box silently got `cores/4`,
+   with no log line saying so. README, CLAUDE.md, PLAN.md and `docs/UPSTREAM_PRS.md` all
+   described it as settable.
+
+#### The `SAFETY` comment was already false, not merely fragile
+
+The comment read *"called before any speakrs session exists; single-threaded load path"*. That is
+true of the **first** load only. `EngineRegistry::load` (`crates/diar-server/src/engines.rs`)
+loops over `DIAR_DEVICES` and calls `DiarEngine::load` once per device, so with
+`DIAR_DEVICES=cuda,cpu` the second call runs `setenv` while the first engine's ORT intra-op
+thread pools are alive. `provision/verify.rs` has the same shape (a CUDA load, then a CPU
+retry). So the premise was violated in the deployed multi-device path today, not just in a
+hypothetical lazy-loading future. What kept it from being an *observed* corruption is that no
+in-flight request was reading the environment at that moment — but speakrs reads
+`SPEAKRS_ARENA_SHRINK` (`inference.rs`) and `SPEAKRS_AHC_THREADS` (`clustering/ahc.rs`) on the
+**request** path, not just at load, so the window was real.
+
+#### The change
+
+Upstream-shaped, in `vendor/speakrs`:
+
+- `pipeline/config.rs`: new `RuntimeConfig::fbank_pool: Option<usize>`, defaulting to `None`.
+- `inference/embedding/load/sessions.rs`: pool size comes from `config.fbank_pool`, falling back
+  to `auto_fbank_pool_size()` (the `SPEAKRS_FBANK_POOL` env read, then `cores/4` clamped 1..=8)
+  when it is `None`. **Existing speakrs consumers are unaffected**: `None` reproduces the old
+  code path exactly. Also drops the now-dead `#[cfg(not(feature = "coreml"))] let _ = config;`
+  and adds a `debug!` line reporting the resolved pool size (there was previously no way to
+  observe it at all — which is what made the second defect invisible).
+
+In `diar-core`:
+
+- `EngineConfig::new` reads `SPEAKRS_FBANK_POOL` **once**, via `parse_fbank_pool`, which takes
+  the raw string rather than reading the environment itself so it is unit-testable without
+  `set_var`. All four construction sites go through `new`, so they all inherit the fix.
+- `default_fbank_pool(mode)` and `EngineConfig::resolved_fbank_pool()` make the resolution rule
+  explicit and testable.
+- `DiarEngine::load` builds a `RuntimeConfig { fbank_pool: Some(..), ..default() }` and passes it
+  to `EmbeddingModel::with_mode_and_config`. **No `set_var` remains in `diar-core`.**
+
+Blank is treated as unset; a malformed value warns and falls back to the mode default rather
+than pretending the operator got what they asked for; `0` is honoured and disables the pool.
+
+#### Before/after — measured, not asserted
+
+The `debug!` line was added to speakrs **first** and the pre-fix binary was built with it, so
+both legs are observed rather than one being reasoned about. Identical everything else: same
+host (48 cores → `48/4 = 12` clamped to 8), same `models_folded`, same `clip30.wav`, one
+`diar-cli` run per cell, `RUST_LOG=speakrs=debug`, CUDA legs on `CUDA_VISIBLE_DEVICES=0`.
+
+| condition | before (set_var) | after (RuntimeConfig) |
+|---|---|---|
+| `mode=cuda`, var unset | `fbank_pool=8` | **`fbank_pool=8`** |
+| `mode=cpu`, var unset | `fbank_pool=1` | **`fbank_pool=1`** |
+| `mode=cuda`, `SPEAKRS_FBANK_POOL=3` | `fbank_pool=8` (ignored) | **`fbank_pool=3`** |
+| `mode=cpu`, `SPEAKRS_FBANK_POOL=3` | `fbank_pool=1` (ignored) | **`fbank_pool=3`** |
+
+The top two rows are the no-behaviour-change control: defaults are byte-for-byte the ones every
+deployment has been running. The bottom two are the defect and its fix — the "operator knob" that
+did nothing now does what the table says.
+
+#### Gates
+
+- diar-core **87 passed** (82 before + 5 new: mode defaults, blank/absent override, numeric
+  override incl. `0`, malformed fallback, explicit-wins-over-default), 10 `provision_smoke`
+  ignored as usual.
+- diar-server **28 passed**, unchanged.
+- speakrs **96 passed**, 0 failed (`--no-default-features --features openblas-system,online`,
+  `RUST_MIN_STACK=16777216`).
+- `cargo clippy --release --workspace --all-targets -- -D warnings` exit 0, **no exemptions
+  added**. (speakrs' pre-existing `reconstruct`/`reconstruct_smoothed` `dead_code` warning is
+  unrelated and predates this change.)
+
+#### Audit: other env round-trips of the same shape
+
+Every `set_var`/`remove_var` in `crates/` and `vendor/speakrs/src` was enumerated.
+
+- **`RUST_MIN_STACK`** (`crates/diar-server/src/main.rs`) — same shape, **safe and staying**:
+  first statement of `main()`, before `Cli::parse()` and before the tokio runtime is built, so no
+  threads exist. The reader is inside Rust std, not this tree. `docker/Dockerfile.builder` also
+  sets it as an image env, which makes the guard a no-op in-container.
+- **`ORT_DYLIB_PATH`** (`vendor/speakrs/src/inference.rs`) — test-only *and* behind the
+  `load-dynamic` feature, which this workspace never compiles (`default-features = false,
+  features = ["openblas-system"]`). Not fixed here; it is an upstream test-hygiene issue.
+- **Test-only round-trips in our crates, previously unnoticed** — `DIAR_DEVICES`
+  (`diar-server/src/cli.rs`), `HF_TOKEN`/`HUGGINGFACE_TOKEN`/`HUGGING_FACE_HUB_TOKEN`
+  (`diar-core/src/provision/preflight.rs`), `DIAR_ALLOW_UNVERIFIED_MODELS`
+  (`diar-core/src/provision/mod.rs`), `DIAR_EXPORT_PYTHON` (`diar-core/src/provision/exporter.rs`).
+  These mutate the environment inside `#[cfg(test)]` while sibling tests in the *same binary*
+  read the same variables in parallel. `cli.rs` has a `static ENV: Mutex<()>` that serializes the
+  writers against each other but not against readers elsewhere in the binary; the other three
+  have no guard at all. They are green today and are **not** part of this fix, but they are the
+  same class of bug and should get the same treatment (parse-a-`&str` helpers, or
+  `#[serial]`-style serialization). Recorded here so the next person does not have to re-derive
+  it.
+- `xtask/src/commands/dstack.rs` uses `xshell::Shell::set_var`, which only sets the child
+  process env — not a process-global mutation, not a hazard.
+
+No other production `set_var` exists in the tree.
+
+#### What this unblocks
+
+Lazy engine loading, rejected during the issue #1 design **for this reason alone**. A resident
+CPU engine costs ~620 MB RSS (§7.34) and `DiarEngine::load` is now free of process-global state,
+so loading on a `spawn_blocking` request thread is sound. Nothing lazy is implemented here — the
+point was to remove the blocker. The doc comments in `engines.rs` and `main.rs` that described
+serial pre-serve loading as a *soundness* requirement now describe it as the fail-fast choice it
+has become.
+
+#### Upstream
+
+`RuntimeConfig::fbank_pool` is a genuine speakrs API improvement, not a diar-native workaround,
+and is drafted for upstream in `docs/upstream_drafts_fbank_pool.md`. **Nothing has been filed** —
+anything outward-facing against `avencera/speakrs` needs explicit operator approval.

@@ -53,17 +53,63 @@ pub struct EngineConfig {
     /// Directory holding the self-exported community-1 ONNX models + PLDA params.
     pub models_dir: PathBuf,
     pub mode: Mode,
-    /// fbank session-pool size. `None` = auto: cores/4 (clamped 1-8) on CUDA, 1 on CPU
+    /// fbank session-pool size, handed to speakrs as a [`RuntimeConfig`] field. `None` = the
+    /// mode default from [`default_fbank_pool`]: cores/4 (clamped 1-8) on CUDA, 1 on CPU
     /// (pool contends with inference for cores in CPU mode — RESULTS §4.12).
     pub fbank_pool: Option<usize>,
 }
 
+/// The operator override for the fbank pool size.
+pub const FBANK_POOL_ENV: &str = "SPEAKRS_FBANK_POOL";
+
 impl EngineConfig {
+    /// Reads the [`FBANK_POOL_ENV`] override **once, here** — the only place this process
+    /// consults the environment for it. The value then travels to speakrs by value, so
+    /// [`DiarEngine::load`] never mutates the environment and engines may be loaded lazily
+    /// or concurrently (issue #3).
     pub fn new(models_dir: impl Into<PathBuf>, mode: Mode) -> Self {
         Self {
             models_dir: models_dir.into(),
             mode,
-            fbank_pool: None,
+            fbank_pool: parse_fbank_pool(std::env::var(FBANK_POOL_ENV).ok().as_deref()),
+        }
+    }
+
+    /// Pool size this config resolves to: the operator override when set, else the mode default.
+    pub fn resolved_fbank_pool(&self) -> usize {
+        self.fbank_pool
+            .unwrap_or_else(|| default_fbank_pool(self.mode))
+    }
+}
+
+/// Mode defaults for the fbank pool, unchanged since the pool landed (RESULTS §4.12).
+pub fn default_fbank_pool(mode: Mode) -> usize {
+    match mode {
+        Mode::Cpu | Mode::CoreMl | Mode::CoreMlFast => 1,
+        Mode::Cuda => std::thread::available_parallelism()
+            .map(|c| (c.get() / 4).clamp(1, 8))
+            .unwrap_or(1),
+    }
+}
+
+/// Parses the [`FBANK_POOL_ENV`] override. Takes the raw string rather than reading the
+/// environment itself so it is testable without `set_var` — the very hazard this fix removes.
+/// Blank is "unset"; a malformed value warns and falls back to the mode default rather than
+/// silently pretending the operator got what they asked for. `0` is honoured: it disables the
+/// pool and leaves the single fbank session.
+fn parse_fbank_pool(raw: Option<&str>) -> Option<usize> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse::<usize>() {
+        Ok(size) => Some(size),
+        Err(_) => {
+            tracing::warn!(
+                value = raw,
+                "{FBANK_POOL_ENV} is not a non-negative integer; using the mode default"
+            );
+            None
         }
     }
 }
@@ -103,15 +149,16 @@ pub struct DiarEngine {
 impl DiarEngine {
     pub fn load(config: &EngineConfig) -> Result<Self> {
         let mode = config.mode.execution_mode();
-        // Pool sizing is read from env by the (patched) speakrs loader; pin it before load.
-        let pool = config.fbank_pool.unwrap_or(match config.mode {
-            Mode::Cpu | Mode::CoreMl | Mode::CoreMlFast => 1,
-            Mode::Cuda => std::thread::available_parallelism()
-                .map(|c| (c.get() / 4).clamp(1, 8))
-                .unwrap_or(1),
-        });
-        // SAFETY: called before any speakrs session exists; single-threaded load path.
-        std::env::set_var("SPEAKRS_FBANK_POOL", pool.to_string());
+        // Pool size travels to speakrs as a `RuntimeConfig` field. This used to be an
+        // `env::set_var` that speakrs read back inside the same call; glibc `setenv` is not
+        // thread-safe, and speakrs reads other knobs (`SPEAKRS_ARENA_SHRINK`,
+        // `SPEAKRS_AHC_THREADS`) on the *request* path, so that write raced any in-flight
+        // request as soon as a second engine was loaded. Passing it by value means loads are
+        // safe to do lazily or concurrently (issue #3).
+        let runtime = RuntimeConfig {
+            fbank_pool: Some(config.resolved_fbank_pool()),
+            ..RuntimeConfig::default()
+        };
 
         let step = segmentation_step_seconds(mode) as f32;
         let seg = SegmentationModel::with_mode(
@@ -123,7 +170,7 @@ impl DiarEngine {
         let emb = EmbeddingModel::with_mode_and_config(
             config.models_dir.join("wespeaker-voxceleb-resnet34.onnx"),
             mode,
-            &RuntimeConfig::default(),
+            &runtime,
         )
         .context("loading embedding model")?;
         // Optional: absent model means the app keeps its own gender path untouched.
@@ -262,5 +309,64 @@ fn to_segment_out(segment: &speakrs::Segment) -> SegmentOut {
         start: segment.start,
         end: segment.end,
         speaker: segment.speaker.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mode defaults are a behaviour contract: they are what every deployment has been
+    /// running since the pool landed (RESULTS §4.12), and threading the value through
+    /// `RuntimeConfig` must not have moved them.
+    #[test]
+    fn mode_defaults_are_one_everywhere_but_cuda() {
+        assert_eq!(default_fbank_pool(Mode::Cpu), 1);
+        assert_eq!(default_fbank_pool(Mode::CoreMl), 1);
+        assert_eq!(default_fbank_pool(Mode::CoreMlFast), 1);
+
+        let expected = std::thread::available_parallelism()
+            .map(|c| (c.get() / 4).clamp(1, 8))
+            .unwrap_or(1);
+        assert_eq!(default_fbank_pool(Mode::Cuda), expected);
+        assert!((1..=8).contains(&default_fbank_pool(Mode::Cuda)));
+    }
+
+    #[test]
+    fn an_absent_or_blank_override_means_the_mode_default() {
+        assert_eq!(parse_fbank_pool(None), None);
+        assert_eq!(parse_fbank_pool(Some("")), None);
+        assert_eq!(parse_fbank_pool(Some("   ")), None);
+    }
+
+    #[test]
+    fn a_numeric_override_is_honoured_including_zero() {
+        assert_eq!(parse_fbank_pool(Some("3")), Some(3));
+        assert_eq!(parse_fbank_pool(Some("  4  ")), Some(4));
+        // 0 is meaningful: it disables the pool rather than meaning "unset".
+        assert_eq!(parse_fbank_pool(Some("0")), Some(0));
+    }
+
+    #[test]
+    fn a_malformed_override_falls_back_rather_than_failing_the_load() {
+        assert_eq!(parse_fbank_pool(Some("eight")), None);
+        assert_eq!(parse_fbank_pool(Some("-1")), None);
+        assert_eq!(parse_fbank_pool(Some("2.5")), None);
+    }
+
+    #[test]
+    fn an_explicit_pool_wins_over_the_mode_default() {
+        let mut config = EngineConfig {
+            models_dir: PathBuf::from("/models"),
+            mode: Mode::Cuda,
+            fbank_pool: Some(3),
+        };
+        assert_eq!(config.resolved_fbank_pool(), 3);
+
+        config.fbank_pool = None;
+        assert_eq!(config.resolved_fbank_pool(), default_fbank_pool(Mode::Cuda));
+
+        config.mode = Mode::Cpu;
+        assert_eq!(config.resolved_fbank_pool(), 1);
     }
 }

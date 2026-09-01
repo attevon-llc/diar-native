@@ -225,7 +225,10 @@ Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is ju
 1. **Multimask batching fix** — exporter/loader b32-vs-b64 filename mismatch silently disables
    batching (RESULTS §4.15).
 2. **fbank session-pool fan-out** — 3.1× E2E on CUDA (RESULTS §4.16; patches already in
-   `vendor/speakrs`, gated by `SPEAKRS_FBANK_POOL`/`SPEAKRS_FBANK_THREADS`).
+   `vendor/speakrs`, sized by `RuntimeConfig::fbank_pool` with `SPEAKRS_FBANK_POOL` as the
+   env fallback, plus `SPEAKRS_FBANK_THREADS`). The `RuntimeConfig` field replaced an
+   `env::set_var` round-trip in `DiarEngine::load` (issue #3, RESULTS §7.50) and is worth
+   carrying upstream on its own merits — draft in `docs/upstream_drafts_fbank_pool.md`.
 3. **Folded segmentation graph** in export script (bit-exact, −7% E2E, 2× on ORT-CUDA serving).
 4. **Arc-shared sessions / concurrent pipeline** (decision #4) — after M1 design settles.
 4b. **VBx vectorization + threaded blocked pdist** — DONE in the local patch set (8× clustering,

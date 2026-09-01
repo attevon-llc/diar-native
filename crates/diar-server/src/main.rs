@@ -629,8 +629,9 @@ async fn run() -> anyhow::Result<()> {
     // instead of letting it surface as one "session load failed" per configured device.
     let models = cli::startup_gate_or_exit(std::path::Path::new(&models_dir));
 
-    // Every engine loads here, serially, before `axum::serve` — DiarEngine::load calls
-    // std::env::set_var, which cannot safely run alongside live tokio workers. See engines.rs.
+    // Every engine loads here, serially, before `axum::serve` — so a misconfigured device fails
+    // startup rather than the first request. Since issue #3 this is a fail-fast choice, not a
+    // soundness requirement: DiarEngine::load no longer mutates the environment. See engines.rs.
     let engines = EngineRegistry::load_from_env(&models_dir)?;
     let state = Arc::new(AppState {
         engines,
