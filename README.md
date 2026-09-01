@@ -32,7 +32,7 @@ deployment weight, with a clean path to **Triton Inference Server** and **AWS GP
 > [`CHANGELOG.md`](CHANGELOG.md).
 >
 > Read next: [`PLAN.md`](PLAN.md) (roadmap + locked decisions) ·
-> [`validation/RESULTS.md`](validation/RESULTS.md) (every measurement, append-only — §7.34-7.39
+> [`validation/RESULTS.md`](validation/RESULTS.md) (every measurement, append-only — §7.34-7.40
 > are the latest) · [`docs/TEST_CORPORA_AND_BASELINES.md`](docs/TEST_CORPORA_AND_BASELINES.md)
 > (every number to beat) · [`docs/UPSTREAM_PRS.md`](docs/UPSTREAM_PRS.md) +
 > [`docs/pr_drafts.md`](docs/pr_drafts.md) (speakrs contribution queue — branches prepared in

@@ -143,6 +143,9 @@ consumer-side decision.
   `diar-server` and `diar-cli`. Not reachable through Docker — macOS grants containers no Metal
   access regardless of image architecture. (RESULTS §7.31)
 - A CPU-only multi-architecture image variant (`linux/amd64` + `linux/arm64`).
+- `docs/ORT_FUSION_FP16_AARCH64.md`, explaining the fp16 load failure above, plus
+  `validation/ort_fusion_probe/` — a standalone harness that dumps ORT's *optimized* graph so
+  load-time fusions can be observed directly rather than inferred from an error message.
 - CI (rustfmt, clippy, CPU build + tests, `.dockerignore` guard, CPU image build, ruff), a
   release workflow, Dependabot, `.pre-commit-config.yaml`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CODEOWNERS`, `rustfmt.toml`, `clippy.toml`, `.editorconfig`, `.gitattributes`, a PR template,
@@ -258,6 +261,8 @@ consumer-side decision.
 - Fall back to the 10 s fbank graph when the 30 s model is absent, instead of failing.
 - Export the missing tail-b64 model artifact and re-enable the split-primary test.
 - Make clippy pass with no exemptions.
+- Make the provisioning read-only-directory test run on macOS, where the previous approach did
+  not actually produce an unwritable directory.
 
 ### Security
 
