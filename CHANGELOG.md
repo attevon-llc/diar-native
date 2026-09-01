@@ -5,12 +5,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**A note on versions.** This project ships as a container image, and its version history lives in
-image tags rather than in git — there are currently **no git tags**, and the workspace crates are
-all still at `0.1.0`. `0.2.0` below is the tag of the image running live in the OpenTranscribe
-stack (`diar-server:0.2.0`, published 2026-08-20), reconstructed from the commit history. The
-work since then has **not** been assigned a release number yet; it sits under *Unreleased* until
-someone decides what that number is.
+**A note on versions.** This project ships as a container image, and its version history lived in
+image tags rather than in git — there are **no git tags** before 0.3.0. `0.2.0` below is the tag
+of the image that ran live in the OpenTranscribe stack (`diar-server:0.2.0`, published
+2026-08-20), reconstructed from the commit history; the workspace crates were still at `0.1.0`
+while that image said `0.2.0`. **As of 0.3.0 the three crates and the image tag are one number**,
+and it is the number `diar-server` reports in its startup record and stamps into the provisioning
+marker.
 
 Measurements referenced here are recorded in
 [`validation/RESULTS.md`](validation/RESULTS.md), which is append-only.
@@ -19,103 +20,249 @@ Measurements referenced here are recorded in
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [0.3.0] — 2026-09-01
+
+**Self-hosting, and one image for every device.** Two things stood between this engine and
+anyone outside the OpenTranscribe stack running it: the weights could not be obtained (they are
+derivatives of gated pyannote weights, and the export recipe was undocumented — even to us), and
+the GPU image could not be asked to run on a CPU. Both are closed. Along the way the sidecar
+learned to speak: it had shipped with no log subscriber at all.
+
+### Breaking / upgrade notes
+
+Read this before upgrading. Nothing here breaks a *default* deployment, but three items need a
+consumer-side decision.
+
+- **`/healthz` body shape changed** — it was the bare string `ok`, it is now a JSON object. The
+  **status code is unchanged and guaranteed**: `/healthz` returns **200 in every model state**,
+  including unprovisioned and known-bad. That is a deliberate compatibility promise, not an
+  oversight — `docker-compose.diar-native.yml` runs `curl -sf .../healthz` and
+  `diarizer_native.py` checks `resp.status == 200`, and every models directory deployed today has
+  no marker, so a 503 for "unverified" would fail every existing healthcheck on the day it
+  shipped and silently fall OpenTranscribe back to in-process PyAnnote. Use **`/readyz`** if you
+  want a readiness signal that can fail. Anything parsing the *body* of `/healthz` as a string
+  must be updated.
+- **Startup model-gate exit code moved 6 → 8.** "The models directory is too broken to serve" is
+  now `8` (`MODELS_UNUSABLE`); `6` now means only "no usable python export environment". The two
+  used to share a code, and a supervisor could not tell "install torch into the exporter" from
+  "provision the models" — which have nothing to do with each other, since serving needs no
+  python at all. Exit codes `9` and `10` are also new. Full table in the README.
+- **An OLD diar-server silently ignores the new `device` field.** Neither request struct uses
+  `deny_unknown_fields`, so `{"device": "cpu"}` sent to a 0.2.0 server is *ignored* and the job
+  runs on CUDA, returning 200. Serde cannot help here. Consumers MUST negotiate on `/healthz`
+  `supported_devices` (or on the presence of the `x-diar-device` response header) before relying
+  on the field. On a 0.3.0 server an unknown device name is a 400 naming the devices the build
+  serves.
+- **Consumers must bump their pinned digest or none of this ships.** OpenTranscribe consumes the
+  **binary**, not this image: `transcribe-app/backend/Dockerfile.prod` pins
+  `davidamacey/diar-native@sha256:…` purely to `COPY --from` the `diar-server` binary and three
+  ORT `.so`s into the shared backend image, which the `diar-native` compose service then runs
+  with `command: ["diar-server"]`. Until that digest is repointed at 0.3.0, the live sidecar is
+  still 0.2.0 regardless of what is published here.
+- **Directories provisioned by export recipe 1 now report `stale`.** `EXPORT_RECIPE_VERSION` is
+  `2`. Stale is **non-fatal** — they still serve, and `/healthz` stays 200 — but they fail
+  `/readyz`, log one warning, and carry the 378.5 MB fp32 gender model instead of the 189.5 MB
+  fp16 one. `provision-models --force` brings them current.
+
 ### Added
 
-- Serve **CUDA and CPU from a single image and process**, selected per request via a `device`
-  field on `/diarize` and `/embed_window`. On amd64 the CUDA image is now a strict superset of
-  the CPU image — the ONNX Runtime CPU execution provider is statically linked into every build,
-  so this costs no extra bytes. The device actually used is reported in an `x-diar-device`
-  response header. (RESULTS §7.34)
-- `DIAR_DEVICES` (comma-separated; first entry is the default) to load several engines at
-  startup, and an optional `DIAR_MAX_INFLIGHT_CPU` sub-gate beneath the global
-  `DIAR_MAX_INFLIGHT`.
-- **Model provisioning built into the `diar-server` binary.** `provision-models` turns a Hugging
-  Face token into a verified models directory; `verify-models` runs a five-stage smoke test
-  against the same ONNX Runtime the server uses; `check-token` reports whether the token is valid
-  and the community-1 gate has been accepted. All three write machine-readable JSON to stdout.
-- Provisioning provenance recorded in `diar-provision.json` (export-recipe version, exporter
-  version, file inventory) — checked cheaply at startup and thoroughly by `verify-models`.
-- **A startup model gate.** A missing required model file is now fatal, with a message naming the
-  provisioning command and the Hugging Face gate URL. `DIAR_ALLOW_UNVERIFIED_MODELS` is the
-  escape hatch.
-- **`/readyz`**, which returns 503 with an actionable reason until the models are provisioned and
-  verified. `/healthz` remains liveness-only and stays 200 whenever the process is serving.
+- **Model provisioning built into the `diar-server` binary**, closing the last blocker to
+  self-hosted OpenTranscribe running the native diarizer. `provision-models` turns a Hugging Face
+  token into a verified models directory; `verify-models` runs a five-stage smoke test against
+  the same ONNX Runtime build the server uses; `check-token` reports in ~200 ms and two HTTPS
+  calls whether the token is valid and the community-1 gate has been accepted. All three write
+  machine-readable JSON to stdout under `--json`. (RESULTS §7.35, §7.36)
+  - The export recipe turned out to be **5 steps, not 1**, and step 2b — onnxsim constant-folding
+    the three segmentation graphs and writing them under the *plain* filenames — was mandatory
+    and undocumented anywhere. Skipping it costs ~2× on segmentation and silently reintroduces
+    the ORT-CUDA `Sin`/`Cos` CPU-fallback tax, with no error.
+  - **A cold run reproduces the shipped set.** All 15 diarization ONNX graphs come back with
+    identical op-type histograms and **bit-identical initializer tensors**; all six `plda_*.npy`
+    and `min_num_samples.txt` byte-identical; and the diarization **RTTM sha256 is identical** to
+    the one the shipped `models_folded/` produces. Measured at **119.5 s** for the cold export.
+  - A provisioned recipe-2 directory is **~484 MB** (`fast` set, with gender). The §7.36
+    acceptance run measured **673 MB** because it hit the fp32 gender fallback described below.
+- Provisioning provenance recorded in `diar-provision.json` — export-recipe version, exporter
+  version, upstream pipeline revision, toolchain versions, and every file's size and sha256, plus
+  the smoke-test result. Checked `stat`-only at startup and by full sha256 in `verify-models`.
+- **A startup model gate.** A missing or zero-length required model file is now fatal (exit 8)
+  with a message naming the provisioning command and the Hugging Face gate URL, instead of
+  surfacing as one "CUDA session load failed" per configured device inside a
+  `restart: unless-stopped` crash loop. A missing *marker* is deliberately only a warning.
+  `DIAR_ALLOW_UNVERIFIED_MODELS=1` downgrades the fatal cases.
+- **`/readyz`**, returning 503 with an actionable reason until the models are verified, and 200
+  after. This is where "still provisioning" is distinguished from "broken", with zero blast
+  radius on existing `/healthz` callers.
 - Model and device state on `/healthz`: loaded `devices` versus compiled-in `supported_devices`,
-  the models directory, state and set, and whether the gender classifier was provisioned.
-- **Structured logging.** `diar-server` now installs a tracing subscriber — it previously
-  installed none, so `RUST_LOG` was inert in the deployed artifact and every engine log was
-  discarded. Records go to **stdout** (so `docker logs` and compose capture them) while fatal
-  startup errors stay on stderr; `RUST_LOG` filters and `DIAR_LOG_FORMAT=text|json` selects
-  rendering. The `provision-models` / `verify-models` subcommands install no subscriber, so their
-  JSON output is never interleaved with log records. (RESULTS §7.37)
-- One log span per request carrying request id, endpoint, device, audio basename and gender flag,
-  closed by a record with `duration_ms`, outcome, and either speaker/segment counts or an error
-  class — plus one startup record derived from the `/healthz` body, so the two cannot drift.
-- Propagation of an inbound `x-request-id` (sanitized before logging), echoed on both success and
+  plus flat `models_verified`, `models_state`, `models_dir`, `models_set`,
+  `models_exporter_version`, `models_pipeline_revision`, `models_smoke_at`, `models_gender` and
+  `models_reason` fields. Flat rather than nested so appending stayed additive.
+- Serve **CUDA and CPU from a single image and process**, selected per request via a `device`
+  field on `/diarize` and `/embed_window`, with the device that actually ran the job reported in
+  an **`x-diar-device`** response header. On amd64 the CUDA image is a strict superset of the CPU
+  image and always was — the ORT CPU execution provider is *statically linked* into every build
+  by `ort-sys`, so `ldd diar-server` shows no ONNX Runtime `NEEDED` entry at all. Verified
+  empirically against the already-shipped `davidamacey/diar-native:0.2.0` with `DIAR_MODE=cpu`,
+  no `--gpus` and no `/dev/nvidia*`. **Image size unchanged at 3.46 GB**; the second engine costs
+  **+620 MB host RSS and 0 MiB VRAM**, and output is **bit-identical between devices (max
+  centroid delta 0.0)**. (RESULTS §7.34)
+- `DIAR_DEVICES` (comma-separated; first entry is the default device, wins over `DIAR_MODE`) and
+  an optional `DIAR_MAX_INFLIGHT_CPU` sub-gate beneath the global `DIAR_MAX_INFLIGHT`.
+- **Structured logging.** `diar-server` now installs a `tracing` subscriber — it previously
+  installed **none**, so `RUST_LOG` was inert in the deployed artifact and speakrs' 40 events and
+  diar-core's 2 warnings were silently discarded; an operator saw two `eprintln!` lines and
+  crashes. Records go to **stdout** (so `docker logs` and compose capture them) while fatal
+  startup errors stay on stderr; `RUST_LOG` filters (default `info,ort::logging=warn`) and
+  `DIAR_LOG_FORMAT=text|json` selects rendering. The provisioning subcommands install no
+  subscriber, so their JSON is never interleaved with log records. (RESULTS §7.37)
+- One log span per request carrying `request_id`, endpoint, device, audio **basename** and the
+  gender flag, closed by a record with `duration_ms`, outcome, and either speaker/segment counts
+  or an `error_class` (`bad_device`, `admission`, `invalid_input`, `audio_decode`, `inference`,
+  `panic`) — plus one startup record derived from the `/healthz` body, so the two cannot drift.
+- Propagation of an inbound **`x-request-id`** (sanitized before logging — control characters
+  stripped, 64 chars max, so a caller cannot forge a log record), echoed on both success and
   failure responses so a single id spans caller and sidecar.
-- **`audio_path` as an alias for `wav_path`** on `/diarize` and `/embed_window`. The field accepts
-  any symphonia-decodable media; the old name was pushing callers to transcode first. `wav_path`
-  and `media_path` are still accepted.
-- A `HEALTHCHECK` on both serving images, deliberately targeting `/healthz` (liveness) rather than
-  `/readyz` — pointing it at readiness would mark every not-yet-provisioned container unhealthy
-  and fail `compose up --wait` for the whole stack.
-- The smoke-test clip (~832 KB) baked into both serving images, so `verify-models` runs in-image;
-  plus a fallback provisioning image carrying CPU-only torch for operators on the plain image.
+- **`audio_path` and `media_path` as aliases for `wav_path`** on `/diarize` and `/embed_window`.
+  The field accepts any symphonia-decodable media; the old name was pushing third parties to
+  transcode to WAV first for no reason. `wav_path` is still accepted and is what the live caller
+  sends.
+- A `HEALTHCHECK` on both serving images, deliberately targeting `/healthz` (liveness) rather
+  than `/readyz` — pointing it at readiness would mark every not-yet-provisioned container
+  unhealthy and fail `compose up --wait` for the whole stack.
+- The smoke-test clip (832 KB) baked into both serving images so `verify-models` runs in-image,
+  plus a fallback provisioning image (`docker/Dockerfile.provision`) carrying a pinned CPU-only
+  torch environment for operators on the plain image.
 - `scripts/bootstrap_vendor_speakrs.sh`, which reproduces the vendored, patched speakrs tree from
-  the public `attevon-llc/speakrs` fork at a pinned commit.
+  the public `attevon-llc/speakrs` fork at a pinned commit — CI depends on it, since `vendor/` is
+  gitignored and is not a submodule.
 - CoreML support for Apple Silicon behind a `coreml` feature, wired through `diar-core`,
   `diar-server` and `diar-cli`. Not reachable through Docker — macOS grants containers no Metal
   access regardless of image architecture. (RESULTS §7.31)
-- A CPU-only multi-architecture image variant (`linux/amd64` + `linux/arm64`), 189 MB.
+- A CPU-only multi-architecture image variant (`linux/amd64` + `linux/arm64`).
+- CI (rustfmt, clippy, CPU build + tests, `.dockerignore` guard, CPU image build, ruff), a
+  release workflow, Dependabot, `.pre-commit-config.yaml`, `CONTRIBUTING.md`, `SECURITY.md`,
+  `CODEOWNERS`, `rustfmt.toml`, `clippy.toml`, `.editorconfig`, `.gitattributes`, a PR template,
+  and this changelog. CI builds only the default (CPU) feature set, downloads no model weights,
+  and requires no secrets.
 - Apache-2.0 `LICENSE`.
 
 ### Changed
 
-- Cut the Docker **build context** from 8.3 GB to 302 MB with an allowlist `.dockerignore`.
-- Scale embedding-session intra-op thread count with core count in CPU mode. (RESULTS §7.32)
+- **Crate versions unified at 0.3.0.** All three were `0.1.0` while the image tag said `0.2.0`.
+  The drift was not cosmetic: `env!("CARGO_PKG_VERSION")` feeds the startup log record and the
+  provisioning marker's `generated_by`, so markers were being stamped with a version that
+  matched no artifact anyone could name.
+- **`EXPORT_RECIPE_VERSION` bumped to 2** for the fp16 gender export. Directories from recipe 1
+  are reported `stale` — non-fatal, they still serve.
+- **Gender model fp16 restored: 378.5 MB → 189.5 MB (−50.0%), and roughly −500 MiB VRAM.** The
+  root cause was two **no-op `Cast` nodes** that torch 2.13 emits and torch 2.11 did not, which
+  made `onnxconverter_common.float16` produce a graph ORT rejected with "Type parameter (T) of
+  Optype (Add) bound to different types". The exporter now elides them. The regenerated graph
+  matches the shipped torch-2.11 artifact on every load-bearing property — 213/213 FLOAT16
+  initializers, fp32 in and out, opset 17, same two boundary casts by role. (RESULTS §7.39)
+- Cut the Docker **build context from 8.3 GB to 302 MB** with an allowlist `.dockerignore`. There
+  was none before, so every build was also shipping ~1.1 GB of gated model weights into the
+  context.
+- The smoke test now **numerically verifies the graphs production actually runs**. It previously
+  checked the b64 family; live compose sets `SPEAKRS_LAZY_SESSIONS=1`, under which speakrs gates
+  the batched sessions but **not** the multimask ones — so a `wespeaker-multimask-tail-b32.onnx`
+  with its largest initializer zeroed passed all five stages green, earned a `verified` marker
+  and a 200 from `/readyz`. New stage 3e catches it at 9.222e-1 against a 1e-4 bar. (RESULTS
+  §7.38)
 - Compare model sets by content multiset of `(dtype, shape, sha256)` rather than by initializer
-  name. `torch.onnx.export(dynamo=True)` assigns those names at trace time, which produced false
-  "13/15 initializers differ" reports on bit-identical graphs.
+  name. `torch.onnx.export(dynamo=True)` assigns those names at trace time, so the comparison
+  paired different tensors and reported "13/15 initializers differ, max |Δ| 2.000e+00" for graphs
+  that were in fact bit-identical. The false positive was plausible enough that a tolerance would
+  have been "fixed" instead of the tool.
+- `verify-models` **re-attests by default**: on a fully verified directory it refreshes only the
+  marker's `smoke` record, leaving all provenance untouched. That is the recovery path for a
+  directory carrying a stale `fail` record without a full re-export. `--no-attest` opts out, and
+  a read-only mount is not an error.
+- Scale embedding-session intra-op thread count with core count in CPU mode. (RESULTS §7.32)
 - `DIAR_DEVICES` takes precedence over `DIAR_MODE` when both are set. With neither set, behaviour
   is unchanged — including the long-standing "unset or unrecognized means `cuda`" default.
+- CPU image grew 189 MB → 194 MB (+2.6%) from the provisioning code, `clap`, `ureq`/rustls,
+  `sha2`/`time` and the baked smoke clip. The alternative it replaces — bundling torch and
+  pyannote into the runtime image so provisioning could run there — measured ~13× on this image,
+  for a step that runs once.
+- `nvidia/cuda` pinned to the 12.8.x line in Dependabot, so a base-image bump cannot silently
+  move the CUDA minor the provider libraries were built against.
 
 ### Fixed
 
-- Serialize requests under the `coreml` feature; speakrs' CoreML sessions are
-  single-thread-at-a-time, so `DIAR_MAX_INFLIGHT` has no effect in that mode.
-- Fall back to the 10 s fbank graph when the 30 s model is absent, instead of failing.
+- **Provisioning no longer defaults to CUDA.** It defaulted to a *device*, so on a GPU-less host
+  the smoke test failed for want of a GPU and provisioning wrote a marker declaring
+  known-**good** models known-**bad** — after which the startup gate refused to serve them,
+  permanently, with no path back that did not involve deleting the marker by hand. Provisioning
+  now defaults to CPU, and a genuinely unavailable device exits 9 (`DEVICE_UNAVAILABLE`) writing
+  **no marker at all**, because "I could not test this" must never be recorded as "this is
+  broken".
+- **`verify-models` no longer reports success on a directory with no marker.** It hashed zero
+  bytes, compared nothing, and exited 0 — a clean bill of health from the one command whose job
+  is detecting a silent rewrite. It now exits 10 (`UNVERIFIABLE`) and says so in as many words.
+  A marker with an empty `files` array is likewise treated as drift.
+- **Fixed the ORT log flood: 5835 → 38 lines** on a CUDA startup. ONNX Runtime's native bridge
+  emitted 5812 `ort::logging` INFO lines ("Removing NodeArg…", "GraphTransformer… modified: 0")
+  against 3 from diar-server, burying the startup record ~2000:1. The default filter holds that
+  one target at `warn` while keeping its genuine perf diagnostics and `ort::ep`'s
+  EP-registration lines; `RUST_LOG=ort=info` brings the firehose back.
+- Fixed a **privacy leak in logged error text**. Keeping the span *field* to a basename was not
+  sufficient: the underlying I/O errors interpolate the path they were handed, so a failed decode
+  logged the full media path through the `error` field while the `audio` field dutifully said
+  `smoke.wav`. Error text is now redacted before it is logged. The HTTP *response* still carries
+  the full path — the caller supplied it, so it is not a disclosure to them.
+- **fp16 gender would not load at all on aarch64** (issue #14). The graph is plain opset-17
+  `ai.onnx` with no contrib domain, but it has 20 `Erf` nodes, and one of ORT's *extended*
+  (level-2) optimizations rewrites that GELU pattern into `com.microsoft.Gelu` — for which the
+  x86_64 ORT build ships an fp16 kernel and the aarch64 build ships fp32 only. The optimizer
+  synthesized a node the very same runtime then refused to execute. Naming the optimizer in a
+  disable-list does **not** suppress the rewrite (measured); only capping below level 2 does. So
+  optimization is capped at `Level1` for that one model on that one architecture, leaving the 15
+  diarization graphs at full optimization, where they run correctly.
+- Scope `TARGETARCH` to the builder stage in the CPU Dockerfile. ARG scope is per-stage, so it
+  expanded to empty and both platforms of a multi-platform buildx run shared one cargo registry
+  cache id and contended on its lock.
+- Copy `scripts/` into the Docker builder stages. Both image builds had begun failing to compile
+  `diar-core`, whose provisioning module `include_str!`s the export scripts.
 - Stop provisioning from aborting when the Hugging Face API is unreachable. The upstream revision
   is provenance, not a requirement, so warm-cache and `HF_HUB_OFFLINE=1` re-exports now succeed.
 - Fix a fail-open in the PLDA exporter, which hardcoded `~/.cache/huggingface`, blind-scanned
   blobs and swallowed every error — so a cache miss produced a PLDA-less models directory while
   still exiting 0. It now resolves through `hf_hub_download` (honouring `HF_HOME`) and asserts
   all six arrays.
-- Copy `scripts/` into the Docker builder stages. Both image builds had begun failing to compile
-  `diar-core`, whose provisioning module `include_str!`s the export scripts.
-- Scope `TARGETARCH` to the builder stage in the CPU Dockerfile. It expanded to empty, so both
-  platforms of a multi-platform buildx run shared one cargo registry cache id and contended on
-  its lock.
+- `provision-models --set small` is no longer self-defeating. The startup gate defaulted to
+  judging every directory as `fast`, so provisioning exited 0 having deliberately deleted the
+  four batch-64 graphs and the server then refused to start over four "missing" files — with
+  remediation text telling a laptop operator to build the tier they had just declined. The gate
+  now reads the tier from the directory's own marker.
+- Resolve `--smoke-clip` late, after the writability, idempotency, token and python checks. The
+  documented "provision from OpenTranscribe's backend image" route died at exit 2 for want of a
+  clip before it had so much as looked at the token — that image copies only the binary and three
+  `.so`s out of this one, not the clip.
+- Serialize requests under the `coreml` feature; speakrs' CoreML sessions are
+  single-thread-at-a-time, so `DIAR_MAX_INFLIGHT` has no effect in that mode.
+- Fall back to the 10 s fbank graph when the 30 s model is absent, instead of failing.
 - Export the missing tail-b64 model artifact and re-enable the split-primary test.
-- Document `SPEAKRS_TRT` and `SPEAKRS_TRT_CACHE` as dead configuration — they have no read sites
-  and do nothing, following the TensorRT rollback (RESULTS §7.26).
+- Make clippy pass with no exemptions.
 
 ### Security
 
-- Never expose the Hugging Face token: it is passed by environment rather than argv, scrubbed
-  from exporter stdout and stderr, hidden from CLI error rendering, and never logged. Full media
-  paths are logged as basenames only.
+- **Never expose the Hugging Face token**: passed by environment rather than argv, scrubbed from
+  the exporter's stdout *and* stderr, marked `hide_env_values` so clap cannot render it in an
+  error, and never logged.
+- **Full media paths are logged as basenames only**, in span fields *and* in error text.
 - Keep terms-gated model weights out of the Docker build context. The `.dockerignore` is an
-  allowlist by design — a denylist fails open the moment someone adds a directory, and failing
-  open here means redistributing gated weights.
-
-### Changed — repository practices
-
-- Added CI (format, clippy, CPU build, tests, `.dockerignore` guard, CPU image build),
-  `.pre-commit-config.yaml`, `CONTRIBUTING.md`, `SECURITY.md`, `CODEOWNERS`, `rustfmt.toml`,
-  `clippy.toml`, `.editorconfig`, `.gitattributes`, and this changelog. CI builds only the
-  default (CPU) feature set, downloads no model weights, and requires no secrets.
+  allowlist **by design** — a denylist fails open the moment someone adds a directory, and
+  failing open here means redistributing gated weights. A CI job guards it.
+- Document `SPEAKRS_TRT` and `SPEAKRS_TRT_CACHE` as dead configuration: they have no read sites
+  and do nothing, following the TensorRT rollback (RESULTS §7.26).
 
 ---
+
 
 ## [0.2.0] — 2026-08-20
 
@@ -176,4 +323,5 @@ the three decisions taken and reversed along the way: TensorRT rolled back (§7.
 superseded by the fbank∥GPU pipeline (§7.28), and the sinc resampler rejected in favour of
 `FftFixedIn` (§7.29).
 
-[Unreleased]: https://github.com/attevon-llc/diar-native/compare/main...HEAD
+[Unreleased]: https://github.com/attevon-llc/diar-native/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/attevon-llc/diar-native/releases/tag/v0.3.0
