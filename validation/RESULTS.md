@@ -3268,3 +3268,76 @@ against an already-warm server on an A6000. This leg's 2.24 s is ~2× below that
 interleaved within-session A/B above, which controls its variables. Recording this because the
 same trap has now bitten three of these legs: **a "control" from RESULTS is only a control if it
 was measured the same way.**
+
+### 7.48 B6 — the aarch64 Level1 gender cap is free within resolution, because gender costs ~0.16 s and not the ~1.5 s everyone has been quoting (issue #14)
+
+Bonus leg beyond §7.34's three. The gender session is capped at
+`GraphOptimizationLevel::Level1` on aarch64 (`crates/diar-core/src/ort_compat.rs`), where the
+uncapped alternative **does not load at all** — so the cap's cost is unmeasurable there, there
+being no comparison to make. Measured instead on **x86_64**, where both levels load, via
+`DIAR_ORT_OPT_LEVEL` (`unset` → ORT default Level3; `basic` → Level1, i.e. what aarch64 runs).
+Harness: `validation/b6_gender_opt_level_cost.sh`.
+
+**Design: the reported figure is a MARGINAL, not a wall time.** `DIAR_ORT_OPT_LEVEL` reaches
+only sessions built through `diar_core::ort_compat` — the gender model and the smoke test — and
+never speakrs' 15 diarization graphs. So each container measured **both** `gender:false` and
+`gender:true`, and the number below is `true − false` *within the same container*. That
+subtracts the diarization time the knob cannot touch instead of hunting a small effect inside a
+~3.8 s wall. `gender:false` doubles as a **null control** that must not move between legs.
+`karpathy_10m.wav`, `diar-server:bench`, `--gpus device=0` (A6000), 5 requests per cell,
+interleaved all/basic ×3, load average **11.6 → 14.7 on 48 cores**.
+
+| round | leg | no_gender | gender | **marginal** | load avg |
+| --- | --- | --- | --- | --- | --- |
+| 1 | all (Level3) | 3.632 s | 3.795 s | **0.163 s** | 13.53 |
+| 1 | basic (Level1) | 3.783 s | 3.767 s | **−0.016 s** | 13.63 |
+| 2 | all | 3.551 s | 3.676 s | **0.125 s** | 14.50 |
+| 2 | basic | 3.641 s | 3.740 s | **0.099 s** | 16.05 |
+| 3 | all | 3.602 s | 3.837 s | **0.235 s** | 14.65 |
+| 3 | basic | 3.643 s | 3.630 s | **−0.013 s** | 14.19 |
+| **median** | all | 3.602 s | 3.795 s | **0.163 s** | |
+| **median** | basic | 3.643 s | 3.740 s | **−0.013 s** | |
+
+**VERDICT: INCONCLUSIVE on the exact cost — and that is the honest answer, not a hedge.** The
+nominal result is that Level1 is *0.176 s FASTER* than Level3, which cannot be true: capping
+optimization does not speed a graph up. The measurement is simply at or below its own
+resolution, and it says so out loud in three places:
+
+1. **Two of the three `basic` marginals are NEGATIVE** (−0.016 s, −0.013 s). Gender cannot take
+   negative time. That alone disqualifies the point estimate.
+2. **The marginal's own round-to-round spread is 0.110 s (all) and 0.115 s (basic)** — comparable
+   to the 0.176 s "effect".
+3. **The null control drifted 0.041 s** (`no_gender` 3.602 vs 3.643 s), a quantity the knob
+   provably cannot affect. That is a quarter of the claimed signal, and it is pure background.
+
+**What the leg DOES establish, firmly, is an upper bound — and it answers the decision.** The
+*entire* gender marginal is **~0.16 s** on this platform. The cap cannot possibly cost more than
+that, because that is all the time gender takes. So: **the cap is free to within anything worth
+measuring, and this does NOT argue for revisiting `GeluFusionL2` as the aarch64 fix.** §7.41's
+choice of the Level1 cap stands, and it stands on a cost bound rather than on an assumption.
+
+**The knob demonstrably took effect** — this is not a null result from a no-op setting. The two
+legs return *different gender confidences* (SPEAKER_00: `0.79675186` at Level3 vs `0.79671210`
+at Level1, Δ 3.98e-05), which is exactly the numeric fingerprint of the Level-2 fusions being
+skipped, and consistent with §7.40's finding that Level1 is bitwise identical to `Disable` on
+this graph while Level3 differs slightly. Worth stating explicitly given §7.40's Trap 1: an
+*unrecognized optimizer name* is silently ignored by ORT, so a null result from this family of
+knobs always needs proof the setting was honoured. Here the numerics are the proof.
+
+#### The premise of the question was wrong: gender is ~0.16 s, not ~1.5 s
+
+§7.18 records "gender is ~1.5 s of a 6 s call", and that figure is what makes the cap sound
+worth investigating (it is also quoted in the issue #14 discussion). **Measured here on the same
+reference clip, gender adds 0.163 s to a 3.60 s call — roughly 10× less, and 4% of the call
+rather than 25%.** Conditions differ (this is CUDA on an A6000, the shipped fp16 model, gender
+inside the sidecar per §7.16, `DIAR_GENDER_MAX_SECONDS=5` over 2 speakers), so **§7.18's number
+is not retracted** — it is not reproducible from the information recorded there, which is the
+same class of gap §7.45 hit with the missing MD5. But the *current* cost on the current stack is
+0.16 s, and any future reasoning that starts from "gender is 1.5 s of the call" is starting from
+a stale premise. Flagging it for reconciliation rather than silently overwriting it.
+
+**ACCURACY CHECK — both gates pass.** Diarization records (`rttm`, `segments`,
+`exclusive_segments`, `centroids`, `num_speakers`) hash to **one value across both legs**
+(`faf30c2f47fe9d82…`), independently confirming the documented scoping that
+`DIAR_ORT_OPT_LEVEL` does not reach speakrs' diarization graphs. Gender labels **agree 2/2**
+(female / male) at the historical operating point, with confidence deltas 3.98e-05 and 1.70e-06.
