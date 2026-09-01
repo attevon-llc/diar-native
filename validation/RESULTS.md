@@ -2967,3 +2967,97 @@ whole surface. The baseline was scanned in the same run to make the comparison m
 the non-root change neither introduced nor removed a finding, which is the expected result —
 it changes who the process runs as, not what is installed. The `apt-get upgrade -y` already in
 both runtime stages is what keeps the count at zero.
+
+### 7.44 B4 — mixed-device concurrency: CUDA is not measurably slowed by concurrent CPU work, and the default admission gate makes the question moot (issue #5)
+
+First of the three timed legs §7.34 deferred as "NOT measured here, pending a quiet window".
+Harness: `validation/b4_mixed_device.sh` (committed, reusable).
+
+**Machine honesty, stated up front.** The box does not reach protocol-grade quiet and will not
+while the `opentranscribe` and `otfresh-demo` stacks run: load average oscillated **10–30 on 48
+cores** throughout, and GPU 2 held 38 301 MiB of an unrelated vLLM the whole time (untouched).
+The defence is not pretending otherwise — it is **interleaving** (`cuda_only`, `mixed`,
+`cuda_only`, `mixed`, …, legs 5 s apart) so that slow drift in background load hits both legs
+roughly equally, and reporting a **ratio between adjacent legs** rather than an absolute time.
+**The absolute wall times below are NOT protocol-grade anchors and must not be quoted as such**
+or compared against §7.32/§4.19 numbers taken on a quiet box. The ratio is the result.
+
+**Control set.** `diar-server:bench` built from `docker/Dockerfile.server` at `1ffbde0`;
+builder `diar-native-builder:bench` = **Ubuntu 24.04.4 / rustc 1.97.1** (see the trap below);
+`--gpus "device=0"` (RTX A6000, 45 GB free, 0% util — GPU 1's 3080 Ti has only ~5.5 GB free
+against §7.34's 4 388 MiB peak, too tight to be safe); `DIAR_DEVICES=cuda,cpu`,
+`DIAR_MAX_INFLIGHT=8`, `SPEAKRS_LAZY_SESSIONS=1`, `models_folded/`. CUDA leg = the four t9a
+AMI files (`ES2004a IS1009c TS3003b EN2002b`, 17–36 min, four rooms) issued concurrently;
+CPU load = **M=4** `/embed_window` loops hammering `EN2002c_360.wav` continuously for the
+whole CUDA leg, staggered windows. All audio staged on local disk (`/tmp/bench_audio`) —
+the AMI corpus lives on a **NAS mount** and its I/O has no place inside a timed leg.
+
+| round | cuda_only | mixed | ratio | cpu_reqs done | load avg at leg |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 38.13 s | 42.56 s | 1.116 | 161 | 16.7 → 30.6 |
+| 2 | 38.53 s | 38.31 s | **0.994** | 193 | 26.2 → 27.9 |
+| 3 | 36.95 s | 37.88 s | 1.025 | 193 | 22.1 → 25.6 |
+| **median** | **38.13 s** | **38.31 s** | **1.005** | | |
+
+**VERDICT: PASS.** The CUDA leg costs **+0.5% (median 38.13 → 38.31 s)** with four CPU
+embedding jobs running flat out beside it. That is far inside the `cuda_only` leg's own
+round-to-round spread of **1.58 s (4.3%)**, so it is not distinguishable from noise on this
+box. Rounds 2 and 3 straddle zero (−0.6%, +2.5%), which is what "no effect" looks like.
+
+**Round 1's +11.6% is CPU-side lazy-session warmup, and the CPU counter proves it rather than
+excusing it.** `cpu_reqs` = **161, 193, 193** — round 1 completed 17% less CPU work, and rounds
+2 and 3 are *identical*. Under `SPEAKRS_LAZY_SESSIONS=1` the CPU engine's embedding sessions are
+built on first use; the warmup issued a single `/embed_window` on one handle, so round 1's mixed
+leg was the first time **four concurrent** CPU handles forced session construction and arena
+growth. The cost lands once, on both sides of that leg. Had the outlier been genuine GPU
+contention, CPU throughput would have been *higher* in round 1, not lower.
+
+**Zero VRAM for the CPU engine, sampled DURING and per-PID.** Peak was **4 416 MiB in all six
+legs** — mixed and CUDA-only alike, no delta whatsoever. Sampling filters on this container's
+PID: the card routinely carries other `diar-server` and `python3.13` processes, and whole-GPU
+sampling would silently attribute theirs to us (the exact contamination §7.34 had to retract a
+measurement for). This is the during-run confirmation of §7.34 B3's per-process claim, which
+was previously only an idle/peak measurement on an otherwise-quiet card.
+
+**ACCURACY CHECK — output identity, proven not asserted.** `rttm`, `segments`,
+`exclusive_segments`, `centroids` and `num_speakers` hashed for all four files across all six
+legs: **one hash per file, IDENTICAL** (`ES2004a cf1fa73f…`, `IS1009c c664a832…`,
+`TS3003b c3be3707…`, `EN2002b 2287e581…`). Concurrent CPU work does not perturb CUDA output.
+
+**The levers were not needed.** `DIAR_MAX_INFLIGHT_CPU` and a reduced `SPEAKRS_INTRA_THREADS`
+for the CPU engine were held in reserve for a regression that did not appear. Neither was
+touched; both remain untested as remedies because nothing needed remedying.
+
+#### The `DIAR_MAX_INFLIGHT=8` requirement is itself the load-bearing finding
+
+Getting 4 CUDA + 4 CPU genuinely concurrent **required raising the admission gate to 8**. At the
+**shipped default of `DIAR_MAX_INFLIGHT=2`** the outer semaphore serialises the mix outright:
+the contention this leg probes **is not reachable** without an operator deliberately opting into
+it. So the honest framing of mixed-device concurrency is not "it is a risk" but:
+
+> **mixed-device concurrency is a risk only above the default admission gate — and measured at
+> 4×4, well above that gate, it costs 0.5% and changes no output.**
+
+That belongs in how the CPU+GPU feature is described, not just in the harness header. It also
+means B4 measured the *maximum-contention* configuration an operator could construct, not the
+default one — the default is strictly safer than what is reported here.
+
+#### Trap found before any number was taken: the builder image was silently the reverted base
+
+`diar-native-builder:latest` on this box was **byte-identical to `diar-native-builder:u2604`** —
+an Ubuntu **26.04** image left behind by the base bump that `1bbba89` *reverted* because 26.04
+changes arm64 diarization output (issue #18). Benchmarking with it would have violated the
+pinned-base rule invisibly, since nothing about `:latest` announces its base. Rebuilt from the
+repo as `diar-native-builder:bench` and **verified before use**: `Ubuntu 24.04.4 LTS`,
+`rustc 1.97.1` (matching `rust-toolchain.toml`). Check `docker run --rm <builder> cat
+/etc/os-release` before trusting any local builder tag; image tags are not provenance.
+
+#### Harness bug worth not repeating
+
+The first B4 attempt hung for 12 minutes without issuing a single request. Cause was the
+harness, not the server: `sampler=$(start_sampler ...)` runs in a **command substitution**, and
+a background job started inside it inherits that substitution's stdout, holding the pipe open
+forever — so the substitution never returns. The VRAM sampler must have its stdout redirected
+away (`>/dev/null 2>&1 &`) and its PID passed via a global. Fixed in the committed harness with
+a comment; symptom to recognise is an empty output dir plus zero request lines in `docker logs`
+while the sampler log grows normally.

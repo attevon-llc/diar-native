@@ -138,8 +138,14 @@ sys.exit(0 if ok else 1)
 EOF
 
 echo
-echo "== peak diar-server VRAM during each leg =="
+echo "== peak diar-server VRAM during each leg (this container's PID only) =="
+# grep, not rg: this runs under whatever PATH the harness was invoked with, and rg is not
+# guaranteed to be on it. Filter by OUR pid — the box routinely has other diar-servers and
+# python jobs resident on the same card, and whole-GPU sampling silently attributes theirs
+# to us (the mistake §7.34 had to retract a measurement for).
+MYPID="$(docker inspect -f '{{.State.Pid}}' "${CONTAINER:-diar-b4}" 2>/dev/null || true)"
 for f in "$OUT"/vram_*.log; do
   printf '%-34s %s MiB\n' "$(basename "$f")" \
-    "$(rg 'diar-server' "$f" | awk -F', ' '{gsub(/ MiB/,"",$3); if ($3>m) m=$3} END{print m+0}')"
+    "$(grep "${MYPID:-diar-server}" "$f" | awk -F', ' \
+        '{gsub(/ MiB/,"",$3); if ($3+0>m) m=$3+0} END{print m+0}')"
 done
