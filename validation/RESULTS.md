@@ -2646,3 +2646,35 @@ load check on aarch64, not just an accuracy gate.
 
 Artifacts (scratch, not committed): probe sources `ortprobe{,2,3}`, the seeded `clips.bin`,
 and every optimized-graph dump.
+
+#### §7.40 addendum — reconciled against the fix that shipped (`c06fa15`)
+
+`c06fa15` landed independently on the Linux side while §7.40 was being measured on macOS, and
+reached the **same fix**: cap the gender session at `Level1`, aarch64 only, diarization graphs
+untouched. Two claims in its rationale are narrowed by the measurements above; neither changes
+the fix, both change how its escape hatches should be used.
+
+1. **"Naming the optimizer does NOT suppress the rewrite; only capping below level 2 does."**
+   Too strong. Naming it works — under `GeluFusionL2`. `c06fa15` tested `GeluFusion` and a
+   four-name comma list, and both fail for reasons that are not "naming doesn't work": the
+   pass is registered twice under suffixed names (`GeluFusionL1`/`GeluFusionL2`), an
+   unrecognized name is silently ignored, and the separator is `;` not `,` so the comma list
+   matched nothing at all. The level cap remains the better fix for the three reasons in
+   §7.40 (bitwise identity, zero contrib ops left on fp16, no dependence on an undocumented
+   ORT-internal name) — but it is preferred, not forced.
+
+2. **"The x86_64 ORT build ships an fp16 kernel for the fused contrib op; the aarch64 build
+   ships fp32 only."** True of those two targets, but it is not the mechanism. `nm` on the
+   **macOS aarch64** ORT 1.24.2 static lib shows `Gelu<float>` only — the same missing fp16
+   kernel — and that platform loads the model fine, because its ORT declines to fuse fp16 at
+   all. The differentiator is whether the fusion FIRES, not whether the kernel exists. This
+   matters for prediction: a future aarch64 ORT build could acquire the kernel, or lose the
+   fusion gate, and either would change the symptom without anyone touching this repo.
+
+**Sharp edge in the shipped escape hatches**, recorded because the symptom is silence:
+`DIAR_ORT_OPT_LEVEL` and `DIAR_ORT_DISABLED_OPTIMIZERS` are global and each returns early, so
+either one *replaces* the built-in aarch64 workaround rather than adding to it. Setting
+`DIAR_ORT_OPT_LEVEL=all` on an aarch64 host to tune the diarization graphs silently disables
+speaker gender again. Comments in `ort_compat.rs` now say so at both sites.
+
+No numbers in §7.40 are retracted.

@@ -53,10 +53,29 @@ fn needs_aarch64_fp16_workaround(path: &Path) -> bool {
 /// optimization level = disable                                 -> LOADS
 /// ```
 ///
-/// Naming the optimizer does NOT suppress the rewrite; only capping below level 2 does. That is
-/// why this sets a level rather than a disable-list, despite the disable-list being the more
-/// surgical-looking option. `Level1` rather than `Disable` so the model keeps every level-1
-/// optimization.
+/// A LEVEL CAP IS STILL THE RIGHT FIX, but not because naming the optimizer is impossible —
+/// it is because every name that works is a trap. RESULTS §7.40 (measured on linux/arm64 and
+/// macOS arm64, same pinned `ort`) found the disable-list does work, under a name neither of
+/// the two attempts above used:
+///
+/// ```text
+/// disable GeluFusion            -> STILL FAILS   (the pass is registered twice, L1 and L2)
+/// disable GeluFusionL1          -> STILL FAILS
+/// disable GeluFusionL2          -> LOADS
+/// ```
+///
+/// Three reasons the level cap is preferred anyway, all measured:
+///
+/// 1. `Level1` is BITWISE IDENTICAL to `Disable` on this graph (max |Δ logit| 0.000e+00 over
+///    the 6-clip gate corpus). `GeluFusionL2` differs by 9.58e-04 — harmless, but weaker.
+/// 2. `GeluFusionL2` leaves `NhwcFusedConv` x8 and `SkipLayerNormalization` x12 running on
+///    fp16 tensors. They have fp16 kernels here or the session would not open, but that is
+///    the same accident of build configuration that produced this bug. `Level1` leaves zero
+///    contrib ops on fp16.
+/// 3. The name is an undocumented ORT internal that has already been renamed once, and a
+///    WRONG NAME IS SILENTLY IGNORED (see the escape hatch below).
+///
+/// `Level1` rather than `Disable` so the model keeps every level-1 optimization.
 ///
 /// Reverting the model to fp32 would also "work", but costs back the 189 MB of disk and
 /// ~500 MiB of VRAM that RESULTS §7.39 won, on every platform, to fix one.
@@ -75,6 +94,13 @@ pub fn apply_workarounds(builder: SessionBuilder, path: &Path) -> Result<Session
     // Escape hatches. These exist because the failure is a property of the ORT BUILD, not of our
     // code or our models, so an untested platform can hit the same class of problem with a
     // different operator — and an operator should not have to wait for a release.
+    //
+    // BOTH ARE GLOBAL AND BOTH RETURN EARLY, so either one REPLACES the aarch64 workaround
+    // below rather than adding to it. Setting `DIAR_ORT_OPT_LEVEL=all` on an aarch64 host to
+    // tune the diarization graphs therefore un-fixes the gender model and silently disables
+    // speaker gender again. That is deliberate — an escape hatch that cannot override the
+    // built-in behaviour is not an escape hatch — but it is a sharp edge, so prefer scoping
+    // any experiment to one process rather than the deployment.
     if let Ok(level) = std::env::var("DIAR_ORT_OPT_LEVEL") {
         if let Some(lvl) = parse_level(&level) {
             return builder
@@ -82,6 +108,16 @@ pub fn apply_workarounds(builder: SessionBuilder, path: &Path) -> Result<Session
                 .map_err(|e| anyhow::anyhow!("setting ORT optimization level to {level}: {e}"));
         }
     }
+    // TWO TRAPS, both measured (RESULTS §7.40) — this variable can silently do nothing:
+    //   * ORT SILENTLY IGNORES an unrecognized optimizer name. No error, no warning; the
+    //     session opens and behaves exactly as if the variable were unset. So a typo, or a
+    //     plausible-but-wrong name, looks applied and is not. `GeluFusion` is such a name —
+    //     the pass that matters is `GeluFusionL2`.
+    //   * THE SEPARATOR IS `;`, NOT `,`, despite ort's own doc comment on
+    //     `with_disabled_optimizers` saying "comma-separated". `A;B` disables both; `A,B`
+    //     disables NEITHER, because the whole string is taken as one name and matches nothing.
+    // Verify any value set here actually took effect — the model either loads or it does not;
+    // `validation/ort_fusion_probe` reports that per configuration.
     if let Ok(disabled) = std::env::var("DIAR_ORT_DISABLED_OPTIMIZERS") {
         if !disabled.trim().is_empty() {
             return builder

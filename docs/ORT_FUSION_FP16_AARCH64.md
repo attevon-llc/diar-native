@@ -1,6 +1,9 @@
 # ORT graph fusion vs. fp16 on aarch64 — why the gender model fails to load on linux/arm64
 
-**Status:** investigated, root-caused, fix chosen. Not yet implemented.
+**Status:** root-caused and **FIXED** — `c06fa15`, `crates/diar-core/src/ort_compat.rs`, in
+0.3.0. The gender session is capped at `GraphOptimizationLevel::Level1` on aarch64 only. This
+page is the *why*: what breaks, why the obvious explanation is wrong, and the traps around the
+escape hatches that shipped with the fix.
 **Issue:** #14. **Full measurements:** `validation/RESULTS.md` §7.40 (append-only; that
 section is the record, this file is the explanation).
 
@@ -114,13 +117,16 @@ The `ort` crate's own doc comment on `with_disabled_optimizers` says *"Accepts a
 comma-separated list of optimizers to disable"*, which is wrong for this build. Worth an
 upstream `ort` documentation issue. Practically: pass a single name, or separate with `;`.
 
-### Recommendation: **(b), Level1 on the gender session only**
+### Shipped: **(b), Level1 on the gender session only**
 
 (a) is more surgical and is what issue #14 preferred, and it is validated and safe. But (b)
 is bitwise identical to the unoptimized graph, and it does not depend on an ORT-internal
 optimizer name that is undocumented, silently ignored when wrong, and *already renamed once*.
-Ship (b); (a) is the recorded alternative if the other Level-2 optimizations are ever wanted
-back.
+(b) shipped; (a) is the recorded alternative if the other Level-2 optimizations are ever
+wanted back.
+
+The fix is scoped to the gender model on aarch64 by filename, so the 15 diarization graphs
+keep full optimization on the hot path, and it is a no-op on x86_64.
 
 Whichever ships is **inert on macOS**, where Level3 and Level0 already produce bitwise
 identical output on this graph.
@@ -190,3 +196,35 @@ Platform matrix as measured (`diar-server verify-models --set fast`):
 | `--features coreml`, native macOS arm64 | `coreml` | same |
 | `--features coreml`, native macOS arm64 | `coreml_fast` | same |
 | linux/arm64 (Docker) | `cpu` | gender session **fails to load**; diarization graphs fine |
+
+## The escape hatches that shipped with the fix — and how to not get fooled by them
+
+`ort_compat.rs` exposes `DIAR_ORT_OPT_LEVEL` and `DIAR_ORT_DISABLED_OPTIMIZERS`, because the
+failure is a property of the ORT *build*, so another platform can hit the same class with a
+different operator and shouldn't have to wait for a release. Three things to know before
+reaching for them in an incident:
+
+1. **`DIAR_ORT_DISABLED_OPTIMIZERS` can silently do nothing.** ORT ignores an unrecognized
+   optimizer name without error or warning. `GeluFusion` is exactly such a name — the pass
+   that matters is `GeluFusionL2`. You will see a session that opens and behaves as if the
+   variable were unset.
+2. **Its separator is `;`, not `,`.** `A;B` disables both. `A,B` disables *neither* — the whole
+   string is taken as a single name and matches nothing. `ort`'s own doc comment says
+   "comma-separated" and is wrong for this build.
+3. **Both variables are global and both replace the built-in workaround** rather than adding to
+   it (each returns early). So setting `DIAR_ORT_OPT_LEVEL=all` on an aarch64 host to tune the
+   diarization graphs **un-fixes the gender model** and silently disables speaker gender again.
+
+In all three cases the symptom is silence, not an error. Verify a value actually took effect —
+the model either loads or it doesn't, and `validation/ort_fusion_probe` reports that per
+configuration.
+
+## If you are picking this up cold
+
+1. Read this page, then `validation/RESULTS.md` §7.40 for the raw measurements.
+2. Do **not** re-run the investigation. Run `validation/ort_fusion_probe/run_probe.sh` only to
+   check a *fix* or to ask the same question of a *new* graph or platform.
+3. RESULTS.md is append-only. Add a section; never edit §7.40's numbers.
+4. The rule that outlives this bug: **an fp16 export must be gated on LOADING on aarch64, not
+   only on accuracy.** An accuracy gate cannot see this failure, because the session never
+   opens far enough to produce a number.

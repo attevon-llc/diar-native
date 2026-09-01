@@ -160,9 +160,12 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   `deny_unknown_fields`) — consumers must gate on `/healthz` `supported_devices`.
 - Decisions on record: TensorRT rolled back (§7.26); native fbank superseded by the
   fbank∥GPU pipeline (§7.28); sinc resampler rejected — keep `FftFixedIn` (§7.29); fp16 gender
-  on linux/arm64 root-caused to an ORT load-time fusion, fix chosen = cap the GENDER session
-  at `GraphOptimizationLevel::Level1` (bitwise identical to unoptimized; `GeluFusionL2` is the
-  validated alternative) — §7.40, NOT YET IMPLEMENTED.
+  on linux/arm64 root-caused to an ORT load-time fusion and FIXED (`c06fa15`,
+  `crates/diar-core/src/ort_compat.rs`) — the GENDER session is capped at
+  `GraphOptimizationLevel::Level1` on aarch64 only; `GeluFusionL2` is the validated
+  alternative (§7.40). Its `DIAR_ORT_OPT_LEVEL` / `DIAR_ORT_DISABLED_OPTIMIZERS` escape
+  hatches are GLOBAL and each REPLACES the built-in workaround, so
+  `DIAR_ORT_OPT_LEVEL=all` on aarch64 silently re-breaks gender.
 
 ## Ground rules
 

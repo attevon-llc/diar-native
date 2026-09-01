@@ -150,17 +150,18 @@ Milestones:
     device**, so a GPU-less host wrote a marker declaring good models known-bad and bricked
     startup permanently; and the smoke test verified graphs production does not run, so a zeroed
     production multimask graph passed all five stages green.
-  - **fp16 gender on linux/arm64 (issue #14): ROOT-CAUSED 2026-09-01, FIX NOT YET IMPLEMENTED
-    (RESULTS §7.40, docs/ORT_FUSION_FP16_AARCH64.md)** — `gender-wav2vec2.onnx` (fp16) fails to
+  - **fp16 gender on linux/arm64 (issue #14): DONE 2026-09-01 (`c06fa15`; RESULTS §7.40,
+    docs/ORT_FUSION_FP16_AARCH64.md)** — `gender-wav2vec2.onnx` (fp16) fails to
     LOAD on linux/arm64, silently disabling speaker gender there while requests still answer
     200. Not a model defect and not "aarch64 lacks a kernel amd64 has": ORT fuses `Erf`-GELU
     into `com.microsoft.Gelu` *at session load*, and **every** aarch64 build checked lacks the
     fp16 kernel for it — the builds differ only in whether the fusion FIRES. macOS arm64
     declines to fuse fp16, so it never creates the node and works fine (verified natively:
     default and `coreml` builds, `cpu`/`coreml`/`coreml_fast`, all pass end-to-end).
-    Fix chosen: cap the GENDER session at `GraphOptimizationLevel::Level1` in
-    `crates/diar-core/src/gender.rs` — bitwise identical to the unoptimized graph and leaves
-    zero contrib ops on fp16 tensors. The surgical alternative is
+    Fix shipped: cap the GENDER session at `GraphOptimizationLevel::Level1` on aarch64 only
+    (`crates/diar-core/src/ort_compat.rs`) — bitwise identical to the unoptimized graph and
+    leaves zero contrib ops on fp16 tensors, while the diarization graphs keep full
+    optimization. The surgical alternative is
     `disable_specified_optimizers=GeluFusionL2` (9.58e-04 max Δlogit, 6/6 labels); note the
     issue's proposed `GeluFusion` does NOT work, an unknown optimizer name is silently ignored,
     and the separator is `;` not `,`. Nothing under `vendor/` is involved and `ort` needs no
