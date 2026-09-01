@@ -1,8 +1,18 @@
 # diar-native — agent guide
 
 Native (Rust/ONNX) speaker diarization for OpenTranscribe: a vendored, patched `speakrs`
-wrapped by our crates and served as the `diar-native` sidecar. **Shipped**: the live stack
-runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
+wrapped by our crates and served as the `diar-native` sidecar. **Released: 0.3.0** (crates and
+image tag unified at that number; see `CHANGELOG.md`).
+
+**What actually runs in production is the BINARY, not this image.** The live sidecar is compose
+service `diar-native` running the *shared backend* image
+(`davidamacey/opentranscribe-backend:...`) with `command: ["diar-server"]`; the binary and three
+ORT `.so`s get there via a build stage in `transcribe-app/backend/Dockerfile.prod` pinned to
+`davidamacey/diar-native@sha256:...`. So a release here ships to production only when that digest
+is repointed — which is a change made in transcribe-app, not here. As of 0.3.0 the pinned digest
+is still a 0.2.0 build.
+
+Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
 (append-only; **never re-run a logged test** — run only to compare a change against it).
 
 ## Layout
@@ -21,10 +31,19 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 - `crates/diar-core` — engine wrapper: `DiarEngine::clone_shared()` per-request handles,
   centroids, `embed_window`, exclusive segments, gender, `audio.rs` media decode, and
   `logging.rs` (the `RUST_LOG`/`DIAR_LOG_FORMAT` policy both binaries share; the sink is a
-  parameter, and the library never installs a subscriber itself).
+  parameter, and the library never installs a subscriber itself), `ort_compat.rs` (per-platform
+  session workarounds — currently the aarch64 fp16 GELU cap), and `provision/` (preflight,
+  exporter, marker, `files.rs` = the authoritative required-file lists, `verify.rs` = the
+  five-stage smoke test). Provisioning lives in diar-core, NOT diar-server: diar-server is a
+  binary crate with no `tests/`, so nothing in it is integration-testable.
   `clone_shared` is `#[cfg(not(feature = "coreml"))]` — speakrs cfgs its own equivalent out
   for CoreML (not ORT sessions, single-thread-at-a-time). `Mode` also has `CoreMl`/`CoreMlFast`.
-- `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz`;
+- `crates/diar-server` — the sidecar (axum): `/diarize` `/embed_window` `/healthz` `/readyz`
+  (four routes). `/healthz` returns JSON and is **always 200 while serving, in every model
+  state** — a hard compatibility constraint, since the compose healthcheck and
+  `diarizer_native.py` both gate on the status alone; `/readyz` is the one allowed to 503.
+  `cli.rs` also carries the `provision-models` / `verify-models` / `check-token` subcommands
+  (no subcommand = serve, which the deployment relies on).
   `DIAR_MAX_INFLIGHT` bounds concurrency; requests run on cloned handles (no engine mutex) —
   except under `coreml`, where `AppState::with_engine` holds the mutex for the whole request
   instead (RESULTS §7.31; `DIAR_MAX_INFLIGHT` has no effect in that mode).
@@ -45,6 +64,12 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 - Build in the container, never on the host (host lacks openblas; `target/` and
   `Cargo.lock` end up root-owned from container writes — chown via a container if hit):
   `docker run --rm -v $PWD:/build -v /tmp/diar_target:/tmp/target -w /build -e CARGO_TARGET_DIR=/tmp/target diar-bench-builder:latest cargo build --release --features cuda -p diar-server -p diar-cli`
+  **`diar-bench-builder:latest` is a machine-local image; no Dockerfile in this repo produces
+  it.** On any other machine, build the equivalent from `ubuntu:24.04` + apt `build-essential
+  pkg-config cmake ca-certificates curl git libssl-dev libclang-dev libopenblas-dev` + rustup
+  stable. That is exactly what CI installs — `.github/actions/setup-build-env` is the single
+  definition, and `CONTRIBUTING.md` documents reproducing it locally. openblas is needed because
+  speakrs is built with `openblas-system`; libclang is for bindgen (`ort-sys`).
 - speakrs tests: same container, `-w /build/vendor/speakrs`, `RUST_MIN_STACK=16777216`,
   `cargo test --release --no-default-features --features openblas-system,online`
   (94 tests; plain `--features openblas-system` fails — duplicate BLAS).
@@ -77,13 +102,32 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 
 - Live sidecar = compose service `diar-native` in transcribe-app (5 compose files; see
   `docker-compose.diar-native.yml`). Old image kept as `diar-server:pre-t9a` for rollback.
-- Env knobs: `DIAR_MAX_INFLIGHT`, `SPEAKRS_FBANK_POOL`, `SPEAKRS_LAZY_SESSIONS`,
-  `SPEAKRS_ARENA_SHRINK` (4 GB-tier VRAM floor, ~20% per-job cost — default off),
-  `DIAR_GENDER_MAX_SECONDS`, `DIAR_DEVICES` (comma list, first = default; wins over
-  `DIAR_MODE`), `DIAR_MAX_INFLIGHT_CPU` (optional inner sub-gate, default off),
-  `RUST_LOG` (default `info,ort::logging=warn` — NOT unset-means-silent; ORT's native bridge
-  is held at warn because it emits 5797 INFO lines per CUDA startup), `DIAR_LOG_FORMAT`
-  (`text`|`json`).
+- **Env knobs: `README.md` §6e is the ONE authoritative table** (name, effect, default, which
+  subcommand reads it) and is checked in both directions — anything not in it has no read site.
+  Do not maintain a second list here; the highlights only:
+  - serve: `DIAR_MODELS_DIR` (`/models`), `DIAR_BIND` (`0.0.0.0:8701`), `DIAR_MAX_INFLIGHT` (2),
+    `DIAR_MAX_INFLIGHT_CPU` (off), `DIAR_DEVICES` (comma list, first = default; wins over
+    `DIAR_MODE`), `DIAR_MODE` (unset *or unrecognized* ⇒ `cuda`), `DIAR_MODEL_SET`,
+    `DIAR_ALLOW_UNVERIFIED_MODELS`, `DIAR_GENDER_MAX_SECONDS` (5),
+    `RUST_LOG` (default `info,ort::logging=warn` — NOT unset-means-silent; ORT's native bridge
+    is held at warn because it emits 5812 INFO lines per CUDA startup), `DIAR_LOG_FORMAT`
+    (`text`|`json`).
+  - provisioning: `HF_TOKEN` (+ `HUGGINGFACE_TOKEN`, `HUGGING_FACE_HUB_TOKEN`), `HF_ENDPOINT`
+    (the only knob that makes provisioning work against an HF mirror / air-gapped proxy),
+    `HF_HOME`, `DIAR_EXPORT_PYTHON`. Device defaults to **cpu** here, not cuda.
+  - `DIAR_ORT_OPT_LEVEL` / `DIAR_ORT_DISABLED_OPTIMIZERS` cover only sessions built through
+    `diar_core::ort_compat` — the gender model and the smoke test, NOT speakrs' 15 diarization
+    graphs.
+  - engine: `SPEAKRS_LAZY_SESSIONS`, `SPEAKRS_ARENA_SHRINK` (4 GB-tier VRAM floor, ~20% per-job
+    cost — default off), `SPEAKRS_INTRA_THREADS`, `SPEAKRS_FBANK_THREADS`, `SPEAKRS_AHC_THREADS`.
+  - **`SPEAKRS_FBANK_POOL` is NOT operator-settable through `diar-server`** — `DiarEngine::load`
+    unconditionally `set_var`s it before speakrs reads it back in the same call. (That `set_var`
+    is also why engine loads must stay serial in `run()` before the server binds: glibc `setenv`
+    is not thread-safe.) `SPEAKRS_TRT`/`SPEAKRS_TRT_CACHE` are dead — no read sites.
+- Exit codes are a stable contract (`crates/diar-core/src/provision/mod.rs::exit`), tabulated in
+  README §6d and `docs/INSTALL_NATIVE.md`. Note **8** = serve-time "models unusable" (was 6, which
+  now means only "no usable python export env"); 9 = device unavailable, no marker written;
+  10 = `verify-models` found nothing to verify against.
 - Server logs go to **stdout** (so `docker logs`/compose capture them); fatal startup errors
   stay on stderr. Only the serve path installs a subscriber — the `provision-models` /
   `verify-models` subcommands write machine-readable JSON to stdout and must not be
@@ -91,7 +135,7 @@ runs `diar-server:0.2.0`. Read `PLAN.md` for roadmap/decisions and `validation/R
 - The CUDA image is a SUPERSET of the CPU image on amd64 — one process serves `cuda` and
   `cpu`, picked per request via the `device` field (RESULTS §7.34). The ORT CPU EP is
   statically linked in every build, so this costs no extra bytes. `Dockerfile.server-cpu`
-  stays as the arm64 / 189 MB artifact. `/healthz` returns JSON (`devices` = loaded,
+  stays as the arm64 / 194 MB artifact. `/healthz` returns JSON (`devices` = loaded,
   `supported_devices` = compiled in). **Old servers silently IGNORE `device`** (no
   `deny_unknown_fields`) — consumers must gate on `/healthz` `supported_devices`.
 - Decisions on record: TensorRT rolled back (§7.26); native fbank superseded by the
