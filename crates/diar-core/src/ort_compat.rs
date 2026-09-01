@@ -10,8 +10,23 @@ use anyhow::Result;
 use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 
-/// The gender classifier is the only graph that needs a workaround today.
-const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
+// The gender classifier is the only graph that needs a workaround today. IMPORTED, never
+// re-declared: the workaround below is scoped by FILENAME, so a local copy of the literal would
+// let a rename of the export disable it silently — and only on aarch64, where the symptom is a
+// server that starts fine and quietly returns no genders. `gender.rs` owns the name.
+use crate::gender::GENDER_MODEL_FILE;
+
+/// Is this the graph the fp16 workarounds are scoped to, ignoring architecture?
+///
+/// Split out from the architecture gate below so the FILENAME SCOPING can be tested on every
+/// architecture rather than only on aarch64. Before the split the scoping test compared `false`
+/// with `false` on x86_64, so it would have passed just as happily against a predicate that
+/// matched nothing at all — and x86_64 is the only architecture CI runs.
+fn is_fp16_capped_model(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == GENDER_MODEL_FILE)
+}
 
 /// Does this model need the aarch64 fp16 workaround?
 ///
@@ -19,11 +34,7 @@ const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
 /// full optimization on aarch64 — verified end to end — so capping them too would give up
 /// optimizations on the hot path to fix a problem they do not have.
 fn needs_aarch64_fp16_workaround(path: &Path) -> bool {
-    cfg!(target_arch = "aarch64")
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == GENDER_MODEL_FILE)
+    cfg!(target_arch = "aarch64") && is_fp16_capped_model(path)
 }
 
 /// Build a session for `path`, applying any platform workaround that model needs.
@@ -228,6 +239,29 @@ fn parse_level(s: &str) -> Option<GraphOptimizationLevel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The filename scoping, checked on EVERY architecture.
+    ///
+    /// The literal below is written out on purpose rather than built from `GENDER_MODEL_FILE`.
+    /// A test that derives the name from the constant it is guarding cannot fail when the
+    /// constant changes, which is the only failure worth catching here: the fp16 cap is scoped
+    /// by filename, so renaming the export silently un-scopes it on arm64 — where the symptom
+    /// is a server that starts, serves, and returns no genders. Changing this literal must be a
+    /// deliberate act, paired with the exporter (see `tests/model_filenames.rs`).
+    #[test]
+    fn the_fp16_cap_is_scoped_to_the_gender_model_by_name() {
+        assert!(is_fp16_capped_model(Path::new("/m/gender-wav2vec2.onnx")));
+        for other in [
+            "segmentation-3.0.onnx",
+            "wespeaker-multimask-tail-b32.onnx",
+            "wespeaker-voxceleb-resnet34.onnx",
+        ] {
+            assert!(
+                !is_fp16_capped_model(&Path::new("/m").join(other)),
+                "{other} must keep full optimization: it loads fine on aarch64"
+            );
+        }
+    }
 
     #[test]
     fn only_the_gender_model_is_singled_out() {

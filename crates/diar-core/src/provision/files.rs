@@ -35,7 +35,12 @@ pub const MARKER_FILE: &str = "diar-provision.json";
 /// Optional gender classifier. Absent => `GenderModel::load_optional` returns `Ok(None)` and
 /// the feature is silently off, which is why provisioning treats it as a first-class artifact
 /// rather than an afterthought.
-pub const GENDER_MODEL: &str = "gender-wav2vec2.onnx";
+///
+/// A RE-EXPORT, not a second definition. [`crate::gender::GENDER_MODEL_FILE`] is canonical
+/// because two behaviours are scoped to this exact filename — the aarch64 fp16 optimization cap
+/// and the fp16 load gate in `verify.rs` — and a duplicated literal here would let a rename
+/// disable both without failing anything.
+pub use crate::gender::GENDER_MODEL_FILE as GENDER_MODEL;
 /// Documentation-only sidecar for the gender model. `gender.rs` hardcodes its `ID2LABEL`, so
 /// this file is never read at runtime — verify.rs cross-checks it against that constant,
 /// which turns a decorative file into a guard against upstream relabelling.

@@ -17,6 +17,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// Model filename in the models dir; absence disables the feature.
+///
+/// THE CANONICAL DEFINITION. Every other site names this constant rather than repeating the
+/// literal — [`crate::provision::files::GENDER_MODEL`] re-exports it, and
+/// [`crate::ort_compat`] imports it. There used to be three independent copies of the string,
+/// which was a live hazard rather than a tidiness complaint: **two behaviours are scoped by
+/// this exact filename** — the aarch64 fp16 optimization cap
+/// ([`crate::ort_compat::apply_workarounds`]) and the fp16 load gate
+/// (`provision::verify` stage 1). Renaming the export while updating only one copy would
+/// silently stop both from applying, on arm64 only, where the symptom is a server that starts
+/// fine and returns no genders. `crates/diar-core/tests/model_filenames.rs` pins the value
+/// against the Python exporter that writes it.
 pub const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
 /// `config.id2label` of prithivMLmods/Common-Voice-Gender-Detection, index-ordered.
 ///
