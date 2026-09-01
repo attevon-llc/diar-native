@@ -20,7 +20,7 @@ numpy==2.5.2
 onnx==1.22.0
 onnxruntime==1.29.0
 pyannote.audio==4.0.7
-huggingface_hub==1.28.0
+huggingface_hub==1.29.0
 transformers                      # gender classifier checkpoint (step 2e)
 onnxconverter-common              # fp16 conversion for the gender model (step 2e)
 
