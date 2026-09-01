@@ -306,6 +306,35 @@ consumer-side decision.
 - Document `SPEAKRS_TRT` and `SPEAKRS_TRT_CACHE` as dead configuration: they have no read sites
   and do nothing, following the TensorRT rollback (RESULTS §7.26).
 
+### Dependencies
+
+Six dependabot bumps were reviewed for 0.3.0; five landed. The two that change a base image were
+built and run against real model weights rather than merged on green CI, because CI builds
+neither the CUDA image nor anything with weights in it — the gap that would have let the cuda13
+bump through. Evidence in RESULTS §7.41.
+
+- **Base image: `ubuntu` 24.04 → 26.04** (`docker/Dockerfile.server-cpu`, `docker/Dockerfile.builder`).
+  26.04 is a released LTS ("Resolute Raccoon"). glibc moves 2.39 → 2.43 and `libopenblas0`
+  0.3.26 → 0.3.32; the package name is unchanged and the pinned rustc 1.97.1 installs cleanly on
+  it. **The CPU image grows 195 MB → 246 MB (+26%)** — worth knowing, since small size is half of
+  why that image exists. The CUDA image is untouched by this and stays on Ubuntu 24.04, which is
+  what `nvidia/cuda:*-ubuntu24.04` pins.
+- **Base image: `nvidia/cuda` 12.8.1 → 12.8.2** (`docker/Dockerfile.server`, `docker/Dockerfile.bench`).
+  A patch bump *within the 12.8.x line*, which is what the dependabot ignore rule deliberately
+  still allows; 13.x remains blocked and unusable. The hand-installed cuBLAS/cuFFT/cuRAND/cuDNN
+  set and the ONNX Runtime 1.24.2 GPU tarball are unchanged.
+- **`huggingface_hub` 1.28.0 → 1.29.0** (`scripts/provision/requirements.txt`). Provisioning-only.
+  The download path we use (`hf_hub_download`, `model_info`, `HF_HOME`) is unchanged in 1.29.0;
+  its one download-side change is an internal Xet connection-cache fix that removes a per-file API
+  call. **Not exercised end to end** — a real export needs a gated HF token.
+- **CI: `actions/checkout` 4 → 7, `actions/setup-python` 5 → 7, `docker/setup-qemu-action` 3 → 4.**
+  All three are node20 → node24 moves needing Actions Runner ≥ v2.327.1, which every
+  `ubuntu-latest` runner already exceeds. checkout v7 refuses to check out fork PR code under
+  `pull_request_target` / `workflow_run`; neither trigger appears in this repo, and all seven
+  checkout steps pass no inputs at all.
+- **`ort` was not bumped and must not be.** No PR in this batch touched `Cargo.toml` or
+  `Cargo.lock`. The `=2.0.0-rc.12` pin stands (RESULTS §4.26).
+
 ---
 
 
