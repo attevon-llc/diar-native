@@ -234,7 +234,9 @@ needs a consumer-side decision.
   matched no artifact anyone could name.
 - **`EXPORT_RECIPE_VERSION` bumped to 2** for the fp16 gender export. Directories from recipe 1
   are reported `stale` — non-fatal, they still serve.
-- **Gender model fp16 restored: 378.5 MB → 189.5 MB (−50.0%), and roughly −500 MiB VRAM.** The
+- **Gender model fp16 restored: 378.5 MB → 189.5 MB (−50.0%), and −252 MiB VRAM measured
+  per-process on the 10-minute reference clip (−506 MiB was measured on a whole-container AMI
+  run; the peak arena is workload dependent, so quote the basis with the number).** The
   root cause was two **no-op `Cast` nodes** that torch 2.13 emits and torch 2.11 did not, which
   made `onnxconverter_common.float16` produce a graph ORT rejected with "Type parameter (T) of
   Optype (Add) bound to different types". The exporter now elides them. The regenerated graph

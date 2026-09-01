@@ -85,7 +85,7 @@ and the generic `with_config_entry`) — no version bump.
 | --- | --- | --- | --- |
 | **(a)** `optimization.disable_specified_optimizers=GeluFusionL2` | kills just that one rewrite | ✅ | max \|Δ logit\| 9.58e-04, labels 6/6 |
 | **(b)** cap the gender session at `GraphOptimizationLevel::Level1` | skips all Level-2 fusions | ✅ | **0.000e+00 — bitwise identical**, labels 6/6 |
-| (c) fp32 gender on this platform | avoids fp16 entirely | ✅ | +190 MB disk, ~500 MiB VRAM (§7.18) |
+| (c) fp32 gender on this platform | avoids fp16 entirely | ✅ | +190 MB disk, +252 MiB VRAM (§7.46, measured per-process; §7.18's 506 MiB was a whole-container AMI run) |
 
 ### Trap 1 — the optimizer is called `GeluFusionL2`, not `GeluFusion`
 

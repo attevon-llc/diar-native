@@ -3146,3 +3146,74 @@ own note that it was "not a protocol-grade quiet-machine leg" (load 9–13/48, c
 leg's 8.9–14.3). Same band, different conditions. The B1 verdict rests entirely on the
 **interleaved within-session A/B**, which is the only comparison here that controls its
 variables.
+
+### 7.46 B5 — the fp16 gender VRAM saving is **252 MiB, not ~500**: the CHANGELOG figure was borrowed from a different measurement basis (issue #5)
+
+Third timed leg from §7.34's deferred list, and the one that mattered most because **§7.39
+claimed "~500 MiB VRAM" by citing §7.18's measurement of the same model pair rather than taking
+a fresh one**, and that borrowed number is asserted unqualified in `CHANGELOG.md`. Harness:
+`validation/b5_gender_fp16_vram.sh` (committed, reusable).
+
+**Control set.** `diar-server:bench`, `--gpus "device=0"` (RTX A6000), `DIAR_DEVICES=cuda`,
+`DIAR_MAX_INFLIGHT=2`, `SPEAKRS_LAZY_SESSIONS=1`, `karpathy_10m.wav` (md5
+`7c57039f944332e85b0b2a3c3f6963ca`, the §7.16/§7.18/§7.39 reference clip), `{"gender": true}`,
+two diarize calls per container so the arena is grown before the peak is taken. Single variable
+= a bind-mount of `gender-wav2vec2.onnx` over an otherwise identical `models_folded`
+(189 431 659 B fp16 vs 378 529 501 B fp32) — the technique §7.39 used. Legs **interleaved**
+fp32/fp16 ×3. VRAM sampled **DURING** at 2 Hz (15–16 samples per leg) and **filtered to the
+container's host PID**. Load average **9.1–9.9 on 48 cores** and essentially flat across all six
+legs — the quietest and most stable leg of this session, and a memory measurement is in any case
+far more robust to load than a timed one.
+
+| round | fp32 peak | fp16 peak | delta | load avg |
+| --- | --- | --- | --- | --- |
+| 1 | 4 694 MiB | 4 446 MiB | 248 | 9.60 / 9.90 |
+| 2 | 4 698 MiB | 4 450 MiB | 248 | 9.50 / 9.71 |
+| 3 | 4 698 MiB | 4 446 MiB | 252 | 9.14 / 9.69 |
+| **median** | **4 698 MiB** | **4 446 MiB** | **252 MiB** | |
+
+Reproducibility is excellent — a 4 MiB spread within each variant across three container
+restarts.
+
+**VERDICT: the direction is confirmed, the magnitude is NOT. fp16 saves 252 MiB here, about
+HALF the ~500 MiB currently claimed.** The bind-mount demonstrably took effect: the two legs
+differ in VRAM *and* in gender confidence at the 1e-6 level (below), so different graphs really
+did load.
+
+**This is not a retraction of §7.18.** §7.18 measured **"container VRAM (AMI run)"** — a
+different clip (16 AMI meetings vs one 10-minute file) and, by its own wording, a
+container/whole-GPU basis rather than the per-process one used here. Peak arena is workload
+dependent, so 506 MiB and 252 MiB can both be honest measurements of different things. Note the
+absolute levels differ too: §7.18's 5 396 / 4 890 MiB sit ~700 / ~444 MiB above this leg's
+4 698 / 4 446 MiB, which is what a broader measurement basis would look like.
+
+**What IS wrong is the generalisation.** §7.39 did not measure the pair; it cited §7.18 and the
+figure then entered `CHANGELOG.md` as an unqualified "roughly −500 MiB VRAM" property of the
+fp16 model. On the project's own reference clip, measured per-process, the saving is half that.
+For orientation the raw weight difference is 189 MB = **180 MiB**, so 252 MiB (weights + arena)
+is the more physically plausible of the two figures for a single-file run, while 506 MiB is
+~2.8× the weight delta and needs the AMI workload to explain it.
+
+**Docs corrected in the same commit** (neither is append-only): `CHANGELOG.md` now states the
+measured range with both bases cited, and `docs/ORT_FUSION_FP16_AARCH64.md`'s option-(c) row —
+which priced "fp32 gender on this platform" at "~500 MiB VRAM (§7.18)" and therefore *overstated
+the cost of the aarch64 fp32 fallback by 2×* — now carries the measured figure. That row feeds a
+platform decision, so the correction is not cosmetic.
+
+**ACCURACY CHECK — two gates, both passed.**
+
+1. **Diarization records identical.** Gender does not feed clustering, so swapping its precision
+   must leave diarization untouched. `rttm` + `segments` + `exclusive_segments` + `centroids` +
+   `num_speakers` hash to **one value across all six runs of both variants**
+   (`0bb39f3bbfb44181…`). Anything else would have been a real bug rather than a VRAM result.
+2. **Gender verdicts agree, 2/2.**
+
+| speaker | fp32 | fp16 | delta |
+| --- | --- | --- | --- |
+| SPEAKER_00 | female 0.796751 | female 0.796750 | 1.15e-06 |
+| SPEAKER_01 | male 0.999142 | male 0.999144 | 1.85e-06 |
+
+These land on the historical operating point recorded in §7.16 and §7.39 for this clip (female
+0.797 / male 0.999), so the fp32 leg is not some unvalidated graph — it is the same classifier
+at the other precision. §7.18's headline finding (fp16 is verdict-preserving) is reconfirmed
+independently; only its VRAM magnitude fails to generalise.
