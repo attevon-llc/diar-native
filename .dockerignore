@@ -9,6 +9,10 @@
 
 !Cargo.toml
 !Cargo.lock
+# Without this every image builds with whatever Rust its base happens to ship, NOT the version
+# CI validates against — so the binary we publish would be compiled by a toolchain nothing ever
+# ran clippy or the tests on.
+!rust-toolchain.toml
 !crates/
 !scripts/
 # vendor/ is gitignored but IS a build input: speakrs is a path dependency, and

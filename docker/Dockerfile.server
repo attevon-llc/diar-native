@@ -36,7 +36,11 @@ RUN curl -fSL -o /tmp/ort.tgz \
 
 FROM base AS builder
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# rust-toolchain.toml is not decoration here: rustup reads it and installs the pinned
+# compiler, so the binary we ship is built by the same toolchain CI ran clippy and the
+# tests against. Without it this image would silently use whatever Rust its base
+# happens to carry.
 COPY crates/ ./crates/
 COPY vendor/speakrs/ ./vendor/speakrs/
 # Required: diar-core's provision module `include_str!`s scripts/provision/*.py

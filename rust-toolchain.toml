@@ -1,0 +1,15 @@
+# Single source of truth for the Rust toolchain, honoured automatically by rustup in EVERY
+# environment: the dev container, CI, and a bare `cargo` on a workstation.
+#
+# Pinned rather than `stable` on purpose. `stable` is a moving target, and the failure it
+# produces is confusing and always badly timed: a new stable ships new clippy lints, CI turns
+# red on code that passed locally an hour earlier, and nothing in the repo changed. Worse, the
+# dev container is a frozen image, so it would keep passing while CI kept failing — the two
+# environments silently disagreeing about what "clean" means.
+#
+# Bumping this is a deliberate act: change the version, rebuild the builder image
+# (docker/Dockerfile.builder), and run fmt + clippy + tests before pushing. Expect new lints.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

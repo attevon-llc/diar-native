@@ -1,0 +1,32 @@
+# System packages required to BUILD this project. One list, read by all three environments:
+#
+#   docker/Dockerfile.builder              the dev container
+#   .github/actions/setup-build-env        CI
+#   scripts/setup_dev_env.sh               a workstation
+#
+# Kept as data rather than duplicated in each, because three hand-maintained copies is how a
+# host silently stops matching CI — and the resulting failures ("passes locally, red in CI")
+# waste far more time than this file costs.
+#
+# Blank lines and #-comments are ignored. One package per line.
+
+# Compiler, linker, and the usual build plumbing.
+build-essential
+pkg-config
+cmake
+ca-certificates
+curl
+git
+
+# TLS headers for crates that link against system OpenSSL.
+libssl-dev
+
+# bindgen (via ort-sys) needs libclang at build time. Its absence fails LATE and with a
+# confusing message about being unable to find libclang, minutes into a build.
+libclang-dev
+
+# The reason a host build fails without this list. speakrs links against OpenBLAS for the
+# linear algebra in clustering — PLDA scoring, VBx refinement, agglomerative clustering. That
+# work is NOT in ONNX Runtime; it is Rust calling BLAS. Without it the build fails at the link
+# step. The runtime images install the runtime half (libopenblas0) instead of this -dev package.
+libopenblas-dev

@@ -21,15 +21,19 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-          build-essential pkg-config cmake ca-certificates curl git \
-          libssl-dev libclang-dev libopenblas-dev
+        # Single source of truth, shared with docker/Dockerfile.builder and
+        # scripts/setup_dev_env.sh. Do not inline the list here.
+        grep -vE '^\s*(#|$)' scripts/build-deps.txt \
+          | xargs sudo apt-get install -y --no-install-recommends
 
     - name: Pin the Rust toolchain
       shell: bash
       run: |
-        rustup toolchain install stable --profile minimal -c rustfmt -c clippy
-        rustup default stable
+        # No explicit channel: rustup reads rust-toolchain.toml, so CI, the dev container and
+        # a workstation all resolve to the SAME compiler. Pinning `stable` here instead would
+        # let CI drift onto a new release (and its new lints) while the frozen dev container
+        # stayed behind — red CI on code that passed locally an hour earlier.
+        rustup show active-toolchain
         cargo --version
         rustc --version
         cargo clippy --version
