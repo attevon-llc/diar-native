@@ -3217,3 +3217,54 @@ These land on the historical operating point recorded in §7.16 and §7.39 for t
 0.797 / male 0.999), so the fp32 leg is not some unvalidated graph — it is the same classifier
 at the other precision. §7.18's headline finding (fp16 is verdict-preserving) is reconfirmed
 independently; only its VRAM magnitude fails to generalise.
+
+### 7.47 B2 — a resident CPU engine costs the CUDA path nothing: +0.8% latency, −4 MiB VRAM (issue #5)
+
+Last of the legs §7.34 deferred, and the one that closes the superset feature: if operators are
+invited to run `DIAR_DEVICES=cuda,cpu`, the second engine must not tax the first. Harness:
+`validation/b2_cuda_both_engines.sh` (committed, reusable).
+
+**Single variable:** `DIAR_DEVICES=cuda` vs `DIAR_DEVICES=cuda,cpu`. Every request carries an
+explicit `"device":"cuda"`, so the CPU engine is **resident but idle** — the deployment shape
+the superset claim actually creates. Same image (`diar-server:bench`), same clip, same request.
+`--gpus "device=0"` (RTX A6000), `DIAR_MAX_INFLIGHT=2`, `SPEAKRS_LAZY_SESSIONS=1`,
+`models_folded/`, AMI `EN2002c` first 360 s (md5 `e192929eef63d8f61ac525ca4c906643`). Each leg
+is a fresh container, one warmup request discarded (cuDNN algo search and arena growth are
+first-run costs, not steady-state latency), then **5 timed requests**; legs **interleaved**
+cuda / cuda,cpu ×3 rounds. Load average **7.5 → 17.7 on 48 cores**, drifting upward across the
+leg — which is precisely why the verdict rests on interleaved adjacent pairs and not on
+absolute times.
+
+| round | `cuda` median | `cuda,cpu` median | peak VRAM cuda | peak VRAM cuda,cpu | load avg |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2.215 s | 2.293 s | 4 320 MiB | 4 316 MiB | 12.67 / 12.64 |
+| 2 | 2.244 s | 2.195 s | 4 316 MiB | 4 314 MiB | 13.02 / 17.50 |
+| 3 | 2.321 s | 2.261 s | 4 320 MiB | 4 316 MiB | 14.74 / 17.70 |
+| **median** | **2.244 s** | **2.261 s** | **4 320 MiB** | **4 316 MiB** | |
+
+**VERDICT: PASS.** Latency ratio **1.0076 (+0.017 s, +0.8%)**, against per-config round-to-round
+spreads of **0.106 s and 0.098 s** — the delta is roughly a sixth of the noise band, and rounds
+2 and 3 both come out *negative* (the two-engine config faster). No effect.
+
+**VRAM delta for the resident CPU engine: −4 MiB**, i.e. zero to within sampling resolution, and
+negative, which is how you can tell it is noise rather than a small real cost. Sampled at 2 Hz
+**during** the timed requests and filtered to the container's host PID. This is the third
+independent confirmation of §7.34 B3's "the CPU engine costs zero VRAM" — B3 measured idle and
+peak on a quiet card, §7.44 confirmed it under mixed concurrent load, and this leg confirms it
+during pure-CUDA steady-state work.
+
+**ACCURACY CHECK — output identity.** `rttm`, `segments`, `exclusive_segments`, `centroids`,
+`num_speakers` hashed for **every one of the 30 timed requests across both configurations**:
+**one hash, `e6c90ce5ba9629ba…`**. Loading a second engine does not perturb CUDA output.
+
+#### The §7.32 CUDA control (4.83 / 4.86 s) is not a valid comparator for this leg
+
+The plan named it as the control. It cannot serve as one, for the same class of reason as §7.45:
+**different measurement basis.** §7.32's CUDA figures are `diar-cli` numbers — a fresh process
+per run, engine load included in the surrounding harness — whereas B2 times an HTTP request
+against an already-warm server on an A6000. This leg's 2.24 s is ~2× below that figure and
+**no speedup is claimed or implied**; the two quantities are not the same measurement, and
+§7.28's fbank∥GPU pipelining landed between them besides. The valid comparison is the
+interleaved within-session A/B above, which controls its variables. Recording this because the
+same trap has now bitten three of these legs: **a "control" from RESULTS is only a control if it
+was measured the same way.**
