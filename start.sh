@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# diar-native — one-command start.
+# diar-native — one-command start, for people who have a clone.
 #
-# Builds the image if needed, exports the models once (with YOUR HuggingFace token), starts
-# the sidecar, waits for it to be ready, and tells you how to diarize a file.
+# PULLS the published images by default, exports the models once (with YOUR HuggingFace
+# token), starts the sidecar, waits for it to be ready, and tells you how to diarize a file.
+# `--build` compiles everything from this checkout instead, which is the contributor path.
+#
+# You do NOT need this script, or a clone, to run diar-native. Two files — the published
+# docker-compose.prod.yml and a .env — are the whole deployment; see the top of README.md.
+# This script exists to detect your platform, prompt for the token and wait on /readyz.
 #
 # Safe to re-run: with the models already on disk it is a fast no-op that needs no token and
 # no network. See QUICKSTART.md.
@@ -15,6 +20,13 @@ REPO_DIR="$PWD"
 ENV_FILE="$REPO_DIR/.env"
 EXAMPLE_FILE="$REPO_DIR/.env.example"
 MARKER_NAME="diar-provision.json"
+
+# ── the published release ────────────────────────────────────────────────────────────────
+# THE one place the version lives in this script. Pinned rather than tracking `:latest` on
+# purpose: `:latest` is the amd64 CUDA image, so on any other host it is not merely stale,
+# it is the wrong architecture. Every tag below is derived from these two lines.
+DIAR_VERSION=0.3.0
+REGISTRY=davidamacey/diar-native
 
 # The image's built-in non-root user. Must match docker/Dockerfile.server,
 # docker/Dockerfile.server-cpu, docker-compose.yml, QUICKSTART.md and docs/INSTALL_NATIVE.md.
@@ -38,15 +50,19 @@ usage() {
 diar-native — fast, self-hosted speaker diarization.
 
 USAGE
-  ./start.sh [options]              build if needed, provision if needed, serve
+  ./start.sh [options]              pull if needed, provision if needed, serve
   ./start.sh --cli <audio-file>     diarize one file directly, no server at all
 
 OPTIONS
+  --build               Build the images from THIS checkout instead of pulling them.
+                        Compiles the Rust workspace; minutes, not seconds. Use it when
+                        you are changing the code, or running an unpublished commit.
   --cpu                 Force the CPU image even if a GPU is present.
   --gpu                 Require the GPU; fail instead of falling back to CPU.
   --check-token         Only check the HuggingFace token and gate, then exit.
   --provision           Force a re-export of the models even if they look fine.
-  --rebuild             Rebuild the container images even if they already exist.
+  --rebuild             Force image work even if the image is already present. With
+                        --build that is a rebuild; without it, a re-pull.
   --stop                Stop the sidecar and exit.
   --logs                Follow the sidecar's logs and exit.
   --models-dir <path>   Host directory for the models (default: ./models).
@@ -55,13 +71,20 @@ OPTIONS
 
 WHAT IT DOES ON A FIRST RUN
   1. Creates .env from .env.example and asks for your HuggingFace token.
-  2. Builds the container image (this is the slow part; several minutes).
+  2. PULLS the published image that matches this machine — architecture and GPU are
+     detected, because every published tag is single-platform. ~195 MB on a CPU host.
+     (--build compiles it from source instead: several minutes.)
   3. Exports the diarization models into ./models — about 484 MB, roughly 3 minutes.
      They cannot be shipped for you: they derive from the gated pyannote
      speaker-diarization-community-1 weights, so every operator exports their own.
   4. Starts the sidecar and waits for GET /readyz to return 200.
 
 A SECOND RUN skips 1-3 entirely and just starts the server.
+
+YOU DO NOT NEED THIS SCRIPT
+  The deployment is two files and no clone: fetch docker-compose.prod.yml and .env.example,
+  set your token, `docker compose up`. See the top of README.md. This script is the
+  convenience wrapper that picks your image, prompts for the token and waits on /readyz.
 
 CONTAINER USER
   The images run as non-root uid:gid 10001:10001 and mount ./models READ-ONLY to serve.
@@ -76,6 +99,7 @@ FORCE_GPU=false
 ONLY_CHECK_TOKEN=false
 FORCE_PROVISION=false
 REBUILD=false
+DO_BUILD=false
 DO_STOP=false
 DO_LOGS=false
 CLI_FILE=""
@@ -84,6 +108,7 @@ OPT_PORT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --build) DO_BUILD=true ;;
     --cpu) FORCE_CPU=true ;;
     --gpu) FORCE_GPU=true ;;
     --check-token) ONLY_CHECK_TOKEN=true ;;
@@ -207,6 +232,21 @@ mkdir -p "$MODELS_DIR" "$AUDIO_DIR" "$HF_CACHE_DIR"
 MODELS_DIR_ABS="$(cd "$MODELS_DIR" && pwd)"
 MARKER="$MODELS_DIR_ABS/$MARKER_NAME"
 
+# ── architecture ─────────────────────────────────────────────────────────────────────────
+# Not cosmetic. Every published tag is SINGLE-PLATFORM, and `:latest` is the amd64 CUDA
+# image — so an arm64 host that pulls it does not get a clean "wrong architecture" error,
+# it gets emulation, and the symptom is "diarization is mysteriously slow" rather than a
+# failure anyone can act on. DIAR_ARCH overrides the detection, which is also how this
+# selection is testable without an arm64 machine.
+HOST_ARCH="${DIAR_ARCH:-$(uname -m)}"
+case "$HOST_ARCH" in
+  x86_64|amd64)  ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) die "unsupported CPU architecture '$HOST_ARCH'.
+       Images are published for x86_64/amd64 and aarch64/arm64. On anything else, build
+       from this checkout instead: ./start.sh --build" ;;
+esac
+
 # ── GPU detection ────────────────────────────────────────────────────────────────────────
 # Both halves are required. A host can have a perfectly good driver and still not be able to
 # pass a GPU into a container; if we only checked nvidia-smi we would select the CUDA image
@@ -227,7 +267,12 @@ detect_gpu() {
 }
 
 USE_GPU=false
-if $FORCE_CPU; then
+if [[ "$ARCH" != amd64 ]]; then
+  # The CUDA image is built and published for linux/amd64 only. Saying so here, rather than
+  # letting the pull fail later, keeps the message about the real constraint.
+  gpu_reason="no CUDA image is published for linux/$ARCH"
+  $FORCE_GPU && die "--gpu requested but $gpu_reason"
+elif $FORCE_CPU; then
   gpu_reason="--cpu requested"
 elif detect_gpu; then
   USE_GPU=true
@@ -235,23 +280,54 @@ elif $FORCE_GPU; then
   die "--gpu requested but no usable GPU: $gpu_reason"
 fi
 
+# The Dockerfile is selected even when pulling: --cli always builds (diar-cli is not
+# published), and the provisioning image is built locally if its published tag is missing.
 if $USE_GPU; then
   DOCKERFILE=docker/Dockerfile.server
-  SERVER_IMAGE="$(env_get DIAR_IMAGE diar-native:local-cuda)"
-  PROVISION_IMAGE="$(env_get DIAR_PROVISION_IMAGE diar-native-provision:local-cuda)"
-  CLI_IMAGE=diar-native-cli:local-cuda
   DEVICES="cuda,cpu"
   CLI_MODE=cuda
+  CLI_IMAGE=diar-native-cli:local-cuda
 else
   DOCKERFILE=docker/Dockerfile.server-cpu
-  SERVER_IMAGE="$(env_get DIAR_IMAGE diar-native:local-cpu)"
-  PROVISION_IMAGE="$(env_get DIAR_PROVISION_IMAGE diar-native-provision:local-cpu)"
-  CLI_IMAGE=diar-native-cli:local-cpu
   DEVICES="cpu"
   CLI_MODE=cpu
+  CLI_IMAGE=diar-native-cli:local-cpu
 fi
 
-COMPOSE_FILES=(-f docker-compose.yml)
+# ── which images ─────────────────────────────────────────────────────────────────────────
+# Pulling is the default because it is what almost everyone wants: ~195 MB and seconds,
+# against several minutes of Rust compilation for a byte-identical result. Building is the
+# specialist path — you changed the code, or you are on a commit that was never published.
+#
+# The provisioning image is deliberately the CPU-based one on every host, GPU included: the
+# export runs `pipeline.to(torch.device("cpu"))` and never touches an accelerator, so a
+# CUDA-based provisioning image would be 3 GB larger for no reason at all.
+if $DO_BUILD; then
+  if $USE_GPU; then
+    SERVER_IMAGE="$(env_get DIAR_IMAGE diar-native:local-cuda)"
+    PROVISION_IMAGE="$(env_get DIAR_PROVISION_IMAGE diar-native-provision:local-cuda)"
+  else
+    SERVER_IMAGE="$(env_get DIAR_IMAGE diar-native:local-cpu)"
+    PROVISION_IMAGE="$(env_get DIAR_PROVISION_IMAGE diar-native-provision:local-cpu)"
+  fi
+  PROVISION_BASE="$SERVER_IMAGE"
+else
+  case "$ARCH" in
+    arm64) PUBLISHED_SERVER="$REGISTRY:$DIAR_VERSION-cpu-arm64"
+           PUBLISHED_PROVISION="$REGISTRY:$DIAR_VERSION-provision-arm64"
+           PROVISION_BASE="$REGISTRY:$DIAR_VERSION-cpu-arm64" ;;
+    *)     $USE_GPU && PUBLISHED_SERVER="$REGISTRY:$DIAR_VERSION" \
+                    || PUBLISHED_SERVER="$REGISTRY:$DIAR_VERSION-cpu"
+           PUBLISHED_PROVISION="$REGISTRY:$DIAR_VERSION-provision"
+           PROVISION_BASE="$REGISTRY:$DIAR_VERSION-cpu" ;;
+  esac
+  SERVER_IMAGE="$(env_get DIAR_IMAGE "$PUBLISHED_SERVER")"
+  PROVISION_IMAGE="$(env_get DIAR_PROVISION_IMAGE "$PUBLISHED_PROVISION")"
+fi
+
+# The published-image compose file has no `build:` key anywhere; the source one is paired
+# with locally-tagged images. Same services, same volumes, different provenance.
+$DO_BUILD && COMPOSE_FILES=(-f docker-compose.yml) || COMPOSE_FILES=(-f docker-compose.prod.yml)
 $USE_GPU && COMPOSE_FILES+=(-f docker-compose.gpu.yml)
 
 # Everything compose needs to interpolate. Exported here rather than written into .env so a
@@ -282,6 +358,37 @@ fi
 
 image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
 
+# Refuse an image built for another architecture. Docker does NOT reliably refuse this for
+# itself: the published tags are single-platform, so there is no manifest list to select
+# from, and on Docker Desktop a mismatched image is emulated rather than rejected. That
+# turns "you pulled the wrong tag" into "diarization is inexplicably slow", which is a much
+# worse bug to be handed. Checked after every pull, including one named via DIAR_IMAGE.
+assert_image_arch() {
+  local ref="$1" got
+  got="$(docker image inspect -f '{{.Architecture}}' "$ref" 2>/dev/null || true)"
+  [[ -n "$got" ]] || return 0
+  [[ "$got" == "$ARCH" ]] && return 0
+  die "image $ref is linux/$got, but this machine is linux/$ARCH.
+       Every published tag is single-platform, so the right one has to be named explicitly:
+         linux/amd64 + NVIDIA GPU   $REGISTRY:$DIAR_VERSION
+         linux/amd64, CPU           $REGISTRY:$DIAR_VERSION-cpu
+         linux/arm64                $REGISTRY:$DIAR_VERSION-cpu-arm64
+       Unset DIAR_IMAGE in .env to let this script pick, or build from source: --build"
+}
+
+pull_image() {
+  local ref="$1"
+  if image_exists "$ref" && ! $REBUILD; then
+    note "Image $ref already present (use --rebuild to re-pull)."
+  else
+    step "Pulling $ref"
+    docker pull "$ref" >/dev/null || die "could not pull $ref.
+       Check your network, or build from this checkout instead: ./start.sh --build"
+    note "Pulled."
+  fi
+  assert_image_arch "$ref"
+}
+
 build_server_image() {
   if image_exists "$SERVER_IMAGE" && ! $REBUILD; then
     note "Image $SERVER_IMAGE already present (use --rebuild to force)."
@@ -293,16 +400,45 @@ build_server_image() {
   docker build -f "$DOCKERFILE" -t "$SERVER_IMAGE" "$REPO_DIR"
 }
 
+# Pull by default, build when asked — or when the published provisioning tag does not exist.
+ensure_server_image() {
+  if $DO_BUILD; then
+    build_server_image
+  else
+    pull_image "$SERVER_IMAGE"
+  fi
+}
+
 build_provision_image() {
+  step "Building $PROVISION_IMAGE on $PROVISION_BASE"
+  note "Adds a pinned CPU-only torch + pyannote.audio environment (~2 GB) on top of the"
+  note "server image. NOTHING is compiled here — it is a pip install, not a Rust build."
+  note "It is only needed for the one-time export and can be deleted afterwards."
+  docker build -f docker/Dockerfile.provision --build-arg BASE="$PROVISION_BASE" \
+    -t "$PROVISION_IMAGE" "$REPO_DIR"
+}
+
+ensure_provision_image() {
   if image_exists "$PROVISION_IMAGE" && ! $REBUILD; then
     note "Image $PROVISION_IMAGE already present."
     return
   fi
-  step "Building $PROVISION_IMAGE"
-  note "Adds a pinned CPU-only torch + pyannote.audio environment (~2 GB) on top of the"
-  note "server image. It is only needed for the one-time export and can be deleted after."
-  docker build -f docker/Dockerfile.provision --build-arg BASE="$SERVER_IMAGE" \
-    -t "$PROVISION_IMAGE" "$REPO_DIR"
+  if $DO_BUILD; then
+    build_provision_image
+    return
+  fi
+  # The serving images carry no Python at all — that is why the CPU one is 195 MB — so the
+  # export needs this separate image. Try the published tag first; fall back to building it
+  # here, which costs a pip install and no compiler, and always works from a checkout.
+  step "Pulling $PROVISION_IMAGE"
+  if docker pull "$PROVISION_IMAGE" >/dev/null 2>&1; then
+    note "Pulled."
+    assert_image_arch "$PROVISION_IMAGE"
+  else
+    note "Not available from the registry — building it locally instead."
+    pull_image "$PROVISION_BASE"
+    build_provision_image
+  fi
 }
 
 # ── --cli: no server at all ──────────────────────────────────────────────────────────────
@@ -318,7 +454,8 @@ if [[ -n "$CLI_FILE" ]]; then
   mkdir -p "$OUT_DIR"
 
   step "Building $CLI_IMAGE"
-  note "Shares every layer with the server image, so this only adds the ~37 MB binary."
+  note "This one is ALWAYS built: diar-cli is not among the published images — only the"
+  note "server is. It compiles the workspace, so expect several minutes the first time."
   docker build -f "$DOCKERFILE" --target cli -t "$CLI_IMAGE" "$REPO_DIR"
 
   step "Diarizing $CLI_BASE (mode: $CLI_MODE)"
@@ -391,14 +528,14 @@ run_check_token() {
 }
 
 if $ONLY_CHECK_TOKEN; then
-  build_server_image
+  ensure_server_image
   have_token || prompt_for_token
   run_check_token
   exit 0
 fi
 
-# ── build ────────────────────────────────────────────────────────────────────────────────
-build_server_image
+# ── get the image ────────────────────────────────────────────────────────────────────────
+ensure_server_image
 
 # ── provision (only if needed) ───────────────────────────────────────────────────────────
 # The marker is the cheap host-side signal. Its absence means "definitely not provisioned";
@@ -424,7 +561,7 @@ else
     pre-built. There is no .onnx published anywhere — the conversion is mandatory.
 EOF
   have_token || prompt_for_token
-  build_provision_image
+  ensure_provision_image
   run_check_token
 
   step "Exporting (writing as uid $(id -u):$(id -g), so the files end up owned by you)"
