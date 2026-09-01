@@ -179,8 +179,16 @@ pub fn serving_set(models_dir: &Path, explicit: Option<ModelSet>) -> ModelSet {
 }
 
 pub fn allow_unverified_from_env() -> bool {
+    // Case-INSENSITIVE, matching the SPEAKRS_* flags. The previous form listed "true" and
+    // "TRUE" but not "True", so an operator who capitalised it got the opposite of what they
+    // asked for, silently — and this flag's whole job is to override a refusal to start.
     std::env::var(ALLOW_UNVERIFIED_ENV)
-        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes"))
+        .map(|v| {
+            let v = v.trim();
+            ["1", "true", "yes", "on"]
+                .iter()
+                .any(|w| v.eq_ignore_ascii_case(w))
+        })
         .unwrap_or(false)
 }
 

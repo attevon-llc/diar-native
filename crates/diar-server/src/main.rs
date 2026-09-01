@@ -607,9 +607,15 @@ async fn run() -> anyhow::Result<()> {
     let log_settings = diar_core::logging::init_stdout();
 
     let models_dir = std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
+    // `.filter(|v| *v > 0)`: a semaphore with zero permits accepts nothing, so
+    // DIAR_MAX_INFLIGHT=0 would hang every request forever with the server reporting healthy —
+    // a deadlock that looks like a network problem. The CPU sub-gate below already guarded
+    // this; the global gate did not. Falls back to the default rather than failing, matching
+    // how every other malformed value here is treated.
     let max_inflight: usize = std::env::var("DIAR_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse().ok())
+        .filter(|v: &usize| *v > 0)
         .unwrap_or(2);
     // Opt-in inner gate; a 0 would deadlock every CPU request, so treat it as unset.
     let max_inflight_cpu: Option<usize> = std::env::var("DIAR_MAX_INFLIGHT_CPU")

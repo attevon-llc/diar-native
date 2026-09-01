@@ -30,18 +30,22 @@ fn needs_aarch64_fp16_workaround(path: &Path) -> bool {
 ///
 /// # The aarch64 fp16 GELU problem (issue #14)
 ///
-/// The fp16 gender graph does not load at all on aarch64 without this. The exported file is
-/// plain opset-17 `ai.onnx` with no contrib domain — but it has 20 `Erf` nodes, and one of ORT's
-/// *extended* (level-2) optimizations rewrites that GELU pattern into a `com.microsoft.Gelu`
-/// node. The x86_64 ORT build ships an fp16 kernel for that fused contrib op; the aarch64 build
-/// ships fp32 only. So the optimizer synthesizes a node the very same runtime then refuses to
-/// execute:
+/// The fp16 gender graph does not load at all on linux/aarch64 without this. The exported file
+/// is plain opset-17 `ai.onnx` with no contrib domain — but it has 20 `Erf` nodes, and one of
+/// ORT's *extended* (level-2) optimizations rewrites that GELU pattern into a
+/// `com.microsoft.Gelu` node, for which no fp16 kernel is then found:
 ///
 /// ```text
 /// Failed to find kernel for com.microsoft.Gelu(1) ... This op has been implemented only for
 /// the following types (tensor(float),), but the node in the model has the following type
 /// (tensor(float16))
 /// ```
+///
+/// NOT a plain "aarch64 has no fp16 kernel" story, though that was the first reading and it is
+/// wrong: RESULTS §7.40 measured macOS arm64 lacking the SAME kernel and loading fine. What
+/// differs is whether the fusion GATE fires, so the node is only ever created on some builds.
+/// The distinction matters because it means the trigger is build configuration, not
+/// architecture — which is why the escape hatches below exist at all.
 ///
 /// Capping the level is what works, and it was established by experiment on real aarch64 rather
 /// than reasoned about. MEASURED, all four on the same image and models:
@@ -102,10 +106,21 @@ pub fn apply_workarounds(builder: SessionBuilder, path: &Path) -> Result<Session
     // built-in behaviour is not an escape hatch — but it is a sharp edge, so prefer scoping
     // any experiment to one process rather than the deployment.
     if let Ok(level) = std::env::var("DIAR_ORT_OPT_LEVEL") {
-        if let Some(lvl) = parse_level(&level) {
-            return builder
-                .with_optimization_level(lvl)
-                .map_err(|e| anyhow::anyhow!("setting ORT optimization level to {level}: {e}"));
+        match parse_level(&level) {
+            Some(lvl) => {
+                return builder
+                    .with_optimization_level(lvl)
+                    .map_err(|e| anyhow::anyhow!("setting ORT optimization level to {level}: {e}"))
+            }
+            // A typo used to fall through in silence, leaving the operator convinced they had
+            // changed something. That is the same failure this whole module exists to document
+            // in ORT itself (an unrecognized optimizer NAME is silently ignored) — reproducing
+            // it in our own escape hatch would be indefensible. Hard error: the variable is set
+            // deliberately, so a value we cannot honour is a mistake worth stopping for.
+            None => anyhow::bail!(
+                "DIAR_ORT_OPT_LEVEL={level:?} is not a recognized value. \
+                 Use one of: disable|none|0, basic|1, extended|2, all|3."
+            ),
         }
     }
     // TWO TRAPS, both measured (RESULTS §7.40) — this variable can silently do nothing:
@@ -164,6 +179,15 @@ mod tests {
                 "{other} must keep full optimization: it loads fine on aarch64"
             );
         }
+    }
+
+    #[test]
+    fn an_unrecognized_opt_level_is_an_error_not_a_silent_no_op() {
+        // The bug this pins: a typo used to fall through in silence, so the operator believed
+        // they had changed the optimization level and had not.
+        assert!(parse_level("bsaic").is_none());
+        assert!(parse_level("").is_none());
+        assert!(parse_level("4").is_none());
     }
 
     #[test]
