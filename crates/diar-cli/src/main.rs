@@ -26,7 +26,10 @@ struct Args {
     /// Explicit label (single-file runs); default = file stem
     #[arg(long)]
     label: Option<String>,
-    /// Also write <label>_run<N>.json with segments/centroids/exclusive
+    // Angle brackets are deliberately avoided: this doc comment is BOTH clap's `--help` text
+    // and rustdoc input, and rustdoc parsed `<label>` and `<N>` as unclosed HTML tags (caught
+    // by the `docs` CI job). Backticks would fix rustdoc but then show up verbatim in `--help`.
+    /// Also write one JSON file per run, LABEL_runN.json, with segments/centroids/exclusive
     #[arg(long, default_value_t = false)]
     json: bool,
 }
