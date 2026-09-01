@@ -570,10 +570,25 @@ mod tests {
 
     #[test]
     fn read_only_directory_is_reported_with_the_ro_mount_hint() {
-        // /proc is a real directory that is not writable by an unprivileged process.
-        let err = check_writable(Path::new("/proc/self")).unwrap_err();
-        assert!(err.contains("not writable"), "{err}");
-        assert!(err.contains(":ro"), "must name the read-only mount: {err}");
+        // Needs a directory that EXISTS (or `check_writable` would create it) and that even
+        // root cannot write to — CI runs these as root in a container, so a chmod'd temp dir
+        // would not fail there. `/proc/self` is that directory on Linux; it does not exist on
+        // macOS, where the test used to fail on the "does not exist" path instead and made
+        // `cargo test -p diar-core` red on the Apple Silicon dev machine. `/System` is the
+        // macOS equivalent: SIP-protected, unwritable even as root.
+        #[cfg(target_os = "linux")]
+        let dir = Path::new("/proc/self");
+        #[cfg(target_os = "macos")]
+        let dir = Path::new("/System");
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return;
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let err = check_writable(dir).unwrap_err();
+            assert!(err.contains("not writable"), "{err}");
+            assert!(err.contains(":ro"), "must name the read-only mount: {err}");
+        }
     }
 
     #[test]
