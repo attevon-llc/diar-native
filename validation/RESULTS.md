@@ -2745,3 +2745,121 @@ directly rather than through the environment, which tests cannot set safely in p
 kernel for) and the `ort` doc bug ("comma-separated" is wrong; it is `;`) are in
 `docs/upstream_drafts_ort_fusion.md`. NOTHING FILED — outward-facing reports need explicit
 operator approval.
+
+---
+
+### 7.42 The 0.3.0 dependency sweep — the two base-image bumps, built and run rather than merged on green
+
+**2026-09-01.** Six dependabot PRs were reviewed before 0.3.0. Recorded here are only the two
+where the evidence *is* "it built and it ran": **#16** (`nvidia/cuda` 12.8.1 → 12.8.2) and
+**#11** (`ubuntu` 24.04 → 26.04). No timed benchmark was run — the box was at load average ~10
+with the OpenTranscribe stack and a sibling demo stack up, so this section contains capability
+and correctness evidence only, and **no number here should be compared against any timed result
+elsewhere in this file.**
+
+Why not merge on CI: CI builds neither the CUDA image nor anything holding model weights, so a
+green run says nothing about either bump. That is the same blind spot that would have passed the
+cuda13 candidate, which compiles and links and then dies at session load.
+
+**Controls.** `main` at `c94b758` before any merge: `cargo fmt --check` clean, `cargo clippy
+--release --workspace --all-targets -- -D warnings` clean with **no `-A` exemptions**, 79 + 28
+tests. After all merges, at `4c85a9f`: same commands clean, **81 + 28** — the two extra tests
+are §7.41's, which landed on `main` mid-sweep, not anything this sweep added. Model-gated
+integration suite (`-p diar-core -- --ignored`): **10 passed**, 116.44 s.
+
+#### #16 — nvidia/cuda 12.8.1 → 12.8.2 (patch, within the pinned 12.8.x line)
+
+This is a *patch* bump inside 12.8.x, which the dependabot ignore rule in `.github/dependabot.yml`
+deliberately still permits (it blocks only major and minor). 13.x remains blocked and unusable.
+All three tags the two Dockerfiles need — `12.8.2-{base,devel,runtime}-ubuntu24.04` — exist.
+
+Built `docker/Dockerfile.server` from the final merged tree. Inside the image: `CUDA_VERSION=12.8.2`,
+base OS still `Ubuntu 24.04.4 LTS` (unchanged — `nvidia/cuda:*-ubuntu24.04` pins that, so #11 does
+not touch this image). The hand-installed cuBLAS/cuFFT/cuRAND/cuDNN set and the ORT 1.24.2 GPU
+tarball were not modified.
+
+Five-stage smoke, `--gpus '"device=0"'` on RTX A6000 (GPU 0, 3.5/49 GB used, 0% util at start):
+
+```
+1-parse        16 ONNX graphs loaded on the CPU EP
+2-io-contract  16 signatures matched the compiled-in contract
+5-plda         6 PLDA arrays + min_num_samples=400
+3-numeric      3a 3.43e-5; 3b 0.00e0; 3c 0.00e0; 3d byte copy; 3e 2.38e-7; 3f 0.00e0;
+               3g 2.38e-7 / 2.38e-7; 3h 2.58e-6; 3i 3.58e-7
+4-end-to-end   2 speakers, 7 segments, 8 exclusive, gender=2
+```
+
+Exit **10**, which is the documented "nothing to verify against" code — `models_folded/` carries
+no `diar-provision.json`. Not a failure.
+
+**The control that makes this evidence rather than assertion.** Stage 1 reports the *CPU* EP, so
+a passing run alone does not prove the CUDA path was exercised. The identical command with
+`--gpus` removed **fails**, at stage 4, exit **9**:
+
+```
+error: the `cuda` execution device is not usable on this machine, so the end-to-end stage
+could not run here. The models themselves are NOT implicated ...
+Underlying error: loading segmentation model: ... CUDA failure 35: CUDA driver version is
+insufficient for CUDA runtime version
+```
+
+So stage 4 genuinely opened CUDA sessions on the 12.8.2 image, and the numeric agreement above
+is CUDA-EP output.
+
+#### #11 — ubuntu 24.04 → 26.04 (the riskier one: it moves the CPU image AND the builder)
+
+Four risks were checked rather than assumed.
+
+**(a) Does `ubuntu:26.04` exist as a released LTS?** Yes. `VERSION="26.04 LTS (Resolute Raccoon)"`;
+the built image self-reports `Ubuntu 26.04.1 LTS`. It publishes amd64, arm64/v8, armv7, ppc64le,
+riscv64 and s390x manifests, so the multi-arch CPU image keeps a base on both target platforms.
+
+**(b) Is `libopenblas0` still the right runtime package?** Yes — name unchanged, `0.3.26+ds-1ubuntu0.1`
+(24.04) → `0.3.32+ds-5` (26.04). `ldd` on the shipped binary resolves
+`libopenblas.so.0 => /usr/lib/x86_64-linux-gnu/libopenblas.so.0`. Nothing unresolved.
+
+**(c) Does the ORT 1.24.2 linux tarball still run against 26.04's glibc?** Yes. glibc moves
+**2.39 → 2.43**; the documented floor for this ORT is 2.38 (bookworm's 2.36 fails at link,
+CLAUDE.md). Proven, not inferred: the smoke loaded all 16 ONNX graphs and completed end to end —
+`4-end-to-end 2 speakers, 7 segments, 8 exclusive, gender=2`, exit 10, identical to the 24.04
+result and to #16's.
+
+**(d) Image size.** **195 MB → 246 MB (+51 MB, +26%).** This is the one real cost and it is not
+a rounding error: small size is half the stated reason `Dockerfile.server-cpu` exists at all (its
+header comment still cites "189 MB", which was already stale at 195 MB and is now further out).
+The image is still ~14× smaller than the 3.46 GB CUDA image, so the artifact's purpose survives,
+but the header comment should be corrected the next time that file is touched.
+
+**The builder moved too, and that is the half CI never sees.** `docker/Dockerfile.builder` is the
+reproducible build environment; #11 rebases it on 26.04. Built it, and confirmed the pinned
+toolchain still installs there: `rustc 1.97.1 (8bab26f4f 2026-07-14)`, `clippy 0.1.97`,
+`rustfmt 1.9.0-stable`, from `rust-toolchain.toml` via rustup, on `Ubuntu 26.04 LTS`. Every
+package in `scripts/build-deps.txt` resolves on 26.04. Running the full gate **inside the 26.04
+builder**: fmt clean, clippy clean under `-D warnings`, **81 + 28** tests. Builder image grows
+1.76 GB → 1.82 GB.
+
+**Not exercised — read this before trusting the arm64 leg.** Everything above is **x86_64 only**.
+qemu binfmt is not registered on this host (`docker run --platform linux/arm64` dies with
+`exec format error`), and installing it would have changed shared-machine state, so the arm64
+half of the multi-arch CPU image was **never built or run on 26.04**. Two specific consequences:
+the arm64 `libopenblas0`/glibc combination on 26.04 is unverified, and §7.41's aarch64 fp16
+**load gate cannot fire here** — stage 1 says so itself: `aarch64 load gate NOT RUN on x86_64 —
+it can only be checked on aarch64 (issue #14)`. The arm64 image is built by the release workflow
+on a `v*` tag; **that run is the first place 26.04/arm64 gets tested, and it should be watched.**
+
+#### The other four, briefly (no new measurements)
+
+`huggingface_hub` 1.28.0 → 1.29.0 landed on a compatibility argument, not a run: `pyannote.audio
+4.0.7` needs `>=0.28.1` and `transformers` needs `>=1.5.0,<2.0`, and the only API surface this
+repo uses — `hf_hub_download`, `model_info`, `HF_HOME` — is untouched in 1.29.0 (`HF_ENDPOINT` is
+handled by our own Rust preflight over raw HTTP, not by the library). **A real gated export with
+an `HF_TOKEN` has NOT been run against 1.29.0**; that is the only way to be certain, and it is
+outstanding. The three GitHub Actions bumps are CI-only and were merged on rebased green CI.
+
+**A dependabot failure worth recording.** PR #8 (`docker/setup-qemu-action` 3 → 4) was **closed by
+dependabot itself**, claiming "Looks like docker/setup-qemu-action is up-to-date now, so this is
+no longer needed", while `main` still read `@v3`. It deleted the branch, so the PR could not be
+reopened. The bump was reapplied by hand in `4c85a9f`. The lesson is that a dependabot PR
+disappearing is not evidence the dependency is current — check the manifest.
+
+Five of the six bumps landed. Nothing in this section retracts an earlier number.
