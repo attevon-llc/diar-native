@@ -120,6 +120,21 @@ Milestones:
     tokio workers, so lazy per-request loading is unsound, not merely unoptimized.
     `docker/Dockerfile.server-cpu` STAYS: it is the arm64 / 189 MB artifact, not a correctness
     carve-out (the CUDA base image and its ORT tarball are x86-64 only).
+  - **Deferred timed legs (issue #5): DONE 2026-09-01 (RESULTS §7.44–§7.48)** — the three timed
+    legs issue #1 could not run on a loud box, all PASS, plus two bonus legs. B4 mixed-device
+    concurrency: 4 CUDA `/diarize` beside 4 CPU `/embed_window` costs the CUDA leg **+0.5%**
+    (median 38.13 → 38.31 s) against its own 4.3% spread, outputs identical, and reaching that
+    contention at all required `DIAR_MAX_INFLIGHT=8` — **at the shipped default of 2 the outer
+    semaphore serialises the mix, so the risk is not reachable without opting in.** B1: the
+    `--features cuda` build costs CPU-mode inference nothing (52.54 → 51.98 s, inside a
+    0.8 s spread), one RTTM MD5 across both builds. B2: a resident CPU engine costs the CUDA
+    path +0.8% latency and **−4 MiB** VRAM. B5 **corrected a shipped claim** — fp16 gender saves
+    **252 MiB, not the ~500 MiB** the CHANGELOG asserted by borrowing §7.18's whole-container AMI
+    figure; `docs/ORT_FUSION_FP16_AARCH64.md` had been overstating the aarch64 fp32 fallback's
+    cost by 2× as a result. B6: the aarch64 Level1 gender cap is free within resolution, because
+    gender is **~0.16 s** of the call and not the ~1.5 s §7.18 records — so §7.41's cap stands on
+    a measured bound, and `GeluFusionL2` does not need revisiting. Harnesses committed as
+    `validation/b{1,2,4,5,6}_*.sh`.
   - **Structured server logging: DONE 2026-08-31 (RESULTS §7.37)** — `diar-server` shipped with
     NO `tracing-subscriber` and never installed one, so speakrs' 40 events and diar-core's 2
     warnings went nowhere and the operator saw two `eprintln!` lines and crashes. `RUST_LOG`
