@@ -78,10 +78,19 @@ else
   bad "rustc ${HAVE_RUSTC} (want ${WANT_CHANNEL})"
   [ "$CHECK_ONLY" -eq 1 ] && die "toolchain mismatch inside the repo"
 fi
-for comp in rustfmt clippy; do
-  if ( cd "$REPO_ROOT" && cargo "$comp" --version >/dev/null 2>&1 ); then ok "cargo-${comp}"
-  else bad "cargo-${comp}"; [ "$CHECK_ONLY" -eq 1 ] && die "missing component ${comp}"; fi
-done
+# The component name and the cargo subcommand differ for rustfmt: the component is `rustfmt`,
+# the subcommand is `cargo fmt`. Checking `cargo rustfmt` reports a missing component that is
+# in fact installed.
+check_component() { # <component-name> <cargo-subcommand>
+  if ( cd "$REPO_ROOT" && cargo "$2" --version >/dev/null 2>&1 ); then
+    ok "$1 (cargo $2)"
+  else
+    bad "$1 (cargo $2)"
+    [ "$CHECK_ONLY" -eq 1 ] && die "missing component $1 — install with: rustup component add $1"
+  fi
+}
+check_component rustfmt fmt
+check_component clippy clippy
 
 echo
 echo "==> Parity summary"
