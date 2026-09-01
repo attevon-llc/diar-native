@@ -1,4 +1,4 @@
-# Publish the CPU runtime image.
+# Publish the CPU runtime images and the provisioning images.
 #
 # MANUAL / TAG-TRIGGERED ONLY, never on push or pull_request. This is the one workflow in the
 # repository that touches credentials, and it is deliberately kept away from anything a fork or
@@ -11,19 +11,46 @@
 # If either is unset the workflow stops before building rather than producing an artifact it
 # cannot publish.
 #
+# ── THE TAG MODEL (issue #20) ─────────────────────────────────────────────────────────────
+#
+# Tag shape follows CAPABILITY, not convenience. A manifest list is only honest when every
+# architecture under it is the same thing.
+#
+#   :<ver>            amd64 ONLY, single-platform.  CUDA + CPU superset. NOT BUILT HERE.
+#   :latest             "        "                  Same image, same digest. NOT BUILT HERE.
+#   :<ver>-cpu        MULTI-ARCH manifest list (linux/amd64 + linux/arm64).
+#   :<ver>-cpu-arm64  single-platform linux/arm64 alias of the arm64 half of the above.
+#   :<ver>-provision  MULTI-ARCH manifest list (linux/amd64 + linux/arm64).
+#   :<ver>-provision-arm64
+#                     single-platform linux/arm64 alias of the arm64 half of the above.
+#
+# Why `:latest` / `:<ver>` are NOT multi-arch: they are the CUDA superset, and there is no
+# aarch64 ONNX Runtime GPU build in existence (issue #4, closed as a documented impossibility).
+# The only way to give those tags an arm64 entry would be to put the CPU image there, which
+# would mean one tag whose capabilities differ by architecture — a `docker pull` that silently
+# hands an arm64 user a diarizer with no GPU support while an amd64 user gets one with it. That
+# is worse than being explicit, so they stay amd64-only and README §"Published images" says so.
+#
+# Why the `-arm64` ALIASES still exist alongside the manifest lists: `start.sh` and
+# `docker-compose.prod.yml` name an exact tag per host and then assert the architecture of what
+# they pulled. That path wants a tag that is arm64 *by name*, so a mismatch is a clean error
+# rather than a slow emulated one. The manifest list is for `docker pull` doing the right thing
+# automatically; the alias is for naming it deliberately. Both are published, both documented.
+#
 # WHAT THIS DOES NOT DO, on purpose:
 #
-#   * It does not build the CUDA image. That is `docker/Dockerfile.server`, it needs the CUDA
-#     ONNX Runtime distribution, and it should be built and smoke-tested on a real GPU host
-#     before it goes anywhere near a registry. Publishing a 3.46 GB CUDA image that has never
-#     executed a CUDA session is worse than not publishing one.
+#   * It does not build the CUDA image (`:<ver>` / `:latest`). That is `docker/Dockerfile.server`,
+#     it needs the CUDA ONNX Runtime distribution, and it should be built and smoke-tested on a
+#     real GPU host before it goes anywhere near a registry. Publishing a 3.04 GB CUDA image that
+#     has never executed a CUDA session is worse than not publishing one. README §"Publishing"
+#     carries the manual recipe and this job prints a reminder at the end.
 #
 #   * It does not bake in model weights, and it has no HF_TOKEN. The images ship empty of
 #     models by design — the weights are terms-gated derivatives of pyannote
 #     speaker-diarization-community-1 and may not be redistributed. Operators provision them at
 #     deploy time with `diar-server provision-models`.
 
-name: Release (publish CPU image)
+name: Release (publish CPU + provisioning images)
 
 on:
   push:
@@ -47,26 +74,92 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  HUB: davidamacey/diar-native
+  # Every build in this job pushes here FIRST, unconditionally, including on a dry run.
+  # Two reasons, and the second one is the important one:
+  #
+  #   1. `docker/Dockerfile.provision` is `FROM ${BASE}`, where BASE is a server image. A
+  #      multi-platform build can only resolve that per-platform from a REGISTRY — there is no
+  #      local image store a `docker-container` builder can read a two-architecture base out of.
+  #      Without a registry the provisioning images could only ever be built after the server
+  #      images were already published, i.e. never on a dry run.
+  #   2. So the dry run exercises the whole thing — both server legs, both provisioning legs,
+  #      the manifest topology and the FROM resolution — and differs from a real release only in
+  #      whether the Docker Hub tag names are attached. That is the difference between a dry run
+  #      that proves the workflow works and one that proves it starts.
+  LOCAL: localhost:5000/diar-native
+
 jobs:
-  publish-cpu-image:
-    name: Build and publish the multi-arch CPU image
+  publish-images:
+    name: Build and publish the CPU and provisioning images
     runs-on: ubuntu-latest
+
+    # See LOCAL above. Ephemeral, dies with the job, never reachable from outside the runner.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
     steps:
       - uses: actions/checkout@v7
 
+      # Works out the version and — the safety-critical part — the TAG LISTS. Docker Hub tag
+      # names are only ever added to a list here, and only when publishing is authorised. That
+      # is one of the two independent gates on publication; the other is the login step below.
+      # Neither alone is relied on.
       - name: Work out the tag
         id: meta
+        env:
+          # Via env, never interpolated straight into the script: `inputs.tag` is operator
+          # input, and `${{ }}` inside a `run:` block is textual substitution into the shell.
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PUSH: ${{ inputs.push }}
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
             tag="${GITHUB_REF_NAME#v}"
+            publish=true
           else
-            tag="${{ inputs.tag }}"
+            tag="$INPUT_TAG"
+            publish="$INPUT_PUSH"
           fi
+
+          # A tag becomes part of an image reference; refuse anything that is not one.
+          case "$tag" in
+            ''|*[!0-9A-Za-z._-]*)
+              echo "::error::Refusing tag '$tag' — expected only [0-9A-Za-z._-]."
+              exit 1 ;;
+          esac
+
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "Publishing tag: ${tag}"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+
+          # One helper, four tag lists. The local registry name is always present; the Docker
+          # Hub name appears only when `publish` is true.
+          emit() {
+            local name="$1" suffix="$2"
+            {
+              echo "${name}<<TAGS_EOF"
+              echo "${LOCAL}:${tag}${suffix}"
+              if [ "$publish" = "true" ]; then
+                echo "${HUB}:${tag}${suffix}"
+              fi
+              echo "TAGS_EOF"
+            } >> "$GITHUB_OUTPUT"
+          }
+          emit cpu_tags             -cpu
+          emit cpu_arm64_tags       -cpu-arm64
+          emit provision_tags       -provision
+          emit provision_arm64_tags -provision-arm64
+
+          echo "Version: ${tag}"
+          echo "Publishing to Docker Hub: ${publish}"
 
       - name: Require credentials before doing any work
-        if: github.event_name == 'push' || inputs.push
+        if: steps.meta.outputs.publish == 'true'
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -81,32 +174,152 @@ jobs:
       - name: Populate vendor/speakrs
         run: ./scripts/bootstrap_vendor_speakrs.sh
 
-      - name: Set up QEMU (for the linux/arm64 leg)
+      # The arm64 legs are emulated. `docker/Dockerfile.server-cpu` compiles the Rust workspace
+      # inside the image, so the arm64 server leg is the long pole of this job by a wide margin;
+      # the provisioning legs are a pip install of prebuilt wheels and are cheap by comparison.
+      # If this ever outgrows the job limit, the fix is a matrix on native `ubuntu-24.04-arm`
+      # runners plus a `docker buildx imagetools create` merge — not a smaller image.
+      - name: Set up QEMU (for the linux/arm64 legs)
         uses: docker/setup-qemu-action@v4
 
+      # `network=host` is what lets the builder container reach the `registry` service on
+      # localhost:5000. This is Docker's own documented local-registry-in-CI setup.
       - name: Set up buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
       - name: Log in to Docker Hub
-        if: github.event_name == 'push' || inputs.push
+        if: steps.meta.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build (and push) linux/amd64 + linux/arm64
+      # ── the serving images ──────────────────────────────────────────────────────────────
+      #
+      # `provenance: false` on every build below, deliberately. With provenance on, buildx wraps
+      # even a single-platform build in an index carrying an extra `unknown/unknown` attestation
+      # manifest. That would make the `-arm64` alias tags NOT single-platform images — and the
+      # whole point of those tags is that `docker pull` on the wrong architecture fails cleanly
+      # instead of silently emulating. It also keeps the published manifests exactly what
+      # README §"Published images" claims they are, which is checked by the verify step below.
+      - name: Build the CPU server image, linux/amd64 + linux/arm64
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.server-cpu
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' || inputs.push }}
-          tags: |
-            davidamacey/diar-native:${{ steps.meta.outputs.tag }}-cpu
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.cpu_tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # A second invocation rather than `imagetools create` from the index above: imagetools
+      # would produce a one-entry index, and this produces a plain single-platform manifest —
+      # the shape every previously published `-arm64` tag has. It is a complete cache hit off
+      # the arm64 leg that just ran, so it costs a push and nothing else.
+      - name: Tag the arm64 half as :<ver>-cpu-arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.server-cpu
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.cpu_arm64_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── the provisioning images ─────────────────────────────────────────────────────────
+      #
+      # NOT optional, and the reason this job exists in its current form. The serving images
+      # contain no Python at all, so `provision-models` against `:<ver>-cpu` exits 6 with
+      # "No python interpreter at `python3`". The documented no-clone quickstart —
+      # `docker-compose.prod.yml` — defaults its `provision` service to `:<ver>-provision`, so a
+      # release that ships serving images without these leaves that install unable to export
+      # models at all. Every tag the docs reference has to come out of one tag push.
+      #
+      # BASE is the LOCAL registry copy, not the Docker Hub one, so this step depends only on
+      # what this job just built and behaves identically on a dry run. The layers are the same
+      # bytes either way.
+      - name: Build the provisioning image, linux/amd64 + linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.provision
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BASE=${{ env.LOCAL }}:${{ steps.meta.outputs.tag }}-cpu
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.provision_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag the arm64 half as :<ver>-provision-arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.provision
+          platforms: linux/arm64
+          build-args: |
+            BASE=${{ env.LOCAL }}:${{ steps.meta.outputs.tag }}-cpu-arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.provision_arm64_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── the gate ────────────────────────────────────────────────────────────────────────
+      #
+      # Asserts the published TOPOLOGY, which is the thing issue #20 was about: a workflow and a
+      # set of docs that disagreed about which tags are multi-arch went unnoticed because
+      # nothing ever checked. This checks the local registry copies, which are the same
+      # manifests that were pushed to Docker Hub in the same step, so it fails the job before
+      # the "release is done" notice regardless of whether publishing was on.
+      - name: Every tag has exactly the platforms the README documents
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          platforms_of() {
+            local ref="$1" media
+            media="$(docker buildx imagetools inspect "$ref" --raw | jq -r '.mediaType')"
+            case "$media" in
+              *manifest.list*|*image.index*)
+                docker buildx imagetools inspect "$ref" --raw \
+                  | jq -r '[.manifests[]
+                            | select(.platform.os != "unknown")
+                            | .platform.os + "/" + .platform.architecture]
+                           | sort | join(",")' ;;
+              *)
+                docker buildx imagetools inspect "$ref" \
+                  --format '{{.Image.OS}}/{{.Image.Architecture}}' ;;
+            esac
+          }
+
+          fail=0
+          expect() {
+            local suffix="$1" want="$2" got
+            got="$(platforms_of "${LOCAL}:${TAG}${suffix}")"
+            if [ "$got" = "$want" ]; then
+              echo "ok   :${TAG}${suffix} -> ${got}"
+            else
+              echo "::error::Tag :${TAG}${suffix} has platforms '${got}', expected '${want}'."
+              fail=1
+            fi
+          }
+          expect -cpu             "linux/amd64,linux/arm64"
+          expect -cpu-arm64       "linux/arm64"
+          expect -provision       "linux/amd64,linux/arm64"
+          expect -provision-arm64 "linux/arm64"
+          exit "$fail"
+
       - name: Remind the operator what is still manual
         run: |
-          echo "::notice::CPU image done. The CUDA image (docker/Dockerfile.server) is NOT built here — build, smoke-test and push it from a GPU host."
-          echo "::notice::Scan with Trivy before announcing the release, and update CHANGELOG.md."
+          echo "::notice::Published (or dry-run built): :${{ steps.meta.outputs.tag }}-cpu, -cpu-arm64, -provision, -provision-arm64."
+          echo "::notice::STILL MANUAL — the CUDA image :${{ steps.meta.outputs.tag }} and :latest (amd64 only). Build docker/Dockerfile.server on a GPU host, smoke-test a CUDA session, then push."
+          echo "::notice::Scan with Trivy before announcing the release, update CHANGELOG.md, and refresh the digests in README.md and docker-compose.prod.yml."

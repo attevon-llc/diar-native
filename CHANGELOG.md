@@ -20,7 +20,49 @@ Measurements referenced here are recorded in
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`release.yml` and the published tag set now agree, and the release builds the provisioning
+  images (issue #20).** The workflow built `docker/Dockerfile.server-cpu` for
+  `linux/amd64,linux/arm64` under the single tag `:<ver>-cpu` — a multi-arch manifest list —
+  while `README.md`, `docker-compose.prod.yml`, `start.sh` and `QUICKSTART.md` all assumed
+  every tag was single-platform and referenced `:<ver>-cpu-arm64` **by name**. The workflow had
+  never completed a release (0.3.0's images were all pushed by hand; the `v0.3.0` run stopped
+  at the credentials gate), so the disagreement had not yet fired. The next tag push would have
+  stopped producing the `-arm64` tags the deployment path depends on, after publishing.
+
+  The tag model is now stated once, in README §"Published images", and follows capability:
+
+  - `:latest` / `:<ver>` stay **amd64-only** — they are the CUDA superset and no aarch64 ONNX
+    Runtime GPU build exists (issue #4), so an arm64 entry could only be the CPU image, i.e.
+    one tag whose capabilities differ by architecture. Still built by hand on a GPU host.
+  - `:<ver>-cpu` and `:<ver>-provision` are **multi-arch manifest lists**; both architectures
+    are the same build there, so `docker pull` resolving them is honest.
+  - `:<ver>-cpu-arm64` and `:<ver>-provision-arm64` stay published as single-platform arm64
+    aliases, because `start.sh` and `docker-compose.prod.yml` name a tag per host and then
+    assert the architecture — that path wants a tag that is arm64 by name.
+
+- **The release workflow builds the provisioning images at all.** It previously did not, while
+  `docker-compose.prod.yml` defaults its `provision` service to `:<ver>-provision` and the
+  serving images carry no Python (`provision-models` against one exits **6**). A release could
+  therefore ship serving images that left the documented no-clone install unable to export
+  models. The job now publishes all four tags from one tag push.
+
+### Added
+
+- **The release job asserts its own tag topology.** A final step reads back every tag it
+  produced and fails the release if the platform set is not exactly what README documents.
+  Issue #20 was invisible for a release cycle because nothing checked.
+- **The release workflow has a real dry run.** `gh workflow run release.yml -f tag=<ver> -f
+  push=false` builds and pushes everything to an ephemeral `registry:2` service inside the job
+  and runs the same assertions, withholding only the Docker Hub tag names. This is also what
+  makes the provisioning build testable without publishing: `docker/Dockerfile.provision` is
+  `FROM ${BASE}`, and a multi-platform build can only resolve that per-platform from a
+  registry. `provenance: false` on every build keeps the single-platform alias tags plain image
+  manifests rather than one-entry indexes, which is what makes a wrong-architecture `docker
+  pull` fail cleanly.
+- `workflow_dispatch`'s `tag` input is passed through the environment and character-validated
+  rather than interpolated straight into a shell script.
 
 ---
 

@@ -20,19 +20,27 @@
 #        -d '{"wav_path": "/audio/meeting.wav"}'
 #
 # ── Which image ───────────────────────────────────────────────────────────────────────────
-# Every published tag is SINGLE-PLATFORM; there is no multi-arch manifest and compose cannot
-# detect your architecture. The default below is the amd64 CPU image. On any other kind of
-# host, set DIAR_IMAGE and DIAR_PROVISION_IMAGE in .env — both, together, or you will pull a
-# provisioning image for the wrong architecture:
+# Compose interpolates a fixed string and cannot detect your architecture, so the tag names the
+# host. The default below is the amd64 CPU image. On any other kind of host, set DIAR_IMAGE and
+# DIAR_PROVISION_IMAGE in .env — both, together, or you will pull a provisioning image for the
+# wrong architecture:
 #
 #   host                        DIAR_IMAGE                               DIAR_PROVISION_IMAGE
 #   linux/amd64, NVIDIA GPU     davidamacey/diar-native:0.3.0            ...:0.3.0-provision
 #   linux/amd64, CPU (default)  davidamacey/diar-native:0.3.0-cpu        ...:0.3.0-provision
 #   linux/arm64 · Apple Sili.   davidamacey/diar-native:0.3.0-cpu-arm64  ...:0.3.0-provision-arm64
 #
-# On an arm64 host this matters more than it looks. `:latest` and `:0.3.0` are amd64 images,
-# and Docker Desktop will not refuse them — it emulates, so the failure is "inexplicably slow"
-# rather than a clean error. Pick the `-arm64` tag deliberately.
+# On an arm64 host this matters more than it looks. `:latest` and `:0.3.0` are the CUDA image
+# and are published for linux/amd64 ONLY — permanently, since no aarch64 ONNX Runtime GPU build
+# exists — and Docker Desktop will not refuse them; it emulates, so the failure is "inexplicably
+# slow" rather than a clean error. Pick the `-arm64` tag deliberately.
+#
+# The `-arm64` tags are single-platform and stay that way, which is the point: they are arm64 BY
+# NAME, so the wrong one on the wrong host is unambiguous instead of quietly emulated. From the
+# first release published by .github/workflows/release.yml, `:<ver>-cpu` and `:<ver>-provision`
+# are ALSO multi-arch manifest lists that resolve per-architecture on their own — but 0.3.0
+# predates that workflow and every 0.3.0 tag is single-platform, so name them explicitly here
+# (issue #20; README "Published images" is the authoritative tag model).
 #
 # Pinned by TAG so `docker compose pull` can move you forward. To pin harder, swap the tag for
 # a digest (verified by fresh pull 2026-09-01; trivy 0.67.1 clean, 0 HIGH / 0 CRITICAL; all

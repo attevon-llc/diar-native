@@ -19,8 +19,12 @@ serves on port 8701. Re-running it is a fast no-op that needs no token and no ne
 
 ### Pick the right image
 
-Every published tag is **single-platform** — there is no multi-arch manifest, so nothing will
-stop you pulling an amd64 image onto an arm64 machine. The default is the amd64 CPU image.
+The default is the amd64 CPU image, and the tag names the host: `:0.3.0` and `:latest` are the
+CUDA image, published for **linux/amd64 only** and permanently so — no aarch64 ONNX Runtime GPU
+build exists. Every 0.3.0 tag is single-platform, so nothing will stop you pulling an amd64
+image onto an arm64 machine; name the `-arm64` tags there. (From the next release `:<ver>-cpu`
+and `:<ver>-provision` are also multi-arch manifest lists that resolve on their own, and the
+`-arm64` aliases keep being published — README "Published images" has the full model.)
 
 | your machine | add to `.env` | notes |
 |---|---|---|

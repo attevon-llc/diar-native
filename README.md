@@ -67,9 +67,12 @@ $EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
 docker compose up
 ```
 
-**Do not use `:latest` or `:0.3.0` on an arm64 host.** Every published tag is single-platform
-and those two are amd64; Docker Desktop will emulate them rather than refuse them, so the
-symptom is "inexplicably slow" rather than an error you can act on.
+**Do not use `:latest` or `:0.3.0` on an arm64 host.** Those two are the CUDA image and are
+published for **linux/amd64 only** — permanently, because no aarch64 ONNX Runtime GPU build
+exists. Docker Desktop will emulate them rather than refuse them, so the symptom is
+"inexplicably slow" rather than an error you can act on. The `-arm64` tags above name the
+architecture, which is why this quickstart uses them; see [Published
+images](#published-images) for the full tag model.
 
 A native **CoreML** build does exist that uses the Apple GPU, and it works — verified on an
 M2 Max at 93 vs 92 segments against the CUDA reference
@@ -402,8 +405,28 @@ Consequences worth internalising:
 
 ### Published images
 
-Current release, verified by fresh pull. Every tag is a **single-platform** image — check the
-platform column rather than assuming `:latest` matches your host.
+Tag shape follows **capability**, not convenience — a manifest list is only honest when every
+architecture under it is the same thing (issue #20):
+
+- **`:latest` and `:<ver>` are `linux/amd64` only, and always will be.** They are the CUDA +
+  CPU superset, and there is no aarch64 ONNX Runtime GPU build in existence (issue #4, closed
+  as a documented impossibility). The only arm64 entry those tags could carry is the CPU
+  image — one tag whose capabilities differ by architecture, so that `docker pull` hands an
+  arm64 user a diarizer with no GPU support and an amd64 user one with it. Being explicit is
+  better, so they stay amd64 and this section says so.
+- **`:<ver>-cpu` and `:<ver>-provision` are multi-arch manifest lists** (amd64 + arm64). Both
+  architectures are the same build with the same capabilities there, so `docker pull`
+  resolving them for you is the truth rather than a convenient lie.
+- **`:<ver>-cpu-arm64` and `:<ver>-provision-arm64` remain published** as single-platform
+  arm64 aliases. `start.sh` and `docker-compose.prod.yml` name an exact tag per host and then
+  assert the architecture of what they pulled; that path wants a tag that is arm64 *by name*,
+  so a mismatch is a clean error rather than a slow emulated one. The manifest list is for
+  `docker pull` doing the right thing on its own; the alias is for naming it deliberately.
+
+**0.3.0 predates this.** Its images were all built and pushed by hand, so every 0.3.0 tag is
+single-platform: `:0.3.0-cpu` is amd64 and arm64 lives only at `:0.3.0-cpu-arm64`. The manifest
+lists start at the first release published by `.github/workflows/release.yml`. The table below
+is 0.3.0 as actually published, verified by fresh pull.
 
 | tag | platform | size | contents |
 |---|---|---|---|
@@ -438,21 +461,30 @@ the binary out of the image (see §6a) want the **amd64 CUDA** digest — that i
 
 ### Publishing
 
-- **Release images** publish to Docker Hub as `davidamacey/diar-native:<version>` (+ `:latest`),
-  after a `trivy image --severity HIGH,CRITICAL` scan comes back clean (or documented as
-  accepted). Built via `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`, then
-  `docker tag`/`docker push` to the registry name. The CPU image is published by
-  `.github/workflows/release.yml` on a tag push.
-  - **Mind the discrepancy.** That workflow builds `platforms: linux/amd64,linux/arm64` under
-    the single tag `:<version>-cpu`, which would publish a **multi-arch manifest** — but what is
-    actually on Docker Hub is a single-platform amd64 `:0.3.0-cpu` and a separate
-    `:0.3.0-cpu-arm64`, i.e. the 0.3.0 arm64 image was pushed by hand, not by this job. Until
-    that is reconciled, do not assume a tag's platform from the workflow; check the registry.
-  - The two **provisioning** tags are not built by CI at all. Publish them alongside a release:
-    `docker build -f docker/Dockerfile.provision --build-arg BASE=davidamacey/diar-native:<ver>-cpu -t davidamacey/diar-native:<ver>-provision .`
-    (and the same with the `-cpu-arm64` base for `-provision-arm64`), then push.
-    `docker-compose.prod.yml` references them by default, so a release without them leaves the
-    documented no-clone install unable to export models.
+- **`.github/workflows/release.yml` publishes four tags on a tag push** (`v*`), and they are
+  exactly the four the tag model above describes: `:<ver>-cpu` and `:<ver>-provision` as
+  multi-arch manifest lists, `:<ver>-cpu-arm64` and `:<ver>-provision-arm64` as single-platform
+  arm64 aliases. The provisioning images are built there rather than by hand because
+  `docker-compose.prod.yml` defaults its `provision` service to `:<ver>-provision`, and the
+  serving images carry no Python — a release that shipped serving images alone would leave the
+  documented no-clone install unable to export models at all.
+  - The job ends on a step that **asserts each tag's platform set** and fails the release if it
+    drifts. Issue #20 existed precisely because nothing checked: the workflow and the docs
+    disagreed about which tags were multi-arch for a whole release cycle without anyone noticing.
+  - **Dry run without publishing:**
+    `gh workflow run release.yml -f tag=<ver> -f push=false`. Every build still runs and still
+    pushes — to an ephemeral `registry:2` service inside the job — and the platform assertions
+    still run. Only the Docker Hub tag names are withheld. That is also why the provisioning
+    build works on a dry run at all: `docker/Dockerfile.provision` is `FROM ${BASE}`, and a
+    multi-platform build can only resolve that per-platform out of a registry.
+  - **Operator note:** `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` are not currently configured as
+    repository secrets, so a tag push stops at the credentials gate before building anything.
+    That is what happened to the `v0.3.0` tag. Set them before the next release.
+- **The CUDA image stays manual.** `:<ver>` and `:latest` are not built by CI: they need the
+  CUDA ONNX Runtime distribution and should execute a real CUDA session on a GPU host before
+  reaching a registry. Build with `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`,
+  smoke-test, `trivy image --severity HIGH,CRITICAL` clean (or documented as accepted), then
+  `docker tag` / `docker push`. The workflow prints this reminder when it finishes.
 - **Non-developers / prod:** pull the published tag — no Rust toolchain, no clone of this repo,
   no local build. The whole deployment is `docker-compose.prod.yml` + `.env`; see "Run it" at
   the top of this file.

@@ -72,7 +72,8 @@ OPTIONS
 WHAT IT DOES ON A FIRST RUN
   1. Creates .env from .env.example and asks for your HuggingFace token.
   2. PULLS the published image that matches this machine — architecture and GPU are
-     detected, because every published tag is single-platform. ~195 MB on a CPU host.
+     detected, because the CUDA image is amd64-only and the right tag has to be named.
+     ~195 MB on a CPU host.
      (--build compiles it from source instead: several minutes.)
   3. Exports the diarization models into ./models — about 484 MB, roughly 3 minutes.
      They cannot be shipped for you: they derive from the gated pyannote
@@ -233,11 +234,12 @@ MODELS_DIR_ABS="$(cd "$MODELS_DIR" && pwd)"
 MARKER="$MODELS_DIR_ABS/$MARKER_NAME"
 
 # ── architecture ─────────────────────────────────────────────────────────────────────────
-# Not cosmetic. Every published tag is SINGLE-PLATFORM, and `:latest` is the amd64 CUDA
-# image — so an arm64 host that pulls it does not get a clean "wrong architecture" error,
-# it gets emulation, and the symptom is "diarization is mysteriously slow" rather than a
-# failure anyone can act on. DIAR_ARCH overrides the detection, which is also how this
-# selection is testable without an arm64 machine.
+# Not cosmetic. `:latest` and `:$DIAR_VERSION` are the amd64 CUDA image and there is no arm64
+# entry under them — permanently, since no aarch64 ONNX Runtime GPU build exists — so an arm64
+# host that pulls one does not get a clean "wrong architecture" error, it gets emulation, and
+# the symptom is "diarization is mysteriously slow" rather than a failure anyone can act on.
+# DIAR_ARCH overrides the detection, which is also how this selection is testable without an
+# arm64 machine.
 HOST_ARCH="${DIAR_ARCH:-$(uname -m)}"
 case "$HOST_ARCH" in
   x86_64|amd64)  ARCH=amd64 ;;
@@ -359,17 +361,25 @@ fi
 image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
 
 # Refuse an image built for another architecture. Docker does NOT reliably refuse this for
-# itself: the published tags are single-platform, so there is no manifest list to select
-# from, and on Docker Desktop a mismatched image is emulated rather than rejected. That
-# turns "you pulled the wrong tag" into "diarization is inexplicably slow", which is a much
-# worse bug to be handed. Checked after every pull, including one named via DIAR_IMAGE.
+# itself: every tag this script names is single-platform — `:latest` and `:$DIAR_VERSION` are
+# amd64 CUDA images, and `-cpu-arm64` / `-provision-arm64` are arm64 BY NAME — so there is no
+# manifest list to select from, and on Docker Desktop a mismatched image is emulated rather
+# than rejected. That turns "you pulled the wrong tag" into "diarization is inexplicably slow",
+# which is a much worse bug to be handed. Checked after every pull, including one named via
+# DIAR_IMAGE.
+#
+# This stays correct if a tag DOES become a manifest list. From the first release published by
+# .github/workflows/release.yml, `:<ver>-cpu` and `:<ver>-provision` are multi-arch (issue #20)
+# — `docker pull` then selects the matching architecture and the check below simply passes.
+# The explicit `-arm64` aliases keep being published, which is why the selection above still
+# names them: an explicit tag turns a mistake into this error message instead of a slow run.
 assert_image_arch() {
   local ref="$1" got
   got="$(docker image inspect -f '{{.Architecture}}' "$ref" 2>/dev/null || true)"
   [[ -n "$got" ]] || return 0
   [[ "$got" == "$ARCH" ]] && return 0
   die "image $ref is linux/$got, but this machine is linux/$ARCH.
-       Every published tag is single-platform, so the right one has to be named explicitly:
+       These tags are single-platform, so the right one has to be named explicitly:
          linux/amd64 + NVIDIA GPU   $REGISTRY:$DIAR_VERSION
          linux/amd64, CPU           $REGISTRY:$DIAR_VERSION-cpu
          linux/arm64                $REGISTRY:$DIAR_VERSION-cpu-arm64
