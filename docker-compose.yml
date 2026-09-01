@@ -1,0 +1,124 @@
+# diar-native — standalone speaker diarization sidecar.
+#
+#   ./start.sh                 does all of the below for you, including the one-time model
+#                              export and the token prompt. Use that unless you want control.
+#
+# By hand:
+#   cp .env.example .env && $EDITOR .env          # set HUGGINGFACE_TOKEN
+#   docker compose --profile provision run --rm provision    # once, ~484 MB, ~3 min
+#   docker compose up -d
+#   curl -s localhost:8701/readyz | jq
+#
+# GPU is OPT-IN. This file alone runs on CPU and needs no NVIDIA runtime, so it works on a
+# laptop unchanged. To use a GPU, add the overlay (start.sh does this automatically when it
+# finds one):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Every variable is documented in .env.example; README.md section 6e is authoritative for the
+# ones the binary actually reads.
+
+name: diar-native
+
+services:
+  # ── the sidecar ────────────────────────────────────────────────────────────────────────
+  diar-native:
+    # No `build:` key on purpose. The CUDA and CPU images come from DIFFERENT Dockerfiles,
+    # and if compose could build this service it would happily build the CPU Dockerfile and
+    # tag it `...-cuda` whenever the CUDA image happened to be missing — a silent mismatch
+    # that would look like "my GPU box is inexplicably slow". start.sh builds the right one;
+    # to do it by hand see QUICKSTART.md.
+    image: ${DIAR_IMAGE:-diar-native:local-cpu}
+    container_name: diar-native
+    restart: unless-stopped
+    ports:
+      - "${DIAR_PORT:-8701}:8701"
+    environment:
+      # Paths inside the container. Not operator knobs — the volumes below are.
+      DIAR_MODELS_DIR: /models
+      DIAR_BIND: 0.0.0.0:8701
+
+      # Devices to load; the FIRST entry is the default for requests that do not name one.
+      # start.sh sets `cuda,cpu` when it finds a working GPU. An unknown or not-compiled-in
+      # name is fatal at startup, which is why the CPU image must never see `cuda` here.
+      DIAR_DEVICES: ${DIAR_DEVICES:-cpu}
+      # Defaulted to `cpu` rather than left blank DELIBERATELY. DIAR_DEVICES wins over this
+      # whenever it is set, so this line is normally inert — but README 6e documents that an
+      # unset OR UNRECOGNIZED DIAR_MODE falls through to `cuda`. Blanking DIAR_DEVICES in
+      # .env on a GPU-less host would then hit that fallthrough and fail startup with a
+      # device error instead of just serving on the CPU. `cpu` here makes that impossible.
+      DIAR_MODE: ${DIAR_MODE:-cpu}
+
+      DIAR_MAX_INFLIGHT: ${DIAR_MAX_INFLIGHT:-2}
+      DIAR_MAX_INFLIGHT_CPU: ${DIAR_MAX_INFLIGHT_CPU:-}
+      DIAR_MODEL_SET: ${DIAR_MODEL_SET:-}
+      DIAR_GENDER_MAX_SECONDS: ${DIAR_GENDER_MAX_SECONDS:-5}
+      DIAR_ALLOW_UNVERIFIED_MODELS: ${DIAR_ALLOW_UNVERIFIED_MODELS:-}
+
+      # Explicit rather than blank: an empty DIAR_LOG_FORMAT is "unrecognized" and logs a
+      # warning on every single start.
+      RUST_LOG: ${RUST_LOG:-info,ort::logging=warn}
+      DIAR_LOG_FORMAT: ${DIAR_LOG_FORMAT:-text}
+
+      SPEAKRS_LAZY_SESSIONS: ${SPEAKRS_LAZY_SESSIONS:-1}
+      SPEAKRS_ARENA_SHRINK: ${SPEAKRS_ARENA_SHRINK:-}
+    volumes:
+      # READ-ONLY. Serving never writes to the models directory — the startup gate only
+      # stat()s the marker — so :ro is a real guarantee, not a hopeful one. The `provision`
+      # service below is the only thing that mounts it read-write.
+      - ${DIAR_MODELS_HOST_DIR:-./models}:/models:ro
+      # Audio to diarize. /diarize takes a PATH, not an upload, so the file has to be visible
+      # inside the container: put it here and POST {"wav_path": "/audio/<name>"}.
+      - ${DIAR_AUDIO_HOST_DIR:-./audio}:/audio:ro
+    # Liveness, NOT readiness — /healthz is 200 whenever the process is serving, in every
+    # model state. Pointing this at /readyz would mark an unprovisioned container unhealthy
+    # and fail `up --wait`, which is exactly the silent-fallback regression the models-state
+    # split exists to prevent. Gate your own rollout on /readyz instead.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8701/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  # ── one-time model export ──────────────────────────────────────────────────────────────
+  # Behind a profile so it never runs on a plain `docker compose up`.
+  #   docker compose --profile provision run --rm provision
+  # Idempotent: a valid marker makes it a no-op that needs neither network nor token.
+  provision:
+    profiles: ["provision"]
+    image: ${DIAR_PROVISION_IMAGE:-diar-native-provision:local-cpu}
+    # THE line that makes this work without sudo. The images run as their built-in non-root
+    # user (uid/gid 10001:10001), which cannot write a bind-mount owned by you. Running the
+    # export as your OWN uid means the ~484 MB lands owned by you, and the serving container
+    # — still uid 10001 — reads it fine because a default umask leaves it world-readable.
+    # start.sh fills these in from `id -u` / `id -g`.
+    user: "${DIAR_UID:-1000}:${DIAR_GID:-1000}"
+    environment:
+      # Not `:?` — that would abort `docker compose up` for the SERVING service too, since
+      # compose interpolates the whole file. A missing token is better reported by
+      # `check-token`, which exits 5 with an actionable message naming the gate URL.
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+      # Spelled out rather than left to default to blank. `diar-server` itself treats an empty
+      # HF_ENDPOINT as unset, but it does NOT strip the variable from the environment of the
+      # Python export child it spawns — and huggingface_hub does
+      # `os.environ.get("HF_ENDPOINT", "https://huggingface.co")`, which returns the EMPTY
+      # STRING when the key exists but is blank. The download URL then has no scheme and the
+      # export dies with `httpx.UnsupportedProtocol: Request URL is missing an 'http://' or
+      # 'https://' protocol`, which reads like a network fault and is not one. Measured.
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: /hf
+      DIAR_MODELS_DIR: /models
+      # Provisioning defaults to CPU by design and needs no GPU: only the end-to-end smoke
+      # stage can use an accelerator, and requiring one is what used to brick GPU-less hosts.
+      DIAR_MODE: cpu
+    volumes:
+      # READ-WRITE, unlike the serving mount above. This is the whole reason the two are
+      # separate services.
+      - ${DIAR_MODELS_HOST_DIR:-./models}:/models
+      # Keeps the ~32 MB gated download warm so a re-export does not re-fetch it.
+      - ${DIAR_HF_CACHE_HOST_DIR:-./.hf-cache}:/hf
+    command: ["provision-models", "--models-dir", "/models", "--set", "${DIAR_MODEL_SET:-fast}"]
+    security_opt:
+      - no-new-privileges:true

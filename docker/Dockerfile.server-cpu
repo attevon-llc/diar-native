@@ -64,24 +64,48 @@ COPY vendor/speakrs/ ./vendor/speakrs/
 COPY scripts/ ./scripts/
 # No --features cuda: cuda is purely additive (diar-core/Cargo.toml), the default build is
 # already CPU-mode via openblas-system (pinned in the workspace root Cargo.toml's speakrs dep).
+# diar-cli is built here too but is NOT copied into the serving image — see the `cli` target
+# below. It shares every compiled dependency with diar-server, so this costs one extra link.
 RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-registry-${TARGETARCH} \
-    cargo build --release -p diar-server && \
-    mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
+    cargo build --release -p diar-server -p diar-cli && \
+    mkdir -p /opt/bin && cp -P target/release/diar-server target/release/diar-cli /opt/bin/
 
-FROM ubuntu:24.04
+# Shared by the serving image and the `cli` target so the two never diverge and the second
+# image costs only its own binary. The serving image remains the LAST stage, so a plain
+# `docker build -f docker/Dockerfile.server-cpu .` still produces exactly what it used to.
+FROM ubuntu:24.04 AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
+RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ 2>/dev/null || true && \
+    mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/ 2>/dev/null || true
+RUN mkdir -p /tmp/diar-native && chmod 1777 /tmp/diar-native
+# Non-root (issue #7). Fixed uid/gid 10001:10001, identical to docker/Dockerfile.server —
+# see the long rationale there. Serving writes nothing outside /tmp/diar-native; the
+# provisioning path overrides this with `--user "$(id -u):$(id -g)"` so a bind-mounted
+# models directory is written with the operator's own ownership and needs no chown.
+RUN groupadd --system --gid 10001 diar && \
+    useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin diar
+ENV HOME=/tmp
+USER 10001:10001
+
+# ── `cli` target: one-shot diarization, no server ────────────────────────────────────────
+#   docker build -f docker/Dockerfile.server-cpu --target cli -t diar-native-cli:local .
+# See the matching block in docker/Dockerfile.server for why this is a separate image.
+FROM runtime-base AS cli
+COPY --from=builder /opt/bin/diar-cli /usr/local/bin/
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/diar-cli"]
+
+# ── serving image (the default target: LAST stage wins) ─────────────────────────────────
+FROM runtime-base
 COPY --from=builder /opt/bin/diar-server /usr/local/bin/
 # Smoke-test fixture for `provision-models` / `verify-models`. 26 s, 16 kHz mono:
 # long enough for 3 segmentation chunks, so it exercises multi-chunk aggregation,
 # VBx clustering and PLDA rather than just "a session loaded". ~832 KB.
 COPY vendor/speakrs/fixtures/test.wav /usr/local/share/diar-native/smoke.wav
-COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
-RUN ldconfig && ln -s /usr/local/lib/libonnxruntime_providers_*.so /usr/local/bin/ 2>/dev/null || true && \
-    mkdir -p /srv && ln -s /usr/local/lib/libonnxruntime_providers_*.so /srv/ 2>/dev/null || true
-RUN mkdir -p /tmp/diar-native && chmod 1777 /tmp/diar-native
 WORKDIR /srv
 EXPOSE 8701
 # Liveness, deliberately NOT readiness. /healthz is 200 whenever the process is serving;

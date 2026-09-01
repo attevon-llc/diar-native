@@ -7,6 +7,11 @@
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Vulnerabilities:
 [`SECURITY.md`](SECURITY.md) · Release history: [`CHANGELOG.md`](CHANGELOG.md)
 
+> **Just want to run it?** [`QUICKSTART.md`](QUICKSTART.md) — `./start.sh` builds, exports the
+> models with your own HuggingFace token, and serves. Works with or without a GPU, and there is
+> a `--cli` path that needs no server at all. This README is the reference manual, not the
+> getting-started guide.
+
 Native (Rust/ONNX) speaker diarization engine for OpenTranscribe, built on a vendored,
 heavily-patched [`speakrs`](https://github.com/avencera/speakrs) (upstream) —
 mirrored at [`attevon-llc/speakrs`](https://github.com/attevon-llc/speakrs) (our fork, Apache-2.0
@@ -517,7 +522,7 @@ table on purpose — they are compose-level indirection that expands into these
 | var | what it does | default | notes |
 |---|---|---|---|
 | `HF_TOKEN` | Hugging Face read token. | none | Also `HUGGINGFACE_TOKEN` and `HUGGING_FACE_HUB_TOKEN`, tried in that order. `--hf-token` wins over all three. Empty values are skipped, not treated as a token. |
-| `HF_ENDPOINT` | Base URL for the Hugging Face API. | `https://huggingface.co` | **The only knob that makes provisioning work against a mirror or an air-gapped proxy.** Trailing `/` is stripped; empty is treated as unset. |
+| `HF_ENDPOINT` | Base URL for the Hugging Face API. | `https://huggingface.co` | **The only knob that makes provisioning work against a mirror or an air-gapped proxy.** Trailing `/` is stripped. Empty is treated as unset **by the Rust side only** — see below. |
 | `HF_HOME` | Hugging Face cache directory. Forwarded to the python export child. | none (child uses its own default) | `--hf-cache` overrides. |
 | `HF_HUB_OFFLINE` | Read by `huggingface_hub` **inside the python exporter**, not by Rust — set it to re-export from a warm cache with no network (the §7.36 acceptance run did exactly this, and needed no token). | unset | **Not forwarded to the child.** `diar-core` explicitly sets only `PYTHONUNBUFFERED`, `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`, `HF_TOKEN` and `HF_HOME` on the export subprocess, so this only works if it is already in `diar-server`'s own environment and inherited. |
 | `DIAR_EXPORT_PYTHON` | Interpreter (with torch + pyannote.audio) used to run the export scripts. | `python3` | `--python` overrides. A non-working interpreter exits 6. |
@@ -551,6 +556,16 @@ table on purpose — they are compose-level indirection that expands into these
   and control falls through, whereas a bad `DIAR_ORT_DISABLED_OPTIMIZERS` is fatal.
 - **`DIAR_ALLOW_UNVERIFIED_MODELS` is case-sensitive** in a way its neighbours are not: `true`
   and `TRUE` work, `True` does not.
+- **Setting `HF_ENDPOINT` to the empty string breaks `provision-models`,** even though this
+  table says empty is treated as unset. That is true of the Rust side — but the variable is not
+  *stripped* from the environment, and the Python export child inherits it. `huggingface_hub`
+  does `os.environ.get("HF_ENDPOINT", "https://huggingface.co")`, which returns the **empty
+  string** when the key exists and is blank, so the download URL loses its scheme and the export
+  dies with `httpx.UnsupportedProtocol: Request URL is missing an 'http://' or 'https://'
+  protocol`. It reads like a network fault and is not one. This is easy to hit from compose,
+  where `HF_ENDPOINT: ${HF_ENDPOINT:-}` is the natural way to make a variable optional; the
+  bundled `docker-compose.yml` defaults it to the literal URL instead. Either leave it unset
+  entirely or give it a real value (RESULTS §7.43).
 
 ## 6f. Platform note: the fp16 gender model on linux/arm64
 

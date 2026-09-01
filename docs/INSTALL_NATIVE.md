@@ -57,6 +57,55 @@ against the host path (or mount `:rw` for that one command) and leave serving re
 `provision-models` checks writability up front and exits 7 naming the mount, rather than
 discovering it after a 484 MB export.
 
+Serving genuinely never writes to the models directory — the startup gate only `stat`s the
+marker — so `:ro` is a guarantee rather than a convention. The one non-provisioning writer is
+`verify-models`, which re-attests the marker by default; `--no-attest` suppresses that, and on
+a read-only mount it degrades to a warning and still exits 0.
+
+### The container user (uid/gid 10001:10001)
+
+Both serving images (`docker/Dockerfile.server`, `docker/Dockerfile.server-cpu`) run as a
+non-root user with a **fixed uid and gid of `10001:10001`**, account name `diar`. That number
+is deliberately outside the 1000-1999 range `useradd` allocates on a normal host, so a file
+left behind with this ownership is unambiguous and can never collide with a real account.
+
+The same number appears in `docker-compose.yml`, `start.sh`, `QUICKSTART.md` and here; they
+must be changed together.
+
+**Serving needs no write access at all.** `/models` is mounted read-only, and the only path
+the process writes is `/tmp/diar-native` (mode 1777, the audio handoff directory). So serving
+works under this uid against a models directory owned by anybody, provided the files are
+world-readable — which a default umask produces.
+
+**Provisioning is the path that writes**, and a container user cannot write a host bind-mount
+it does not own. Rather than making every operator `chown` a directory to 10001, the export
+runs as the *invoking* user:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+  -e HUGGINGFACE_TOKEN -v "$PWD/models":/models diar-provision:<ver>
+```
+
+`start.sh` and the `provision` service in `docker-compose.yml` both do this (via `DIAR_UID` /
+`DIAR_GID`, defaulted from `id -u` / `id -g`). The exported models land owned by the operator,
+serving reads them as 10001, and **no `chown` is needed in the normal flow**. This is still
+non-root; it is simply not *that* non-root user.
+
+If a directory does end up owned by someone else — a leftover from a pre-0.3.1 root container,
+say — the fix is to take ownership, **not** to chown to 10001:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" ./models
+```
+
+Chowning to 10001 would make serving work and re-provisioning fail, which is the worse of the
+two failure modes because it does not surface until the next export.
+
+`Dockerfile.provision` reclaims `USER root` for its `apt-get`/`pip` layers and drops back to
+10001 at the end, so a bare `docker run` of it is not root either. It also sets `HF_HOME=/hf`
+(mode 1777) because the export child resolves `~/.cache/huggingface` otherwise, and `~` is not
+writable under a `--user` override.
+
 ### Which device provisioning uses
 
 **`provision-models` and `verify-models` default to CPU**, deliberately — not to the serving

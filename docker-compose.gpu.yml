@@ -1,0 +1,33 @@
+# GPU overlay — opt-in, never loaded on its own.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# `./start.sh` adds this automatically when it finds BOTH a working `nvidia-smi` and the
+# NVIDIA container runtime registered with the Docker daemon. Checking only for nvidia-smi is
+# the classic mistake: a host can have the driver and still be unable to pass a GPU into a
+# container, and the failure mode is a container that will not start at all.
+#
+# This is a separate file rather than a `deploy:` block in the base file because compose has
+# no way to make a device reservation conditional. Present and unsatisfiable, it is a hard
+# startup failure on every machine without a GPU — which would make the base file unusable on
+# exactly the laptops the CPU image exists for.
+#
+# Requires DIAR_IMAGE to be a CUDA build (diar-native:local-cuda). The CPU image has no CUDA
+# execution provider compiled in, so DIAR_DEVICES=cuda against it is fatal at startup, by
+# design — a diarizer that silently degrades to the CPU is a performance bug nobody notices.
+
+services:
+  diar-native:
+    environment:
+      # First entry is the default device. `cpu` stays in the list so a caller can still pin
+      # an individual request to the CPU with {"device": "cpu"}.
+      DIAR_DEVICES: ${DIAR_DEVICES:-cuda,cpu}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Which physical GPU. Not a bare `0`: on a multi-GPU box, silently reserving
+              # card 0 when the operator meant another one is a real and annoying bug.
+              device_ids: ["${DIAR_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]

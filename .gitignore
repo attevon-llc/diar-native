@@ -13,6 +13,17 @@ triton/engines_a6000/
 triton/**/*.onnx
 triton/**/*.plan
 
+# operator config — ./start.sh writes the HuggingFace token in here (chmod 600).
+# .env.example is the committed template and must stay tracked.
+.env
+.env.*
+!.env.example
+
+# runtime directories created by start.sh / docker-compose.yml
+audio/
+cli-out/
+.hf-cache/
+
 # local tooling
 venv/
 __pycache__/

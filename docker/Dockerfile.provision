@@ -29,6 +29,11 @@
 ARG BASE=diar-server:latest
 FROM ${BASE}
 
+# The base image ends on `USER 10001:10001` (issue #7), so every layer below would fail on a
+# permission error without this. Root is reclaimed only to INSTALL; the final USER line at the
+# bottom of this file drops back, and no layer here is ever executed at run time.
+USER root
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # python3 + venv only. No compiler and no cmake: every dependency below must resolve to a
@@ -57,6 +62,21 @@ COPY scripts/provision/ /opt/diar-provision/scripts/
 # PATH, find the bare system interpreter, and fail the dependency preflight with an
 # actionable-but-unnecessary message.
 ENV DIAR_EXPORT_PYTHON=/opt/diar-provision/env/bin/python
+
+# HuggingFace cache. The export child resolves `~/.cache/huggingface` when HF_HOME is unset,
+# and this image is run with `--user "$(id -u):$(id -g)"` (see below), for which `~` is not
+# writable — so an unset HF_HOME is a download failure, not a slow path. /hf is 1777 for the
+# same reason /tmp/diar-native is: whatever uid the operator runs as has to be able to write
+# it. Bind-mount a host directory here to keep the ~32 MB download warm across re-exports.
+ENV HF_HOME=/hf
+RUN mkdir -p /hf && chmod 1777 /hf
+
+# Back to the base image's non-root user. Note that provisioning is normally run with
+# `--user "$(id -u):$(id -g)"` OVERRIDING this, so the exported models land owned by the
+# operator rather than by uid 10001 — that is what lets a stranger provision into a plain
+# `./models` directory with no chown and no sudo. This line is the floor, not the intent:
+# it guarantees that even a bare `docker run diar-provision` is not root.
+USER 10001:10001
 
 # Same entrypoint as the server image, so `docker run diar-provision` provisions and
 # `docker run diar-provision serve` still serves. Nothing about the server is removed.

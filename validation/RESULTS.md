@@ -2863,3 +2863,107 @@ reopened. The bump was reapplied by hand in `4c85a9f`. The lesson is that a depe
 disappearing is not evidence the dependency is current — check the manifest.
 
 Five of the six bumps landed. Nothing in this section retracts an earlier number.
+
+---
+
+### 7.43 Non-root containers (issue #7) and the standalone quickstart — the uid choice is decided by the WRITE path, not the serve path
+
+**Date:** 2026-09-01. Host: this box (2× A6000, 1× 3080 Ti), GPU 0 used. Images built from a
+clean `git archive HEAD` context — the working tree carried unrelated in-progress edits from a
+sibling session, so building from it would have measured someone else's code.
+
+**Change.** `docker/Dockerfile.server` and `docker/Dockerfile.server-cpu` now end on
+`USER 10001:10001` (account `diar`, created with `--system --no-create-home`).
+`docker/Dockerfile.provision` reclaims `USER root` for its `apt`/`pip` layers and drops back.
+Both server Dockerfiles also gained a shared `runtime-base` stage and a `cli` target.
+
+**Why 10001.** Outside the 1000-1999 band `useradd` allocates on a normal host, so a file left
+with this ownership is unambiguous and cannot be confused with a real account's. The same
+number is repeated in `docker-compose.yml`, `start.sh`, `QUICKSTART.md` and
+`docs/INSTALL_NATIVE.md`.
+
+**The real constraint is provisioning, not serving.** Serving needs no write access anywhere:
+`/models` is `:ro`, the startup gate only `stat`s the marker, and the sole writable path is
+`/tmp/diar-native` (1777). Provisioning writes 484 MB, and a container user cannot write a host
+bind-mount it does not own — so a fixed uid alone would have made the documented first step
+require a `chown`, i.e. a quickstart that fails on step one. Resolved by running the export as
+the *invoking* user (`--user "$(id -u):$(id -g)"`, wired through `DIAR_UID`/`DIAR_GID`). Still
+non-root, just not that non-root user. **No `chown` in the normal flow.**
+
+**Four paths verified, none assumed:**
+
+| path | result |
+|---|---|
+| serve against `:ro` models | `/healthz` 200, `/readyz` 200, `models_state: verified`, `devices: [cuda, cpu]`; `id` = `uid=10001(diar) gid=10001(diar)`. `touch /models/x` → `Read-only file system`. |
+| `provision-models` against a **rw** mount | 484 MB / 25 files in **152.8 s**, smoke test passed, `gender classifier: fp16`. All 25 files owned by **1000:1000** (the invoking user), mode 0644. |
+| `/tmp/diar-native` writable | `stat` = `1777 root:root`; write **and** delete of a probe file as uid 10001 succeeded. |
+| bare `docker run <image>` (no args) | CUDA image, no args and no env: serves, `/healthz` 200, `/readyz` 200, `uid=10001`. CPU image with `DIAR_MODE=cpu`: same. |
+
+A live `/diarize` through the non-root container returned 2 speakers, 7 segments, 8 exclusive
+segments and both gender verdicts — so the `:ro` mount is genuinely sufficient for the full
+request path, gender model included.
+
+**Not a regression, and worth recording so it is not rediscovered:** a bare `docker run` of the
+**CPU** image with no args and no env exits 1 with `cuda requires the cuda Cargo feature; this
+build serves [cpu]`. That is the documented "unset *or unrecognized* `DIAR_MODE` ⇒ `cuda`"
+fall-through, and the released **root** image `diar-server:0.3.0-cpu` was run side by side and
+produced the byte-identical error. Non-root changes nothing here. `docker-compose.yml`
+therefore pins `DIAR_MODE=cpu` explicitly rather than leaving it blank.
+
+**Size cost of non-root: zero.** CPU image **195 MB**, the same as the released root
+`diar-server:0.3.0-cpu`. The `cli` target adds no bytes to the serving image because it is a
+sibling stage off `runtime-base`, not an extra binary in the sidecar (`ls /usr/local/bin` in the
+serving image shows `diar-server` only).
+
+**Trivy** (0.67.1, `--scanners vuln --severity HIGH,CRITICAL`): see §7.43a below.
+
+#### Two bugs found by actually running the thing
+
+1. **An empty `HF_ENDPOINT` breaks the export**, and the failure does not look like a config
+   error. `diar-server` itself treats empty as unset (`preflight.rs` filters it), but it does
+   **not** strip the variable from the environment of the Python export child, and
+   `huggingface_hub` does `os.environ.get("HF_ENDPOINT", "https://huggingface.co")` — which
+   returns the **empty string** when the key exists but is blank. The download URL then has no
+   scheme and the export dies with `httpx.UnsupportedProtocol: Request URL is missing an
+   'http://' or 'https://' protocol`, which reads as a network fault and is not one. A compose
+   file written the obvious way (`HF_ENDPOINT: ${HF_ENDPOINT:-}`) hits this on every run.
+   Fixed by defaulting to the literal URL. README §6e's "empty is treated as unset" was true
+   only of the Rust side and has been corrected.
+2. **`diar-cli` intermittently faults during teardown**, `corrupted double-linked list` →
+   SIGSEGV (exit 139), **after** printing its JSONL result line and writing the RTTM. Isolated
+   2×2 against build and log level, because the first instinct — blame the sibling session's
+   uncommitted `diar-cli` edits — was wrong:
+
+   | build | `RUST_LOG` | exit |
+   |---|---|---|
+   | clean HEAD | default (`info`) | **139** |
+   | clean HEAD | `error` | 0 |
+   | working tree (sibling's WIP) | default (`info`) | 0 |
+   | working tree (sibling's WIP) | `error` | 0 |
+
+   Re-running the clean-HEAD build at the default level gave 0/139/139 across three runs. So it
+   tracks **shutdown work under verbose logging**, is nondeterministic, and is present on the
+   committed tree — not caused by either session's changes. Output is complete and correct
+   every time it happens. `start.sh --cli` now defaults the run to
+   `RUST_LOG=warn,ort::logging=error` (which also makes the one line of real output visible
+   instead of burying it under ORT provider registrations) and, on a non-zero exit **with** an
+   RTTM present, reports the known teardown fault rather than either swallowing a segfault or
+   failing a run whose results are on disk. The underlying fault is unfixed and is a genuine
+   bug worth its own issue.
+
+#### 7.43a Trivy
+
+`trivy 0.67.1`, `--scanners vuln --severity HIGH,CRITICAL`, DB version 2, scanned 2026-09-01.
+
+| image | OS packages | HIGH | CRITICAL |
+|---|---|---|---|
+| `diar-native:local-cpu` (new, non-root) | 112 | 0 | 0 |
+| `diar-native:local-cuda` (new, non-root) | 137 | 0 | 0 |
+| `diar-server:0.3.0-cpu` (released, **root**, baseline) | 112 | 0 | 0 |
+
+No language-specific manifests are detected in any of them (`num=0`) — the Rust binary is
+statically linked and carries no lockfile into the image, so trivy's OS-package scan is the
+whole surface. The baseline was scanned in the same run to make the comparison meaningful:
+the non-root change neither introduced nor removed a finding, which is the expected result —
+it changes who the process runs as, not what is installed. The `apt-get upgrade -y` already in
+both runtime stages is what keeps the count at zero.
