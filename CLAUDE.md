@@ -142,10 +142,15 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
     graphs.
   - engine: `SPEAKRS_LAZY_SESSIONS`, `SPEAKRS_ARENA_SHRINK` (4 GB-tier VRAM floor, ~20% per-job
     cost — default off), `SPEAKRS_INTRA_THREADS`, `SPEAKRS_FBANK_THREADS`, `SPEAKRS_AHC_THREADS`.
-  - **`SPEAKRS_FBANK_POOL` is NOT operator-settable through `diar-server`** — `DiarEngine::load`
-    unconditionally `set_var`s it before speakrs reads it back in the same call. (That `set_var`
-    is also why engine loads must stay serial in `run()` before the server binds: glibc `setenv`
-    is not thread-safe.) `SPEAKRS_TRT`/`SPEAKRS_TRT_CACHE` are dead — no read sites.
+  - **`SPEAKRS_FBANK_POOL` works as documented as of RESULTS §7.50** (issue #3) — read ONCE in
+    `EngineConfig::new` and threaded to speakrs via `RuntimeConfig`; `DiarEngine::load` no
+    longer `set_var`s anything, so engine loads are free to be lazy or concurrent (serial
+    pre-serve loading is now just fail-fast, not a soundness requirement). Unset keeps the mode
+    defaults (CPU/CoreML 1, CUDA cores/4 clamped 1-8). Until §7.50 this knob was silently
+    overwritten and inert, and the "loads are serial so the `set_var` is safe" invariant was
+    already FALSE — `EngineRegistry::load` calls `DiarEngine::load` once per device, so
+    `DIAR_DEVICES=cuda,cpu` ran the second `setenv` while the first engine's ORT threads were
+    live. `SPEAKRS_TRT`/`SPEAKRS_TRT_CACHE` are dead — no read sites.
 - Exit codes are a stable contract (`crates/diar-core/src/provision/mod.rs::exit`), tabulated in
   README §6d and `docs/INSTALL_NATIVE.md`. Note **8** = serve-time "models unusable" (was 6, which
   now means only "no usable python export env"); 9 = device unavailable, no marker written;
