@@ -2472,3 +2472,177 @@ inaccurate is §7.36's specific wording "surfaced as `models_gender` on `/health
 `HealthResponse.models_gender` is a **bool of file existence** and carries no precision. Now
 that both precisions are genuinely reachable in the field, a served directory still cannot be
 asked which one it has without reading the marker off disk.
+
+### 7.40 The fp16 gender load failure is an ORT *fusion-gate* difference, not an aarch64 kernel gap — and the surgical fix needs the name `GeluFusionL2` (issue #14)
+
+Run on the operator's Apple Silicon Mac (M2 Max, macOS 15.7.9, `Darwin 24.6.0`), from a
+fresh clone of `attevon-llc/diar-native` at `b9a4b3e` (0.3.0). Issue #14 asked three
+platform questions that cannot be answered from Linux, because `coreml` builds only on
+macOS and never goes through Docker.
+
+**NOT a timed leg.** Every claim below is a load/no-load fact, a graph-shape fact, or an
+output-identity fact, all invariant to machine load. No wall-clock number is offered as a
+benchmark. `duration_ms` values in the smoke JSON are incidental.
+
+**Models.** The 22 required diarization artifacts came from the local-only gated set on
+that machine; `gender-wav2vec2.onnx` was exported fresh with `scripts/provision/export_gender.py`
+(the classifier repo is ungated — no HF token was used or requested). The export's own gates
+passed: fp32-vs-torch 5.60e-06, 2 no-op `Cast` nodes elided with fp32 output bitwise
+unchanged on 6 clips, fp16 conversion 6/6 labels unchanged, max Δlogit 2.75e-03,
+379 MB -> 189 MB. Shape matches the shipped artifact: opset-17 plain `ai.onnx`, no contrib
+domain on any node, 20 `Erf`, 213 FLOAT16 initializers, fp32 in/out under `keep_io_types`.
+Node count 1084 vs the shipped 966 and size 189,488,828 vs 189,431,659 — a `transformers`
+version difference, immaterial to everything below (the `Erf` count and initializer dtypes,
+which are what the fusion keys off, are identical).
+
+#### Q1/Q2 — the failure does NOT reproduce on macOS arm64, in any mode
+
+`diar-server verify-models --set fast --smoke-clip vendor/speakrs/fixtures/test.wav`,
+native builds, no Docker:
+
+| build | `--mode` | stage 1 | end-to-end |
+| --- | --- | --- | --- |
+| default (CPU) | `cpu` | 16 ONNX graphs loaded | 2 speakers, 7 segments, 8 exclusive, gender=2 |
+| `--features coreml` | `cpu` | 16 ONNX graphs loaded | 2 speakers, 7 segments, 8 exclusive, gender=2 |
+| `--features coreml` | `coreml` | 16 ONNX graphs loaded | 2 speakers, 7 segments, 8 exclusive, gender=2 |
+| `--features coreml` | `coreml_fast` | 16 ONNX graphs loaded | 2 speakers, 7 segments, 8 exclusive, gender=2 |
+
+The gender model loads and classifies in all four. Counts match amd64 and linux/arm64
+exactly. Both builds compile natively (`coreml` needs `LIBRARY_PATH` to Homebrew openblas).
+`--mode coreml` additionally requires the `.mlmodelc` assets in the models dir; without them
+it fails with a clear `coreml requires native asset …` message, which is the *asset* gate
+doing its job and not this bug.
+
+#### The mechanism — both aarch64 builds lack the fp16 kernel; they differ in whether the fusion FIRES
+
+`nm` on the ORT static lib the `ort` crate links (`ort.pyke.io/dfbin/aarch64-apple-darwin/…`,
+ORT **1.24.2**) shows the macOS build has the same kernel gap the issue describes:
+
+```
+onnxruntime::Gelu<float>                      <- the only instantiation
+Gelu<onnxruntime::MLFloat16>                  <- 0 matches
+onnxruntime::GeluFusion / BiasGeluFusion      <- both present
+contrib::Gelu_Microsoft_ver1 schema           <- present
+```
+
+So macOS is *not* rescued by having an fp16 kernel. It is rescued because **`GeluFusion`
+declines to rewrite an fp16 graph on this build**, so the unsupported node is never created.
+Proven by dumping the optimized graph (`with_optimized_model_path`) for the same model in
+both precisions on macOS:
+
+| graph | opt level | nodes | `Erf` | contrib ops produced |
+| --- | --- | --- | --- | --- |
+| gender **fp16** | Level3 (default) | 994 | 20 | none |
+| gender **fp16** | Level1 | 994 | 20 | none |
+| gender **fp16** | Disable | 1232 | 20 | none |
+| gender **fp32** | Level3 (default) | 496 | 0 | `Gelu` 8, `BiasGelu` 12, `FusedMatMul` 12 |
+| gender **fp32** | Level1 | 612 | 20 | none |
+
+The fp32 row proves the dump reflects Level-2 fusions, so the fp16 row's surviving 20 `Erf`
+is a real negative, not a measurement artifact. **The Erf-GELU rewrite is gated to fp32 on
+the macOS aarch64 ORT build and is not gated on the Linux aarch64 build.** That is the whole
+difference; it is an ORT-build-configuration divergence between two targets of the same
+1.24.2 release, not anything about Apple silicon.
+
+#### Q3 — reproduced the Linux failure on this Mac under Docker, and fix candidate (a) as written DOES NOT WORK
+
+Docker Desktop runs `linux/arm64` natively here, so the failing platform was reproducible
+without leaving the machine — `rust:1-trixie` (glibc 2.41; `bookworm`'s 2.36 cannot link
+this ORT, it wants `__isoc23_strtol`), `RUSTFLAGS=-C link-arg=-lstdc++`, same pinned
+`ort =2.0.0-rc.12`, same model file. The error text matches the issue byte for byte.
+
+`ort` rc.12 **does** expose the config entry: `SessionBuilder::with_disabled_optimizers()`
+-> `optimization.disable_specified_optimizers`, plus the generic `with_config_entry`.
+So the mechanism the issue proposed exists. It just does not do what the issue assumed:
+
+| session config (linux/arm64) | load |
+| --- | --- |
+| default (Level3) | **FAIL** — `com.microsoft.Gelu(1) … implemented only for (tensor(float),) … model has (tensor(float16))` |
+| Level2 | **FAIL** (same) |
+| `disable_specified_optimizers=GeluFusion` | **FAIL** (same) — candidate (a) as specified |
+| `disable_specified_optimizers=GeluFusionL1` | **FAIL** (same) |
+| **`disable_specified_optimizers=GeluFusionL2`** | **ok** |
+| `disable_specified_optimizers=GeluFusionL1,GeluFusionL2` | **FAIL** |
+| `disable_specified_optimizers=BiasGeluFusion,GeluFusionL2` | **FAIL** |
+| `disable_specified_optimizers=GeluFusionL2;BiasGeluFusion` | **ok** |
+| Level1 (Basic) | **ok** — candidate (b) |
+| Disable (Level0) | **ok** — the unfused reference |
+
+Two things fall out that were not in the issue's model of the problem:
+
+1. **The optimizer is named `GeluFusionL2`, not `GeluFusion`.** ORT registers the Erf-GELU
+   pass twice (an L1 and an L2 instance) under suffixed names. An unrecognized name is
+   **silently ignored** — `disable_specified_optimizers=NotARealOptimizerName` loads fine and
+   changes nothing — so shipping the wrong name buys a config entry that looks applied and
+   does nothing. This is exactly what candidate (a) would have done.
+2. **The separator is `;`, not `,`.** `GeluFusionL2;BiasGeluFusion` disables both;
+   `BiasGeluFusion,GeluFusionL2` disables neither. The `ort` crate's own doc comment on
+   `with_disabled_optimizers` says "Accepts a comma-separated list of optimizers to disable",
+   which is wrong for this build — worth an upstream `ort` doc issue. Practically: pass one
+   name, or separate with `;`.
+
+Independent confirmation of the name and separator, on the fp32 gender graph on macOS where
+the fusion does fire (dump inspection, so it reports *suppression* rather than load success):
+`BiasGeluFusion` alone changes the output from `Gelu` 8 + `BiasGelu` 12 to `Gelu` 20 + no
+`BiasGelu`; `ConstantFolding` moves node count 496 -> 499; `GeluFusion` and a bogus name both
+leave the graph untouched.
+
+#### Q4 — numerics, against the unfused graph as reference
+
+Six seeded `do_normalize`-preprocessed clips at 16k/24k/32k/48k/64k/80k samples — the same
+gate corpus `scripts/provision/export_gender.py` uses — generated once and fed byte-identically
+to every configuration and both platforms.
+
+| comparison | max &#124;Δ logit&#124; | label agreement |
+| --- | --- | --- |
+| linux/arm64 **Level1 (fix b)** vs Level0 reference | **0.000e+00** (bitwise) | 6/6 |
+| linux/arm64 **`GeluFusionL2` (fix a)** vs Level0 reference | 9.580e-04 | 6/6 |
+| linux/arm64 `GeluFusionL2` vs Level1 | 9.580e-04 | 6/6 |
+| macOS Level3 / `GeluFusion` / Level1 vs Level0 | 0.000e+00 (bitwise) | 6/6 |
+| macOS Level3 vs linux/arm64 Level0 | 2.890e-01 | 6/6 |
+
+Candidate (b) is **bitwise identical** to the fully-unoptimized reference. Candidate (a)
+keeps every other Level-2/3 optimization, so it differs by fp16 reassociation at ~1e-3 on a
+logit — far inside the 0.05 probability bar §7.18/§7.39 set, and every argmax is stable.
+Both are safe; (b) is the stronger identity claim.
+
+The last row is a **cross-platform** observation, not a regression: the two aarch64 ORT
+builds disagree by up to 0.29 on an fp16 logit purely from arithmetic ordering. All 6 labels
+still agree. It is recorded because it means an fp16 gender logit is not a portable number
+across builds — only the label is.
+
+#### Q5 — the diarization graphs sit on the same cliff, and are safe only because they are fp32
+
+All 15 diarization graphs load at Level3 on macOS arm64. But "no fusion gap" is the wrong
+reading. Dumping each optimized graph shows **11 of 15 are rewritten into a contrib op by
+the same machinery**:
+
+| graphs | contrib ops after Level3 | initializer dtypes |
+| --- | --- | --- |
+| `wespeaker-voxceleb-resnet34{,-b32,-b64}`, `…-tail{,-b3,-b32,-b64}`, `wespeaker-multimask-tail{,-b32,-b64}` (11) | `com.microsoft::FusedConv` × 33 each | FLOAT only |
+| `segmentation-3.0{,-b32,-b64}`, `wespeaker-fbank{,-b32}` (4) | none | FLOAT only |
+
+`nm` shows the only `FusedConv` kernel in the build is `FusedConv_kMSDomain_ver1_**float**`
+— no fp16 instantiation, exactly the shape of the gender bug. **These graphs are safe today
+solely because every one of their initializers is fp32.** The exposure is structural: if
+fp16 is ever revisited for the embedding graphs (§4.18 rejected it for accuracy, not for
+this), 11 of 15 graphs land on the identical failure. Any future fp16 export must carry a
+load check on aarch64, not just an accuracy gate.
+
+#### What this means for the fix
+
+- The bug is **not** "linux/arm64 is missing a kernel that amd64 has" — every aarch64 build
+  checked is missing it. It is "the linux/arm64 ORT build lets a fusion produce a node its
+  own kernel set cannot execute". Upstream-reportable against onnxruntime.
+- Ship-wise, either fix works and both are cheap. `GeluFusionL2` is the surgical one and is
+  what issue #14 preferred; **Level1 on the gender session only** is the one with a bitwise
+  identity proof and no dependence on an ORT-internal optimizer name that is unvalidated,
+  silently ignored when wrong, and already renamed once. Recommendation: **Level1 for the
+  gender session**, with `GeluFusionL2` recorded here as the validated alternative.
+- Neither touches `vendor/`. `GenderModel::load_optional` in `crates/diar-core/src/gender.rs`
+  builds its own `Session` and is the only place that needs to change.
+- No change is needed on macOS at all; whichever fix ships is inert there (macOS is already
+  bitwise identical between Level3 and Level0 on this graph).
+
+Artifacts (scratch, not committed): probe sources `ortprobe{,2,3}`, the seeded `clips.bin`,
+and every optimized-graph dump.
