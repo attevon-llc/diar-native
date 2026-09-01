@@ -80,7 +80,10 @@ impl GenderModel {
         } else {
             builder
         };
-        let mut builder = builder;
+        // Without this the fp16 gender model does not load AT ALL on aarch64 — see
+        // `ort_compat` for the mechanism (ORT's GeluFusion synthesizes a contrib op the
+        // aarch64 build has no fp16 kernel for) and issue #14.
+        let mut builder = crate::ort_compat::apply_workarounds(builder, &path)?;
         let session = builder
             .commit_from_file(&path)
             .map_err(|e| anyhow::anyhow!("gender session commit: {e}"))

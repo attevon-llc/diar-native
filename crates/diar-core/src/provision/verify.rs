@@ -120,11 +120,9 @@ pub struct SmokeReport {
 
 /// Load a session on the CPU EP. Every stage-1..3 session goes through here.
 fn cpu_session(path: &Path) -> Result<Session> {
-    let mut builder =
-        Session::builder().map_err(|e| anyhow!("ORT session builder unavailable: {e}"))?;
-    builder
-        .commit_from_file(path)
-        .map_err(|e| anyhow!("{e}"))
+    // Must go through ort_compat, or the smoke test verifies a session the server will never
+    // build. On aarch64 this is what lets the fp16 gender graph load at all (issue #14).
+    crate::ort_compat::session_for(path)
         .with_context(|| {
             format!(
                 "STAGE 1 FAILED: {} could not be loaded as an ONNX graph. The file is \

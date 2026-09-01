@@ -16,6 +16,7 @@ use speakrs::ExecutionMode;
 pub mod audio;
 pub mod gender;
 pub mod logging;
+pub mod ort_compat;
 pub mod provision;
 use gender::{GenderModel, GenderVerdict};
 
