@@ -16,7 +16,7 @@
 #     -t <tag> --push .
 # Build context: repo root (diar-native/).
 
-FROM ubuntu:24.04 AS base
+FROM ubuntu:26.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config cmake ca-certificates curl git \
@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-reg
     cargo build --release -p diar-server && \
     mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl libopenblas0 \
