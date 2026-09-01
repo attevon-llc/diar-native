@@ -132,7 +132,10 @@ pub enum StartupGate {
         status: ModelsStatus,
         warning: Option<String>,
     },
-    /// Do not serve. Exit with `exit::NO_EXPORTER_ENV` after printing this.
+    /// Do not serve. Print this, then exit with [`exit::MODELS_UNUSABLE`] — NOT
+    /// `NO_EXPORTER_ENV`, which the two used to share. Serving needs no python at all, so
+    /// "install torch" and "provision the models" must not arrive at a supervisor as the same
+    /// number. `cli::startup_gate_or_exit` is the only caller and owns the exit.
     Fatal(String),
 }
 
