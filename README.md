@@ -154,6 +154,7 @@ diar-native/
 │   ├── HANDOFF_DIARIZATION_SPEED.md    ← the remaining single-job speed levers, ranked
 │   ├── VRAM_AND_TIERS.md      ← what holds GPU memory, why, and what fits on 4/8/12 GB
 │   ├── INSTALL_NATIVE.md      ← the flip procedure into OpenTranscribe
+│   ├── ORT_FUSION_FP16_AARCH64.md ← why fp16 gender won't load on linux/arm64 (issue #14)
 │   ├── E2E_PIPELINE_MAP.md    ← app pipeline anchors + ranked levers L1-L10
 │   └── UPSTREAM_PRS.md        ← the speakrs contribution queue (incl. PR-7 exclusive fix)
 ├── crates/
