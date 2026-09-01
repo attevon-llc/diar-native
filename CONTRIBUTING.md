@@ -60,6 +60,37 @@ but never trust it as a green light — only a container build is authoritative.
 provider libs and fails at session load. Do not bump it, and do not let a bot bump it — the
 dependency bot is configured to ignore it.
 
+### Minimum supported Rust version
+
+**MSRV is 1.97.1, and it is also the only version this project is ever built with.**
+
+It is declared once, as `rust-version` in `[workspace.package]` in the workspace `Cargo.toml`,
+and inherited by all three crates. `rust-toolchain.toml` pins the *same* number, so rustup
+resolves to it automatically in CI, in the dev container, and on a workstation.
+
+**Be precise about what that number is and is not.** It is not a floor discovered by testing
+older compilers. Nothing here has ever been built on anything but 1.97.1, and no job verifies
+that an older toolchain works. It is the honest statement "this is the version we build and
+test", written somewhere `cargo`, clippy and downstream consumers can actually read. What
+declaring it buys is that a build outside the container on an older toolchain now fails with
+`package requires rustc 1.97.1` instead of an inscrutable type error a hundred lines deep.
+
+Establishing a genuinely *lower* MSRV would mean a full container build per candidate toolchain
+— every build needs OpenBLAS and the pinned ONNX Runtime, so a host `cargo check` proves
+nothing — plus a CI job to keep the claim true afterwards. Nobody has needed that yet. If you
+do it, add the job in the same change: an unverified compatibility promise is worse than none.
+
+**Bumping is a deliberate, two-file act.** `rust-toolchain.toml` and `[workspace.package]
+rust-version` must move together, and the builder image (`docker/Dockerfile.builder`) has to be
+rebuilt. Expect new clippy lints, and fix them rather than exempting them.
+
+### The crates are `publish = false`
+
+Also inherited from `[workspace.package]`. `diar-core` path-depends on `vendor/speakrs`, which
+is gitignored and in no published artifact, so a crates.io release would not build for anyone.
+It is load-bearing for tooling too: `cargo-deny` only excuses the unversioned `path`
+dependencies (`allow-wildcard-paths` in `deny.toml`) because the crates are not publishable.
+
 ---
 
 ## 2. `vendor/speakrs` is a required build input and is gitignored

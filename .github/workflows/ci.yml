@@ -49,13 +49,12 @@ jobs:
   # --------------------------------------------------------------------------------------
   # Formatting.
   #
-  # ADVISORY, NOT BLOCKING — and that is a deliberate, temporary baseline, not an oversight.
-  # Measured against a clean clone of c160129 on 2026-08-31: 71 reformat hunks across 16 files
-  # in crates/**, all predating this workflow. Turning the gate on today would paint every PR
-  # red for reasons unrelated to the PR.
-  #
-  # TO FIX: run `cargo fmt -p diar-core -p diar-cli -p diar-server` once, commit it alone, then
-  # DELETE the `continue-on-error` line below. Nothing else needs to change.
+  # BLOCKING as of 2026-09-01. It was advisory while 71 pre-existing reformat hunks across 16
+  # files stood between the repo and a clean run; `6cd56eb style: apply cargo fmt across the
+  # workspace crates` paid that debt, and `cargo fmt -p diar-core -p diar-cli -p diar-server
+  # --check` was verified clean against this tree before the gate was turned on. The
+  # `continue-on-error` and its TODO are gone — leaving them would have meant an advisory job
+  # that could never fire, which is worse than not having one.
   #
   # Note the `-p` scoping. A bare `cargo fmt --all` reformats vendor/speakrs too, because cargo
   # resolves path dependencies — which would silently invalidate
@@ -67,9 +66,8 @@ jobs:
   # fast.
   # --------------------------------------------------------------------------------------
   fmt:
-    name: rustfmt (advisory)
+    name: rustfmt
     runs-on: ubuntu-latest
-    continue-on-error: true # TODO: remove once the one-shot `cargo fmt` has landed.
     steps:
       - uses: actions/checkout@v7
 
@@ -86,7 +84,7 @@ jobs:
           else
             hunks=$(grep -c '^Diff in ' fmt.diff || true)
             vendor=$(grep -c 'vendor/' fmt.diff || true)
-            echo "::warning title=rustfmt::${hunks} unformatted hunk(s). Fix with: cargo fmt -p diar-core -p diar-cli -p diar-server"
+            echo "::error title=rustfmt::${hunks} unformatted hunk(s). Fix with: cargo fmt -p diar-core -p diar-cli -p diar-server"
             grep -oP '^Diff in \K[^:]+' fmt.diff | sort | uniq -c | sort -rn
             # Guard the guard: if this is ever non-zero the -p scoping has broken and the
             # vendored patch set is about to be silently rewritten.
@@ -101,9 +99,10 @@ jobs:
   # --------------------------------------------------------------------------------------
   # Clippy.
   #
-  # BLOCKING, with exactly two named exemptions. `-D warnings` is genuinely in force for every
-  # other lint; the two `-A` flags below are the pre-existing debt, named individually so the
-  # list can only shrink and so nobody has to guess what "the baseline" means.
+  # BLOCKING, with ZERO exemptions. This block used to describe two named `-A` flags carried as
+  # pre-existing debt; both findings (`neg_cmp_op_on_partial_ord`, `chunks_exact_to_as_chunks`)
+  # were fixed in 5e759c1 and the flags deleted, so `-D warnings` is now in force for every
+  # lint without qualification. Keep it that way — see the note on the step itself.
   #
   # `-D warnings` applies only to workspace members, not to path dependencies — verified
   # empirically on 2026-08-31: speakrs' own `dead_code` warning stays a warning and does not
@@ -278,3 +277,204 @@ jobs:
 
       - name: ruff check
         run: ruff check --no-cache scripts/ validation/
+
+  # --------------------------------------------------------------------------------------
+  # Supply chain, licences and dependency hygiene.
+  #
+  # BLOCKING. The policy — every allowance, every exception, and the reasoning and date behind
+  # each — lives in deny.toml, which is the file to read; this job only runs it.
+  #
+  # Three properties of this repo make it worth a gate rather than an occasional manual audit:
+  # we VENDOR AND PATCH a third-party crate (so most of the dependency tree arrived without
+  # anyone running `cargo add`), we PIN `ort` TO A RELEASE CANDIDATE that must not move, and we
+  # REDISTRIBUTE every one of these crates compiled into a public container image, which makes
+  # licence obligations real rather than theoretical.
+  #
+  # No OpenBLAS and no build: cargo-deny reads Cargo.lock and crate metadata, it never compiles
+  # anything. It DOES need vendor/speakrs, because speakrs is a path dependency and `cargo
+  # metadata` cannot resolve the workspace without it. It also needs network, to fetch the
+  # RustSec advisory database.
+  #
+  # NOT ALSO cargo-audit, deliberately. It reads the same RustSec database that
+  # `cargo deny check advisories` already reads, so running both would double the runtime and
+  # the noise to report the same findings twice. The one thing cargo-audit adds that cargo-deny
+  # does not is `cargo audit bin`, which scans a COMPILED binary for embedded crate versions —
+  # interesting for auditing a published image whose source you do not have, and redundant here,
+  # where CI builds the binary from the lockfile it just checked.
+  # --------------------------------------------------------------------------------------
+  cargo-deny:
+    name: cargo-deny (advisories, licences, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pin the Rust toolchain
+        # No channel argument: rustup reads rust-toolchain.toml. cargo-deny shells out to
+        # `cargo metadata`, so a toolchain has to exist even though nothing is compiled.
+        run: rustup show active-toolchain
+
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      # Pinned to an exact release and verified by digest, rather than installed from a
+      # floating action or built from source. A gate that silently changes version underneath
+      # you produces the same failure rust-toolchain.toml exists to prevent: CI turning red on
+      # a PR that changed nothing relevant. Bumping this is a two-line edit (version + digest).
+      - name: Install cargo-deny 0.20.2
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+          CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+        run: |
+          set -euo pipefail
+          tarball="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${tarball}"
+          echo "${CARGO_DENY_SHA256}  ${tarball}" | sha256sum -c -
+          tar xzf "$tarball" --strip-components=1
+          sudo install -m 0755 cargo-deny /usr/local/bin/cargo-deny
+          cargo-deny --version
+
+      - name: cargo deny check
+        # All four checks in one invocation so the summary line reports every category even
+        # when an earlier one fails; a per-check split would hide later findings behind the
+        # first failure.
+        run: cargo deny --all-features check
+
+  # --------------------------------------------------------------------------------------
+  # API documentation.
+  #
+  # BLOCKING, and the thing it actually protects is the comments that already exist. This code
+  # is unusually heavily commented — much of it is doc-comment quality already, and several
+  # modules encode measured results and hard-won platform findings that a reader will follow
+  # from a link. `-D warnings` here means a broken intra-doc link, an unclosed HTML tag or an
+  # unresolvable path fails the build instead of rendering as silent garbage.
+  #
+  # It has already earned its place: it caught `<label>_run<N>.json` in diar-cli's `--json`
+  # help text, where rustdoc read `<label>` and `<N>` as unclosed HTML tags.
+  #
+  # `missing_docs` is deliberately NOT enabled. Turning it on across three crates would demand
+  # a doc comment on every public item at once, and the result of that is always the same:
+  # hundreds of restatements of the item's own name, which make the real comments harder to
+  # find. The lint to add later, if any, is `rustdoc::missing_crate_level_docs`.
+  #
+  # `--no-deps` keeps this to our three crates. Documenting the full tree would spend CI
+  # minutes rendering ~250 crates nobody reads here, and would surface warnings in code this
+  # repo does not own — including vendor/speakrs, whose doc comments are upstream's to fix.
+  # --------------------------------------------------------------------------------------
+  docs:
+    name: cargo doc (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-key: docs
+
+      - name: cargo doc --no-deps --workspace
+        env:
+          # Applies to the workspace crates being documented. Deps are not documented at all
+          # under --no-deps, so this cannot fail on third-party or vendored comments.
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --workspace
+
+  # --------------------------------------------------------------------------------------
+  # Test coverage.
+  #
+  # REPORTS, DOES NOT GATE — and there is no threshold, on purpose. A number introduced with a
+  # floor attached invites the floor to be met rather than the tests to be written, and this
+  # repo's number is not comparable to a normal one anyway. Read the caveat the job prints
+  # before drawing any conclusion from it.
+  #
+  # WHY THE NUMBER UNDERSTATES REALITY. Ten integration tests in
+  # crates/diar-core/tests/provision_smoke.rs are `#[ignore]`d behind DIAR_TEST_MODELS_DIR /
+  # DIAR_TEST_SMALL_MODELS_DIR / DIAR_TEST_ZEROED_DIR. They are not skipped because they are
+  # flaky or unfinished: they need real model weights, which are terms-gated derivatives of
+  # pyannote community-1 and MUST NEVER reach CI. They cover the provisioning and verification
+  # paths — some of the largest modules in diar-core — and they run locally, against a real
+  # models directory, as documented in CONTRIBUTING.md. Every line they exercise is counted as
+  # uncovered here.
+  #
+  # MEASURED BASELINE, 2026-09-01, cargo-llvm-cov 0.9.0: 49.14% of lines, 48.75% of regions.
+  # The shape of that number is more informative than the number. `provision/verify.rs` reports
+  # 8.56% and `gender.rs` and `audio.rs` report 0.00% — those are precisely the modules whose
+  # tests are weight-gated or that need real media to exercise. `provision/files.rs` (97%),
+  # `marker.rs` (94%) and `logging.rs` (86%) show what the pure-logic modules actually look
+  # like. `main.rs` at 0% is the server entry point, which no unit test enters.
+  # So: do not read 49% as "half the code is untested".
+  #
+  # `continue-on-error` is set so a coverage-tool failure can never block a PR. This job is
+  # instrumentation, not a gate; if it is ever promoted to a gate, that line must go.
+  # --------------------------------------------------------------------------------------
+  coverage:
+    name: coverage (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          # Its own cache: instrumented artifacts are incompatible with the plain build's.
+          cache-key: coverage
+
+      - name: Install llvm-tools-preview
+        # cargo-llvm-cov drives llvm-profdata/llvm-cov out of this component. It is not in the
+        # `minimal` profile rust-toolchain.toml selects, so it has to be added explicitly.
+        run: rustup component add llvm-tools-preview
+
+      # Pinned and digest-verified for the same reason as cargo-deny above.
+      - name: Install cargo-llvm-cov 0.9.0
+        env:
+          LLVM_COV_VERSION: "v0.9.0"
+          LLVM_COV_SHA256: "bc2122fd7bd9b6d3eb371690ed085f82e5a8bf1851f4645ef521d12ed04b2616"
+        run: |
+          set -euo pipefail
+          tarball="cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/taiki-e/cargo-llvm-cov/releases/download/${LLVM_COV_VERSION}/${tarball}"
+          echo "${LLVM_COV_SHA256}  ${tarball}" | sha256sum -c -
+          tar xzf "$tarball"
+          sudo install -m 0755 cargo-llvm-cov /usr/local/bin/cargo-llvm-cov
+          cargo llvm-cov --version
+
+      - name: Measure coverage
+        # Scoped to the two crates that have tests, matching the build-and-test job. diar-cli
+        # is a bench runner with no test module; including it would add a 0%-covered binary to
+        # the total and make the headline number say less, not more.
+        #
+        # NOT `-- --ignored`. The ignored tests need terms-gated weights; see the block comment
+        # above and the constraints at the top of this file.
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --workspace \
+            --exclude diar-cli \
+            --ignore-filename-regex '^vendor/' \
+            --summary-only | tee coverage.txt
+
+      - name: Publish the number with its caveat attached
+        # The caveat travels with the number, in the same place a reader will see it. A bare
+        # percentage in a job log is how "we do not test provisioning" gets inferred from
+        # "provisioning is tested against weights CI is not allowed to have".
+        if: always()
+        run: |
+          {
+            echo "## Coverage (report only — no threshold, never gates)"
+            echo
+            echo '```'
+            cat coverage.txt 2>/dev/null || echo "coverage did not produce a summary"
+            echo '```'
+            echo
+            echo "### Read this before quoting the number"
+            echo
+            echo "**It understates real coverage, by design.** Ten integration tests in"
+            echo "\`crates/diar-core/tests/provision_smoke.rs\` are \`#[ignore]\`d behind"
+            echo "\`DIAR_TEST_MODELS_DIR\` / \`DIAR_TEST_SMALL_MODELS_DIR\` / \`DIAR_TEST_ZEROED_DIR\`"
+            echo "because they need real model weights — terms-gated derivatives of pyannote"
+            echo "community-1 that must never reach CI. They cover the provisioning and"
+            echo "verification paths, among the largest modules in \`diar-core\`, and they are run"
+            echo "locally against a real models directory (see CONTRIBUTING.md). Every line they"
+            echo "exercise is counted as uncovered above."
+            echo
+            echo "\`vendor/speakrs\` is excluded: it is upstream code with its own 94-test suite."
+          } >> "$GITHUB_STEP_SUMMARY"
