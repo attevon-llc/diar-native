@@ -125,6 +125,18 @@ back.
 Whichever ships is **inert on macOS**, where Level3 and Level0 already produce bitwise
 identical output on this graph.
 
+One more reason to prefer (b), found by the probe's own exposure check: with `GeluFusionL2`
+disabled the session still loads with **`NhwcFusedConv` ×8 and `SkipLayerNormalization` ×12
+running on fp16 tensors**. Those work today — the build does carry fp16 kernels for them, or
+the session would not open — but (a) leaves the graph standing on three contrib ops whose
+fp16 kernel coverage is an accident of build configuration, exactly the thing that broke here.
+(b) leaves it on zero:
+
+| fix | contrib ops remaining on fp16 tensors after load (linux/arm64) |
+| --- | --- |
+| (a) `GeluFusionL2` | `NhwcFusedConv` ×8, `SkipLayerNormalization` ×12 |
+| **(b) Level1** | **none** |
+
 ## The latent risk this uncovered
 
 "Diarization is fine on aarch64" is true but is **luck, not immunity**. Dumping the optimized

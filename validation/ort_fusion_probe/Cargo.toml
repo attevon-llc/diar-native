@@ -1,0 +1,20 @@
+# Standalone on purpose: NOT a workspace member (the root Cargo.toml does not list it), so
+# `cargo build` at the repo root never builds it and it cannot affect the shipped binaries.
+# It depends on nothing in this repo — only on the same PINNED `ort`, so what it observes is
+# what diar-server observes. Build it explicitly:
+#   cargo build --release --manifest-path validation/ort_fusion_probe/Cargo.toml
+[package]
+name = "ort-fusion-probe"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# Its own workspace root, so the repo workspace neither builds nor lints it.
+[workspace]
+
+[dependencies]
+# Must stay identical to the workspace pin. The whole point of this tool is to report what
+# THAT ort version's optimizer does; a different version answers a different question.
+ort = { version = "=2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17.2"

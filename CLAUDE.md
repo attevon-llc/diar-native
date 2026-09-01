@@ -79,13 +79,33 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
 - Host `cargo check` works for fast iteration (CARGO_TARGET_DIR to a /tmp dir).
 - `coreml` feature (Apple Silicon, native GPU accel via Metal/CoreML — NOT reachable through
   Docker, which has no Metal access on macOS regardless of image arch) builds only on macOS
-  (`objc2`/`objc2-core-ml` deps). Dev machine: an Apple Silicon Mac on the operator's private
-  network, already has cargo/uv/Homebrew/openblas set up; `~/repos/diar-native` there is
-  a manual `git archive | ssh ... tar -x` snapshot, not a git clone — re-sync by hand, no
-  remote configured. `.mlmodelc` model artifacts are gated (same policy as ONNX), local-only
+  (`objc2`/`objc2-core-ml` deps). Dev machine: an Apple Silicon Mac (M2 Max, macOS 15.7.9) on
+  the operator's private network, with cargo/uv/Homebrew/openblas set up. `~/repos/diar-native`
+  there is now a REAL CLONE with `origin` set to `attevon-llc/diar-native` (`git pull` works);
+  the old `git archive | tar -x` snapshot is parked at `~/repos/diar-native-OLD-snapshot` and
+  is the only copy holding the gated model artifacts — do not delete it without moving those.
+  Native builds there need `LIBRARY_PATH=/opt/homebrew/opt/openblas/lib` for BOTH the default
+  and the `coreml` build; both compile clean (RESULTS §7.40).
+  `.mlmodelc` model artifacts are gated (same policy as ONNX), local-only
   on that machine at `vendor/speakrs/fixtures/models/`, produced via
   `scripts/native_coreml/convert_coreml.py` + `export_b64_seg.py` + `export_fbank_30s.py` (all
   three needed — RESULTS §7.31 has the gaps found in the first two).
+- **ORT rewrites graphs AT LOAD and the aarch64 builds disagree about it** — read
+  `docs/ORT_FUSION_FP16_AARCH64.md` before touching precision, session options, or anything
+  fp16. Short version: ORT fuses `Erf`-GELU into `com.microsoft.Gelu` during session load, and
+  on **linux/arm64** it then has no fp16 kernel for the node it just made, so
+  `gender-wav2vec2.onnx` (fp16) FAILS TO LOAD there — silently disabling gender, HTTP 200 and
+  all. macOS arm64 is fine: same missing kernel, but its ORT declines to fuse fp16 at all.
+  11 of 15 diarization graphs get the same treatment (`com.microsoft::FusedConv`, fp32-only
+  kernel) and are safe ONLY because they are fp32 — so **any future fp16 export needs a LOAD
+  gate on aarch64, not just an accuracy gate** (an accuracy gate cannot see this; the session
+  never opens). Traps if you go near the fix: the optimizer is `GeluFusionL2` NOT `GeluFusion`,
+  an unrecognized optimizer name is SILENTLY IGNORED, and the separator is `;` not `,`.
+- Reproduce the FAILING linux/arm64 platform from the Mac — Docker Desktop runs arm64 natively.
+  Base image must be `rust:1-trixie` (this ORT needs glibc >= 2.38; bookworm's 2.36 fails at
+  link) with `RUSTFLAGS="-C link-arg=-lstdc++"`. One command for both platforms:
+  `validation/ort_fusion_probe/run_probe.sh <models-dir>` (see its README; it is NOT a
+  workspace member, so a root `cargo build` never touches it).
 
 ## Benchmarks & gates (docs/BENCHMARK_PROTOCOL.md is law)
 
@@ -139,7 +159,10 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   `supported_devices` = compiled in). **Old servers silently IGNORE `device`** (no
   `deny_unknown_fields`) — consumers must gate on `/healthz` `supported_devices`.
 - Decisions on record: TensorRT rolled back (§7.26); native fbank superseded by the
-  fbank∥GPU pipeline (§7.28); sinc resampler rejected — keep `FftFixedIn` (§7.29).
+  fbank∥GPU pipeline (§7.28); sinc resampler rejected — keep `FftFixedIn` (§7.29); fp16 gender
+  on linux/arm64 root-caused to an ORT load-time fusion, fix chosen = cap the GENDER session
+  at `GraphOptimizationLevel::Level1` (bitwise identical to unoptimized; `GeluFusionL2` is the
+  validated alternative) — §7.40, NOT YET IMPLEMENTED.
 
 ## Ground rules
 

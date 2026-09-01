@@ -150,6 +150,24 @@ Milestones:
     device**, so a GPU-less host wrote a marker declaring good models known-bad and bricked
     startup permanently; and the smoke test verified graphs production does not run, so a zeroed
     production multimask graph passed all five stages green.
+  - **fp16 gender on linux/arm64 (issue #14): ROOT-CAUSED 2026-09-01, FIX NOT YET IMPLEMENTED
+    (RESULTS §7.40, docs/ORT_FUSION_FP16_AARCH64.md)** — `gender-wav2vec2.onnx` (fp16) fails to
+    LOAD on linux/arm64, silently disabling speaker gender there while requests still answer
+    200. Not a model defect and not "aarch64 lacks a kernel amd64 has": ORT fuses `Erf`-GELU
+    into `com.microsoft.Gelu` *at session load*, and **every** aarch64 build checked lacks the
+    fp16 kernel for it — the builds differ only in whether the fusion FIRES. macOS arm64
+    declines to fuse fp16, so it never creates the node and works fine (verified natively:
+    default and `coreml` builds, `cpu`/`coreml`/`coreml_fast`, all pass end-to-end).
+    Fix chosen: cap the GENDER session at `GraphOptimizationLevel::Level1` in
+    `crates/diar-core/src/gender.rs` — bitwise identical to the unoptimized graph and leaves
+    zero contrib ops on fp16 tensors. The surgical alternative is
+    `disable_specified_optimizers=GeluFusionL2` (9.58e-04 max Δlogit, 6/6 labels); note the
+    issue's proposed `GeluFusion` does NOT work, an unknown optimizer name is silently ignored,
+    and the separator is `;` not `,`. Nothing under `vendor/` is involved and `ort` needs no
+    bump. Latent risk on record: 11 of 15 diarization graphs are rewritten to
+    `com.microsoft::FusedConv` (fp32-only kernel) and are safe purely by being fp32, so any
+    future fp16 export needs a LOAD gate on aarch64, not just an accuracy gate.
+    Reproduction harness committed: `validation/ort_fusion_probe/run_probe.sh`.
 - **M4 (T2)**: Triton repo productionization — accuracy-correct community-1 TRT engines
   (rebuild from our exports), `diar-ffi` backend or sidecar-calls-Triton, per-arch engine build
   job (sm_86 local+g5 / sm_89 g6), AWS compose profile. M11 full-pipeline concurrency measured
