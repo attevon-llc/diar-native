@@ -75,6 +75,17 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    ignore:
+      # PINNED to the 12.8.x line. The cuda13 candidate does NOT load — recorded in
+      # docs/DETAILED_SPECS.md while scoping the (since rolled back) TensorRT work. The base
+      # image is also coupled to the hand-installed cuBLAS/cuFFT/cuRAND/cuDNN set and to the
+      # ONNX Runtime 1.24.2 GPU tarball in docker/Dockerfile.server. CI does not build the
+      # CUDA image, so a bump here would go green and fail only at model load on a real GPU.
+      # Moving this is a deliberate, manually-validated act.
+      - dependency-name: nvidia/cuda
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   - package-ecosystem: github-actions
     directory: /
