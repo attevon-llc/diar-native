@@ -16,7 +16,13 @@
 #     -t <tag> --push .
 # Build context: repo root (diar-native/).
 
-FROM ubuntu:26.04 AS base
+# PINNED to 24.04, NOT bumped to 26.04. The 26.04 bump was merged (#11) and then reverted:
+# it changes diarization output on linux/arm64 — exclusive segments 8 -> 10 on the same clip
+# and models, with amd64 unaffected and every ONNX numeric stage byte-identical. Isolated to
+# the base image alone (same code on 24.04/arm64 gives 8). Most likely OpenBLAS 0.3.26 ->
+# 0.3.32, since clustering runs through BLAS rather than ONNX Runtime. Whether 10 is worse,
+# better or immaterial is UNSCORED — see issue #18. Do not re-bump without DER numbers.
+FROM ubuntu:24.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config cmake ca-certificates curl git \
@@ -62,7 +68,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-reg
     cargo build --release -p diar-server && \
     mkdir -p /opt/bin && cp -P target/release/diar-server /opt/bin/
 
-FROM ubuntu:26.04
+FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl libopenblas0 \
