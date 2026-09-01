@@ -26,7 +26,13 @@ struct Args {
     /// Explicit label (single-file runs); default = file stem
     #[arg(long)]
     label: Option<String>,
-    /// Also write <label>_run<N>.json with segments/centroids/exclusive
+    /// Also write {label}_run{N}.json with segments/centroids/exclusive
+    //
+    // Braces rather than angle brackets: rustdoc parses `<label>` and `<N>` as unclosed HTML
+    // tags (this is a doc comment, so it is both --help text and rustdoc input), and in clap
+    // help output angle brackets already mean "value placeholder" — which `--json`, a boolean
+    // flag, does not take. The braces also match the `format!("{label}_run{run}.json")` that
+    // actually names the file.
     #[arg(long, default_value_t = false)]
     json: bool,
 }

@@ -128,6 +128,41 @@ jobs:
         # a gate becomes decoration.
 
   # --------------------------------------------------------------------------------------
+  # API documentation.
+  #
+  # BLOCKING, and it is a link checker rather than a documentation mandate. `missing_docs` is
+  # deliberately NOT enabled: this codebase is already heavily commented, and turning that lint on
+  # would produce hundreds of `/// Foo.` stubs that restate the item name and teach nobody
+  # anything. What this job protects is the prose that already exists — specifically the
+  # intra-doc links, which rot SILENTLY. `[`crate::foo::BAR`]` that no longer resolves renders as
+  # plain text; nothing fails, and the reader just never notices the cross-reference is gone.
+  #
+  # `-D warnings` promotes the whole `rustdoc::` lint group, so it also catches malformed HTML in
+  # doc comments. That is not hypothetical here: `diar-cli`'s `--json` help text contained
+  # `<label>_run<N>.json`, which rustdoc parsed as two unclosed HTML tags. Doc comments on clap
+  # `#[arg]` fields are BOTH `--help` output and rustdoc input, so this job reaches text an
+  # operator reads at the terminal.
+  #
+  # `--no-deps` so speakrs' own documentation warnings are not our problem; default features
+  # only, for the same reason every other job uses them (`cuda` needs the CUDA ORT distribution,
+  # `coreml` needs macOS).
+  # --------------------------------------------------------------------------------------
+  docs:
+    name: cargo doc (rustdoc -D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-key: docs
+
+      - name: cargo doc --no-deps --workspace
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --workspace
+
+  # --------------------------------------------------------------------------------------
   # Build and test, default (CPU) features. No models, no token, no network beyond crates.io.
   # --------------------------------------------------------------------------------------
   build-and-test:
