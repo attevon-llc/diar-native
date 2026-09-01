@@ -1,0 +1,204 @@
+# diar-native — the whole deployment. This file plus a .env is all you need.
+#
+# There is no clone, no checkout, no build and no script here. Everything below runs from
+# images published on Docker Hub, and nothing in this file references a path inside the
+# source repository. Two files on disk, one command:
+#
+#   mkdir -p diar-native/audio && cd diar-native
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+#   $EDITOR .env            # set HUGGINGFACE_TOKEN — the only thing you must supply
+#   docker compose up
+#
+# That one `up` exports the models (once, ~484 MB, ~3 min) and then serves. It is safe to
+# repeat: the export is idempotent, and a second `up` finds a valid provenance marker and
+# skips straight to serving without a token and without touching the network.
+#
+#   curl -s localhost:8701/readyz     # 200 only when the models are loaded and verified
+#   cp meeting.wav ./audio/
+#   curl -s -X POST localhost:8701/diarize -H 'content-type: application/json' \
+#        -d '{"wav_path": "/audio/meeting.wav"}'
+#
+# ── Which image ───────────────────────────────────────────────────────────────────────────
+# Every published tag is SINGLE-PLATFORM; there is no multi-arch manifest and compose cannot
+# detect your architecture. The default below is the amd64 CPU image. On any other kind of
+# host, set DIAR_IMAGE and DIAR_PROVISION_IMAGE in .env — both, together, or you will pull a
+# provisioning image for the wrong architecture:
+#
+#   host                        DIAR_IMAGE                               DIAR_PROVISION_IMAGE
+#   linux/amd64, NVIDIA GPU     davidamacey/diar-native:0.3.0            ...:0.3.0-provision
+#   linux/amd64, CPU (default)  davidamacey/diar-native:0.3.0-cpu        ...:0.3.0-provision
+#   linux/arm64 · Apple Sili.   davidamacey/diar-native:0.3.0-cpu-arm64  ...:0.3.0-provision-arm64
+#
+# On an arm64 host this matters more than it looks. `:latest` and `:0.3.0` are amd64 images,
+# and Docker Desktop will not refuse them — it emulates, so the failure is "inexplicably slow"
+# rather than a clean error. Pick the `-arm64` tag deliberately.
+#
+# Pinned by TAG so `docker compose pull` can move you forward. To pin harder, swap the tag for
+# a digest (verified by fresh pull 2026-09-01; trivy 0.67.1 clean, 0 HIGH / 0 CRITICAL; all
+# run as uid 10001):
+#
+#   0.3.0 / latest    sha256:f1f9773edc34a6116cb761166ed0811665b3b82b9b475578ac21dc0dbc8a1584
+#   0.3.0-cpu         sha256:1ffd2700b7b9d4c0c3980058f7767caf629129134d42e77e0ddfcf7c5caee1a9
+#   0.3.0-cpu-arm64   sha256:41b328a58fe982ae65e1642fc9b461e766058d3b1e8b02607aff053867697268
+#
+#   image: davidamacey/diar-native@sha256:1ffd2700b7b9d4c0c3980058f7767caf629129134d42e77e0ddfcf7c5caee1a9
+#
+# ── GPU ───────────────────────────────────────────────────────────────────────────────────
+# Opt-in, never assumed, because a compose device reservation cannot be made conditional:
+# present and unsatisfiable it is a hard startup failure on every machine without an NVIDIA
+# runtime. Set DIAR_IMAGE to the CUDA tag above, then add the overlay:
+#
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#
+# The overlay sets DIAR_DEVICES=cuda,cpu, which is fatal at startup against a `-cpu` image —
+# deliberately. A diarizer that silently degrades to the CPU is a performance bug nobody
+# notices.
+#
+# Every variable is documented in .env.example; README.md section 6e is authoritative for the
+# ones the binary actually reads.
+
+name: diar-native
+
+volumes:
+  # Named volumes, NOT bind mounts, and that is a correctness decision rather than a taste
+  # one. Compose creates a missing bind-mount source as root:root 0755 (measured), so a
+  # first run in an empty directory would hand the non-root export a directory it cannot
+  # write — exit 7 on a path the operator never touched — and would leave the operator
+  # needing sudo to clean up afterwards. A named volume is seeded from the image instead:
+  # the provisioning image ships /models owned by uid 10001, so the volume comes out
+  # writable with no mkdir, no uid wiring and no chown anywhere in the flow.
+  #
+  # To use a host directory instead, create it YOURSELF first (so it is yours, not root's)
+  # and set both variables, since the export then has to run as you:
+  #   mkdir -p ./models
+  #   DIAR_MODELS_HOST_DIR=./models  DIAR_UID=$(id -u)  DIAR_GID=$(id -g)
+  diar-models:
+  diar-hf-cache:
+
+services:
+  # ── one-time model export ──────────────────────────────────────────────────────────────
+  # Runs to completion, then the sidecar starts. Not behind a profile and not a separate
+  # command you have to remember: `docker compose up` is the whole story, and the service
+  # below waits on this one via `service_completed_successfully`.
+  #
+  # Idempotent by design. With a valid marker in the volume this exits 0 in about a second,
+  # having contacted nothing and read no token, so it costs a second on every subsequent up.
+  #
+  # WHY A SEPARATE IMAGE. The serving images contain no Python at all — that is why the CPU
+  # one is 195 MB and not ~2 GB — and the export needs torch + pyannote.audio to read the
+  # gated pyannote checkpoints and convert them to ONNX. Asking the serving image to do it
+  # fails immediately and cleanly with exit 6 ("No python interpreter at `python3`"). This
+  # image is that serving image plus a pinned CPU-only export environment.
+  #
+  # It is CPU-based even when you serve on a GPU: the export is CPU-only by design
+  # (export_models.py does `pipeline.to(torch.device("cpu"))`), so a CUDA-based provisioning
+  # image would add 3 GB for nothing. Once the models exist you can `docker image rm` it.
+  provision:
+    image: ${DIAR_PROVISION_IMAGE:-davidamacey/diar-native:0.3.0-provision}
+    # Not a service that should ever come back up on its own: it is a job, and it is
+    # expected to exit 0.
+    restart: "no"
+    # Defaults to the image's own non-root uid, which owns the named volume above. Override
+    # with your own `id -u`/`id -g` ONLY when you have pointed DIAR_MODELS_HOST_DIR at a host
+    # directory — that is the case where the files have to land owned by you rather than by
+    # 10001, so that re-provisioning and deleting them never needs sudo.
+    user: "${DIAR_UID:-10001}:${DIAR_GID:-10001}"
+    environment:
+      # Not `:?` — that would abort `docker compose up` for the SERVING service too, since
+      # compose interpolates the whole file before starting anything. A missing token is
+      # better reported by the export itself, which exits 5 with an actionable message
+      # naming the gate URL you have to accept.
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+      # Spelled out rather than left to default to blank. `diar-server` itself treats an empty
+      # HF_ENDPOINT as unset, but it does NOT strip the variable from the environment of the
+      # Python export child it spawns — and huggingface_hub does
+      # `os.environ.get("HF_ENDPOINT", "https://huggingface.co")`, which returns the EMPTY
+      # STRING when the key exists but is blank. The download URL then has no scheme and the
+      # export dies with `httpx.UnsupportedProtocol: Request URL is missing an 'http://' or
+      # 'https://' protocol`, which reads like a network fault and is not one. Measured.
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: /hf
+      DIAR_MODELS_DIR: /models
+      # Provisioning defaults to CPU by design and needs no GPU: only the end-to-end smoke
+      # stage could use an accelerator, and requiring one is what used to brick GPU-less
+      # hosts. This is why the GPU overlay does not touch this service.
+      DIAR_MODE: cpu
+    volumes:
+      # READ-WRITE, unlike the serving mount below. Two services rather than one command
+      # inside the server exists precisely so that serving can never write here.
+      - ${DIAR_MODELS_HOST_DIR:-diar-models}:/models
+      # Keeps the ~32 MB gated download warm so a re-export does not re-fetch it.
+      - ${DIAR_HF_CACHE_HOST_DIR:-diar-hf-cache}:/hf
+    command: ["provision-models", "--models-dir", "/models", "--set", "${DIAR_MODEL_SET:-fast}"]
+    security_opt:
+      - no-new-privileges:true
+
+  # ── the sidecar ────────────────────────────────────────────────────────────────────────
+  diar-native:
+    # No `build:` key anywhere in this file, on purpose: that is the entire point of it.
+    # Nothing here can silently start compiling, and nothing here needs the source tree.
+    image: ${DIAR_IMAGE:-davidamacey/diar-native:0.3.0-cpu}
+    container_name: diar-native
+    restart: unless-stopped
+    depends_on:
+      provision:
+        # The one line that turns "provision, then serve" into a single command. Without it
+        # a first `up` would start the server against an empty models directory, which is
+        # not a crash — /healthz stays 200 and reports models_state — but is a confusing
+        # first impression and leaves /readyz at 503 forever.
+        condition: service_completed_successfully
+    ports:
+      - "${DIAR_PORT:-8701}:8701"
+    environment:
+      # Paths inside the container. Not operator knobs — the volumes below are.
+      DIAR_MODELS_DIR: /models
+      DIAR_BIND: 0.0.0.0:8701
+
+      # Devices to load; the FIRST entry is the default for requests that do not name one.
+      # `cpu` matches the default image above. The GPU overlay raises this to `cuda,cpu`.
+      # An unknown or not-compiled-in name is fatal at startup, which is why a `-cpu` image
+      # must never see `cuda` here.
+      DIAR_DEVICES: ${DIAR_DEVICES:-cpu}
+      # Defaulted to `cpu` rather than left blank DELIBERATELY. DIAR_DEVICES wins over this
+      # whenever it is set, so this line is normally inert — but README 6e documents that an
+      # unset OR UNRECOGNIZED DIAR_MODE falls through to `cuda`. Blanking DIAR_DEVICES in
+      # .env on a GPU-less host would then hit that fallthrough and fail startup with a
+      # device error instead of just serving on the CPU. `cpu` here makes that impossible.
+      DIAR_MODE: ${DIAR_MODE:-cpu}
+
+      DIAR_MAX_INFLIGHT: ${DIAR_MAX_INFLIGHT:-2}
+      DIAR_MAX_INFLIGHT_CPU: ${DIAR_MAX_INFLIGHT_CPU:-}
+      DIAR_MODEL_SET: ${DIAR_MODEL_SET:-}
+      DIAR_GENDER_MAX_SECONDS: ${DIAR_GENDER_MAX_SECONDS:-5}
+      DIAR_ALLOW_UNVERIFIED_MODELS: ${DIAR_ALLOW_UNVERIFIED_MODELS:-}
+
+      # Explicit rather than blank: an empty DIAR_LOG_FORMAT is "unrecognized" and logs a
+      # warning on every single start.
+      RUST_LOG: ${RUST_LOG:-info,ort::logging=warn}
+      DIAR_LOG_FORMAT: ${DIAR_LOG_FORMAT:-text}
+
+      SPEAKRS_LAZY_SESSIONS: ${SPEAKRS_LAZY_SESSIONS:-1}
+      SPEAKRS_ARENA_SHRINK: ${SPEAKRS_ARENA_SHRINK:-}
+    volumes:
+      # READ-ONLY. Serving never writes to the models directory — the startup gate only
+      # stat()s the marker — so :ro is a real guarantee, not a hopeful one.
+      - ${DIAR_MODELS_HOST_DIR:-diar-models}:/models:ro
+      # Audio to diarize. /diarize takes a PATH, not an upload, so the file has to be visible
+      # inside the container: put it here and POST {"wav_path": "/audio/<name>"}. This one IS
+      # a bind mount, because the whole point is to hand it files from your own machine —
+      # create it yourself (`mkdir -p audio`) so it belongs to you rather than to root.
+      - ${DIAR_AUDIO_HOST_DIR:-./audio}:/audio:ro
+    # Liveness, NOT readiness — /healthz is 200 whenever the process is serving, in every
+    # model state. Pointing this at /readyz would mark an unprovisioned container unhealthy
+    # and fail `up --wait`, which is exactly the silent-fallback regression the models-state
+    # split exists to prevent. Gate your own rollout on /readyz instead.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8701/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true

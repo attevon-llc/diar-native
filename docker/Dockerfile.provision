@@ -71,6 +71,16 @@ ENV DIAR_EXPORT_PYTHON=/opt/diar-provision/env/bin/python
 ENV HF_HOME=/hf
 RUN mkdir -p /hf && chmod 1777 /hf
 
+# /models exists in THIS image, owned by the built-in user, purely so a Docker NAMED VOLUME
+# mounted here comes out writable. Docker seeds a fresh named volume's ownership and mode from
+# the image directory it is mounted over; when that directory does not exist it creates it
+# root:root 0755 instead, and the non-root export then fails with exit 7 on a volume nobody
+# ever touched. That is the whole failure mode `docker-compose.prod.yml` avoids — it uses a
+# named volume so a no-clone `docker compose up` needs no mkdir, no uid wiring and no chown.
+# Measured, not assumed: without this line a fresh `-v vol:/models` is not writable by 10001.
+# A bind mount overrides the directory entirely, so this line is inert on that path.
+RUN mkdir -p /models && chown 10001:10001 /models
+
 # Back to the base image's non-root user. Note that provisioning is normally run with
 # `--user "$(id -u):$(id -g)"` OVERRIDING this, so the exported models land owned by the
 # operator rather than by uid 10001 — that is what lets a stranger provision into a plain
