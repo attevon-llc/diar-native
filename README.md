@@ -264,6 +264,29 @@ Consequences worth internalising:
   nobody here controls.
 - `opentr.sh` exports `DIAR_NATIVE_IMAGE` for local dev, which is the supported override point.
 
+### Published images
+
+Current release, verified by fresh pull. Every tag is a **single-platform** image — check the
+platform column rather than assuming `:latest` matches your host.
+
+| tag | platform | size | contents |
+|---|---|---|---|
+| `davidamacey/diar-native:0.3.0`<br>`davidamacey/diar-native:latest` | linux/amd64 | 3.04 GB | CUDA **and** CPU, selected per request (§6b) |
+| `davidamacey/diar-native:0.3.0-cpu` | linux/amd64 | 195 MB | CPU only — no CUDA libraries, no NVIDIA runtime needed |
+| `davidamacey/diar-native:0.3.0-cpu-arm64` | linux/arm64 | 223 MB | CPU only. Runs on ARM Linux and on Apple Silicon under Docker — **on CPU cores**, not the GPU or Neural Engine (Docker on macOS has no Metal access; that needs a native `coreml` build, which is not published) |
+
+Digests, for pinning:
+
+```
+0.3.0 / latest    sha256:f1f9773edc34a6116cb761166ed0811665b3b82b9b475578ac21dc0dbc8a1584
+0.3.0-cpu         sha256:1ffd2700b7b9d4c0c3980058f7767caf629129134d42e77e0ddfcf7c5caee1a9
+0.3.0-cpu-arm64   sha256:41b328a58fe982ae65e1642fc9b461e766058d3b1e8b02607aff053867697268
+```
+
+All three: **trivy 0.67.1, 0 HIGH / 0 CRITICAL**, running as **uid 10001**. Consumers that copy
+the binary out of the image (see §6a) want the **amd64 CUDA** digest — that is the build the
+`diar-native-bin` stage extracts from.
+
 ### Publishing
 
 - **Release images** publish to Docker Hub as `davidamacey/diar-native:<version>` (+ `:latest`),
