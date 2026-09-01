@@ -87,6 +87,33 @@ needs a consumer-side decision.
 
 ### Added
 
+- **A standalone one-command quickstart.** The repository could be built and deployed but not
+  *started* by anyone who had not read `docs/INSTALL_NATIVE.md` end to end: there was no
+  `.env.example`, no compose file, no start script and no quickstart, so a newcomer had to
+  hand-assemble every command. Now:
+  - **`start.sh`** — creates `.env`, prompts for the HuggingFace token (hidden input, stored
+    chmod 600, never placed on a command line where `ps` would expose it), runs `check-token`
+    and surfaces its own actionable message instead of a traceback, provisions only when the
+    marker is absent, starts the sidecar, waits on `/readyz`, and prints a paste-ready
+    `curl`. Re-running is a fast no-op that needs neither token nor network. `--cli` diarizes
+    a single file with no server at all; `--cpu`, `--gpu`, `--provision`, `--rebuild`,
+    `--stop`, `--logs` and `--help` are also there.
+  - **`docker-compose.yml`** — a `diar-native` service mounting models `:ro`, plus a
+    `provision` service behind `profiles: [provision]` mounting them read-write, so the export
+    never runs on a plain `up`. The healthcheck deliberately targets `/healthz`, not
+    `/readyz`: an unprovisioned container must not be marked unhealthy and fail `up --wait`.
+  - **`docker-compose.gpu.yml`** — GPU is opt-in via an overlay, because a device reservation
+    in the base file is a hard startup failure on every machine without one. `start.sh` adds
+    it only when `nvidia-smi` **and** the NVIDIA container runtime are both present; checking
+    only the former selects the CUDA image on hosts that cannot actually pass a GPU through.
+  - **`.env.example`** and **`QUICKSTART.md`** (60-second path, both the server and the CLI,
+    how to read the response, and the four failures operators actually hit).
+- **A `cli` build target** in both server Dockerfiles, producing a `diar-cli` image that shares
+  every layer with the serving image. `diar-cli` was previously unavailable in any published
+  artifact. It is a separate target rather than a second binary in the sidecar because it
+  statically links its own ~37 MB copy of ORT and speakrs; the serving image is unchanged at
+  195 MB (CPU).
+
 - **Model provisioning built into the `diar-server` binary**, closing the last blocker to
   self-hosted OpenTranscribe running the native diarizer. `provision-models` turns a Hugging Face
   token into a verified models directory; `verify-models` runs a five-stage smoke test against
@@ -175,6 +202,28 @@ needs a consumer-side decision.
   `CODEOWNERS`, `rustfmt.toml`, `clippy.toml`, `.editorconfig`, `.gitattributes`, a PR template,
   and this changelog. CI builds only the default (CPU) feature set, downloads no model weights,
   and requires no secrets.
+- **Three more CI gates: supply chain, rustdoc and coverage.**
+  - `cargo deny` (`deny.toml`) over advisories, licences, duplicate/banned crates and dependency
+    sources. It matters here because the repo vendors Apache-2.0 speakrs, pins `ort` to a
+    release candidate that must not move, and ships beside terms-gated weights — keeping the
+    crate graph permissive-only keeps the licence question about the weights alone. Every
+    exception is per-crate, dated and reasoned in the file; MPL-2.0 (symphonia + `option-ext`) is
+    granted crate by crate rather than added to the allow list, and the six duplicate crates each
+    name what would retire them. `unmaintained = "all"`, `yanked = "deny"`. Not also cargo-audit:
+    it reads the same RustSec database and adds nothing this does not already cover.
+  - `cargo doc --no-deps --workspace` with `RUSTDOCFLAGS=-D warnings`, so broken intra-doc links
+    fail the build instead of silently rendering as plain text. `missing_docs` is deliberately
+    left off.
+  - Coverage via `cargo-llvm-cov`, **reporting only — no threshold**. It measures ~49% of lines,
+    and the job prints why that is a floor rather than a verdict: the ten `#[ignore]`d
+    integration tests that cover `provision/verify.rs`, `gender.rs` and `audio.rs` need
+    terms-gated weights and can never run in CI.
+- **A declared MSRV of 1.88.0** (`rust-version` in `[workspace.package]`), distinct from the
+  1.97.1 build pin in `rust-toolchain.toml`. Measured, not assumed: 1.87.0 is refused by `ort`,
+  `speakrs`, `time` and the `icu_*` crates, and 1.88.0 builds and tests green. CI still builds at
+  1.97.1 only, which `CONTRIBUTING.md` says plainly.
+- `publish = false` on all three crates. They cannot go to crates.io — `diar-core` depends on the
+  vendored speakrs by path — and saying so stops `cargo publish` failing in a confusing way.
 - Apache-2.0 `LICENSE`.
 
 ### Changed
@@ -290,6 +339,21 @@ needs a consumer-side decision.
 
 ### Security
 
+- **Both serving images now run as non-root** (issue #7), as a `diar` account with a fixed,
+  documented **uid/gid of `10001:10001`** — outside the 1000-1999 range `useradd` allocates on
+  a normal host, so the ownership is never ambiguous. `no-new-privileges:true` is set on both
+  compose services. Size is unchanged (CPU image: 195 MB, identical to 0.3.0).
+  - Serving needs no write access anywhere: `/models` is `:ro`, the startup gate only `stat`s
+    the marker, and the sole writable path is `/tmp/diar-native` (mode 1777).
+  - **Provisioning is the path this would have broken.** A container user cannot write a host
+    bind-mount it does not own, so a fixed uid would have made "export the models" require a
+    `chown` — a quickstart that fails on step one. Instead the export runs as the *invoking*
+    user (`--user "$(id -u):$(id -g)"`, wired through `DIAR_UID`/`DIAR_GID`), so the files land
+    owned by the operator and serving reads them as 10001. **No `chown` in the normal flow.**
+  - `Dockerfile.provision` reclaims root for its `apt`/`pip` layers and drops back at the end.
+    It also pins `HF_HOME=/hf` (mode 1777), because under a `--user` override `~` is not
+    writable and the export child would otherwise resolve `~/.cache/huggingface`.
+  - `.env` is now gitignored. It was not, and `start.sh` writes a token into it.
 - **Never expose the Hugging Face token**: passed by environment rather than argv, scrubbed from
   the exporter's stdout *and* stderr, marked `hide_env_values` so clap cannot render it in an
   error, and never logged.
