@@ -10,8 +10,11 @@ use anyhow::Result;
 use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 
-/// The gender classifier is the only graph that needs a workaround today.
-const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
+// The gender classifier is the only graph that needs a workaround today, and the name is
+// IMPORTED rather than restated: this workaround and the `verify-models` stage-1 gate that
+// polices it are both scoped by FILENAME, so a local copy that drifted from the provisioned
+// name would disable both — silently, and only on aarch64.
+use crate::provision::files::GENDER_MODEL;
 
 /// Does this model need the aarch64 fp16 workaround?
 ///
@@ -23,7 +26,7 @@ fn needs_aarch64_fp16_workaround(path: &Path) -> bool {
         && path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n == GENDER_MODEL_FILE)
+            .is_some_and(|n| n == GENDER_MODEL)
 }
 
 /// Build a session for `path`, applying any platform workaround that model needs.
@@ -229,11 +232,55 @@ fn parse_level(s: &str) -> Option<GraphOptimizationLevel> {
 mod tests {
     use super::*;
 
+    /// The gender model's filename has exactly ONE definition, and every consumer agrees.
+    ///
+    /// This used to be three independent string literals — here, in `gender.rs`, and in
+    /// `provision/files.rs`. Renaming the export in one of them would have left the aarch64
+    /// `Level1` cap and the `verify-models` stage-1 gate pointed at a file that no longer
+    /// existed: both are scoped by `file_name()` comparison, so both would have quietly
+    /// stopped applying, on aarch64 only, with the server still returning HTTP 200 and gender
+    /// simply absent. There is no x86_64 symptom at all, which is what made it worth pinning.
+    ///
+    /// The aliases make divergence a compile error today; this test is what fails if someone
+    /// re-inlines a literal into any of the three.
+    #[test]
+    fn gender_model_filename_has_exactly_one_definition() {
+        use crate::provision::files::{self, ModelSet};
+
+        // 1. The three spellings are the same string.
+        assert_eq!(
+            GENDER_MODEL,
+            crate::gender::GENDER_MODEL_FILE,
+            "ort_compat and gender.rs disagree on the gender model filename; the aarch64 \
+             workaround is scoped by that name and no longer covers the file gender.rs loads"
+        );
+        assert_eq!(GENDER_MODEL, files::GENDER_MODEL);
+
+        // 2. The name provisioning WRITES is the name the workaround MATCHES. This is the
+        //    coupling that actually breaks; the equality above is only its proxy.
+        for set in [ModelSet::Fast, ModelSet::Small] {
+            assert!(
+                files::required_files(set, true).contains(&GENDER_MODEL),
+                "{set:?} provisions a gender model under some other name than {GENDER_MODEL}"
+            );
+        }
+
+        // 3. And the predicate fires on the path the runtime actually builds — `gender.rs`
+        //    joins its own constant onto the models dir, so that is the path under test.
+        assert_eq!(
+            needs_aarch64_fp16_workaround(
+                &Path::new("/models").join(crate::gender::GENDER_MODEL_FILE)
+            ),
+            cfg!(target_arch = "aarch64"),
+            "the workaround does not fire on the path gender.rs loads"
+        );
+    }
+
     #[test]
     fn only_the_gender_model_is_singled_out() {
         // On x86_64 nothing is singled out at all; on aarch64 only the gender model is.
         assert_eq!(
-            needs_aarch64_fp16_workaround(Path::new("/m/gender-wav2vec2.onnx")),
+            needs_aarch64_fp16_workaround(&Path::new("/m").join(GENDER_MODEL)),
             cfg!(target_arch = "aarch64")
         );
         for other in [

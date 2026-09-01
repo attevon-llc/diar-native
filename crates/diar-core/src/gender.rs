@@ -17,7 +17,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// Model filename in the models dir; absence disables the feature.
-pub const GENDER_MODEL_FILE: &str = "gender-wav2vec2.onnx";
+///
+/// An alias, not a second definition. The name is load-bearing for the aarch64 fp16 workaround
+/// and its regression gate, both of which match on it by string — see
+/// [`crate::provision::files::GENDER_MODEL`], which is where it is spelled out.
+pub const GENDER_MODEL_FILE: &str = crate::provision::files::GENDER_MODEL;
 /// `config.id2label` of prithivMLmods/Common-Voice-Gender-Detection, index-ordered.
 ///
 /// Public so provisioning can cross-check it against the `gender-wav2vec2.meta.json` written

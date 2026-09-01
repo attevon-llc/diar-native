@@ -35,6 +35,19 @@ pub const MARKER_FILE: &str = "diar-provision.json";
 /// Optional gender classifier. Absent => `GenderModel::load_optional` returns `Ok(None)` and
 /// the feature is silently off, which is why provisioning treats it as a first-class artifact
 /// rather than an afterthought.
+///
+/// THE CANONICAL SPELLING OF THIS FILENAME, and the only one. Two behaviours are scoped by
+/// this exact string rather than by anything intrinsic to the graph:
+///
+///   * [`crate::ort_compat`] caps the session at `Level1` on aarch64 — issue #14, without
+///     which the fp16 graph does not load at all there;
+///   * [`crate::provision::verify`] stage 1 asserts that graph is the ONLY one needing the cap.
+///
+/// Both compare a `file_name()` against this constant, so a copy that drifts silently
+/// un-scopes them — and only on aarch64, where nothing on this box would notice. Hence one
+/// definition: [`crate::gender::GENDER_MODEL_FILE`] aliases it, `ort_compat` reads it directly,
+/// and `ort_compat`'s `gender_model_filename_has_exactly_one_definition` test fails if a
+/// literal creeps back into any of the three.
 pub const GENDER_MODEL: &str = "gender-wav2vec2.onnx";
 /// Documentation-only sidecar for the gender model. `gender.rs` hardcodes its `ID2LABEL`, so
 /// this file is never read at runtime — verify.rs cross-checks it against that constant,
