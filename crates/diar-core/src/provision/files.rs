@@ -13,7 +13,12 @@ use std::fmt;
 /// Bump on ANY change to the export recipe (`scripts/provision/`), including a pin change
 /// that alters graph bytes. A marker whose `exporter_version` differs from this is treated
 /// as `stale` — the models still work, but they were not produced by the code now shipping.
-pub const EXPORT_RECIPE_VERSION: u32 = 1;
+/// 2: gender fp16 restored on torch 2.13 (RESULTS §7.39). The exporter now elides the two
+/// no-op `Cast` nodes torch 2.13 emits, so `gender-wav2vec2.onnx` is 189.5 MB fp16 rather
+/// than the 378.5 MB fp32 fallback. That changes output bytes, so directories provisioned
+/// by recipe 1 are correctly `stale` — they still serve (stale is non-fatal), they just
+/// carry the heavier model and its ~500 MiB extra VRAM.
+pub const EXPORT_RECIPE_VERSION: u32 = 2;
 
 /// Marker schema version. Separate from the recipe version: the schema describes the JSON
 /// shape, the recipe describes the bytes it vouches for. A reader that understands schema 1
@@ -334,7 +339,10 @@ mod tests {
         let fast = required_files(ModelSet::Fast, true);
         let small = required_files(ModelSet::Small, true);
         for f in &small {
-            assert!(fast.contains(f), "fast set is missing {f} which small requires");
+            assert!(
+                fast.contains(f),
+                "fast set is missing {f} which small requires"
+            );
         }
         assert!(small.len() < fast.len());
     }
@@ -393,7 +401,10 @@ mod tests {
     fn every_required_onnx_has_an_io_spec_except_the_documented_copy() {
         for f in onnx_files(ModelSet::Fast, true) {
             if f == "wespeaker-multimask-tail-b64.onnx" {
-                assert!(io_spec(f).is_none(), "the b64 multimask copy must NOT be spec'd");
+                assert!(
+                    io_spec(f).is_none(),
+                    "the b64 multimask copy must NOT be spec'd"
+                );
                 continue;
             }
             assert!(io_spec(f).is_some(), "no I/O spec for {f}");
@@ -425,6 +436,9 @@ mod tests {
         assert_eq!(ModelSet::parse("fast"), Some(ModelSet::Fast));
         assert_eq!(ModelSet::parse("SMALL"), Some(ModelSet::Small));
         assert_eq!(ModelSet::parse("nonsense"), None);
-        assert_eq!(ModelSet::parse(ModelSet::Fast.as_str()), Some(ModelSet::Fast));
+        assert_eq!(
+            ModelSet::parse(ModelSet::Fast.as_str()),
+            Some(ModelSet::Fast)
+        );
     }
 }
