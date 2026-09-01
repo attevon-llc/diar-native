@@ -34,8 +34,8 @@ learned to speak: it had shipped with no log subscriber at all.
 
 ### Breaking / upgrade notes
 
-Read this before upgrading. Nothing here breaks a *default* deployment, but three items need a
-consumer-side decision.
+Read this before upgrading. Nothing here breaks a *default* deployment, but each item below
+needs a consumer-side decision.
 
 - **`/healthz` body shape changed** — it was the bare string `ok`, it is now a JSON object. The
   **status code is unchanged and guaranteed**: `/healthz` returns **200 in every model state**,
@@ -63,6 +63,23 @@ consumer-side decision.
   ORT `.so`s into the shared backend image, which the `diar-native` compose service then runs
   with `command: ["diar-server"]`. Until that digest is repointed at 0.3.0, the live sidecar is
   still 0.2.0 regardless of what is published here.
+- **`DIAR_ORT_OPT_LEVEL` is now a floor, not an override.** The effective level is
+  `min(requested, per-model cap)`, so the variable can still *lower* any session's ONNX Runtime
+  optimization level but can no longer *raise* one past a cap the code applies. Exactly one cap
+  exists today: the gender model on **aarch64**, held at `Level1` by the issue #14 fix below. So
+  on linux/arm64, `DIAR_ORT_OPT_LEVEL=all|extended` no longer reaches the gender session — it
+  stays at `Level1`. That is a real behaviour change to a shipped knob, and it is the point of
+  the change rather than a side effect: the old override *silently un-did the workaround*, so an
+  operator raising the level to tune the 15 diarization graphs lost speaker gender with no error
+  anywhere, on arm64 only, with `/healthz` still 200. **On x86_64 nothing changes** — there is no
+  cap there, and the variable behaves exactly as before at every value. To explore above a cap,
+  use `validation/ort_fusion_probe`, which reports load success per configuration instead of
+  half-starting a server.
+  Two adjacent silent no-ops in the same pair of knobs are now hard errors at startup, which can
+  turn a container that previously came up (with the setting quietly ignored) into one that
+  refuses to start until the value is corrected: an unrecognized `DIAR_ORT_OPT_LEVEL` value, and
+  any `DIAR_ORT_DISABLED_OPTIMIZERS` value containing `,` — ORT's separator is `;`, and it reads
+  `A,B` as one optimizer name that matches nothing and disables nothing.
 - **Directories provisioned by export recipe 1 now report `stale`.** `EXPORT_RECIPE_VERSION` is
   `2`. Stale is **non-fatal** — they still serve, and `/healthz` stays 200 — but they fail
   `/readyz`, log one warning, and carry the 378.5 MB fp32 gender model instead of the 189.5 MB
