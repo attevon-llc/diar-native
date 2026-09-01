@@ -4,10 +4,13 @@ Both sets are produced by one export. `--set small` runs the full recipe and the
 the fast-only files, which is why the 19 shared files are **md5-identical** across the two
 sets (verified).
 
-| set | directory | files | VRAM | throughput |
-|---|---|---|---|---|
-| fast (default, >=6 GB GPUs) | `models_folded/` | 24 | 4.2 GB | 277x RT warm |
-| small (laptops) | `models_small/` | 19 | 1.6 GB | 59x RT |
+| set | directory | files | on disk | VRAM | throughput |
+|---|---|---|---|---|---|
+| fast (default, >=6 GB GPUs) | `models_folded/` | 24 | 483 MB | 4.2 GB | 277x RT warm |
+| small (laptops) | `models_small/` | 19 | 393 MB | 1.6 GB | 59x RT |
+
+Sizes are the shipped directories measured (`models_folded/` = 483,411,782 bytes). A freshly
+provisioned `fast` set is within ~57 KB of that; see the fp16 note below.
 
 ## The actual difference: 5 files, not 1
 
@@ -26,8 +29,24 @@ path, so it does not carry them. `gender-wav2vec2.meta.json` is documentation on
 provisioning cross-checks it against that compiled-in constant, so it is not merely
 decorative.
 
-`gender-wav2vec2.onnx` itself (189 MB, ~40% of the directory) is present in **both** sets.
-`--skip-gender` omits it; the sidecar then returns no speaker genders, silently.
+`gender-wav2vec2.onnx` itself (189.5 MB, ~40% of the directory) is present in **both** sets.
+`--skip-gender` omits it; the sidecar then returns no speaker genders, silently — which is why
+`/healthz` reports `models_gender`, so that a `--skip-gender` deployment answering
+`diarize(gender=true)` with 200 and no genders is a decision rather than a mystery.
+
+## The gender model is fp16, and that is load-bearing
+
+`gender-wav2vec2.onnx` must be **fp16** (213/213 FLOAT16 initializers, fp32 in and out, opset
+17). The fp32 fallback is 378.5 MB and costs roughly **+500 MiB VRAM**.
+
+fp16 conversion broke on torch 2.13 — the graph it emits carries two **no-op `Cast` nodes** that
+made `onnxconverter_common.float16` produce something ORT rejected, so provisioning silently fell
+back to fp32. The exporter now elides them; `EXPORT_RECIPE_VERSION` was bumped to **2** to mark
+the change. Directories provisioned by recipe 1 are reported `stale` — they still serve, but they
+carry the heavy classifier. `provision-models --force` brings them current.
+
+On **aarch64** the fp16 model needs an ORT optimization-level cap to load at all — see README §6f.
+That is handled automatically in `crates/diar-core/src/ort_compat.rs`; nothing to configure.
 
 The authoritative list lives in `crates/diar-core/src/provision/files.rs`
 (`SHARED_REQUIRED` / `FAST_ONLY_REQUIRED`), which is unit-tested against these counts.
