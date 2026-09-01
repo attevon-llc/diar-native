@@ -197,27 +197,62 @@ Platform matrix as measured (`diar-server verify-models --set fast`):
 | `--features coreml`, native macOS arm64 | `coreml_fast` | same |
 | linux/arm64 (Docker) | `cpu` | gender session **fails to load**; diarization graphs fine |
 
-## The escape hatches that shipped with the fix — and how to not get fooled by them
+## The escape hatches — and the asymmetry they now enforce
 
 `ort_compat.rs` exposes `DIAR_ORT_OPT_LEVEL` and `DIAR_ORT_DISABLED_OPTIMIZERS`, because the
 failure is a property of the ORT *build*, so another platform can hit the same class with a
-different operator and shouldn't have to wait for a release. Three things to know before
-reaching for them in an incident:
+different operator and shouldn't have to wait for a release. Both originally returned early,
+which meant setting either one silently un-did the aarch64 cap. That is fixed; the current
+behaviour:
 
-1. **`DIAR_ORT_DISABLED_OPTIMIZERS` can silently do nothing.** ORT ignores an unrecognized
-   optimizer name without error or warning. `GeluFusion` is exactly such a name — the pass
-   that matters is `GeluFusionL2`. You will see a session that opens and behaves as if the
-   variable were unset.
-2. **Its separator is `;`, not `,`.** `A;B` disables both. `A,B` disables *neither* — the whole
-   string is taken as a single name and matches nothing. `ort`'s own doc comment says
-   "comma-separated" and is wrong for this build.
-3. **Both variables are global and both replace the built-in workaround** rather than adding to
-   it (each returns early). So setting `DIAR_ORT_OPT_LEVEL=all` on an aarch64 host to tune the
-   diarization graphs **un-fixes the gender model** and silently disables speaker gender again.
+| variable | behaviour |
+| --- | --- |
+| `DIAR_ORT_OPT_LEVEL` | **A floor, not an override.** It can LOWER the optimization level for any model; it cannot RAISE it past a model's cap. Unrecognized values are a hard error, not a silent no-op. |
+| `DIAR_ORT_DISABLED_OPTIMIZERS` | Composes with the cap instead of replacing it. A value containing `,` is **rejected** with a message naming `;`. |
 
-In all three cases the symptom is silence, not an error. Verify a value actually took effect —
-the model either loads or it doesn't, and `validation/ort_fusion_probe` reports that per
-configuration.
+**The asymmetry is deliberate.** Lowering the level is always safe — fewer rewrites cannot
+reintroduce a fused op, and Level1 is already bitwise identical to Disable on the gender graph.
+Raising it past the cap is the exact configuration measured to fail. So
+`DIAR_ORT_OPT_LEVEL=all` on an aarch64 host, set to tune the *diarization* graphs, no longer
+silently disables speaker gender: the gender session stays at Level1 while everything else
+honours the request. The variable is global; the bug is per-model.
+
+To explore *above* the cap, use `validation/ort_fusion_probe`, which reports load success per
+configuration rather than half-starting a server.
+
+**One trap remains and cannot be fixed here:** ORT silently ignores an unrecognized optimizer
+*name*. `GeluFusion` is such a name — the pass that matters is `GeluFusionL2`. ORT exposes no
+list of registered optimizer names to validate against, so this cannot be caught the way the
+comma case is. Verify any value actually took effect; the model either loads or it does not.
+
+## The regression gate (`verify-models` stage 1)
+
+`FusedConv` and friends mean the diarization graphs are safe *by dtype*, not by immunity, so
+stage 1 now runs an explicit **aarch64 load gate**: on aarch64 it attempts each graph at ORT's
+default optimization level with no workaround and reports which graphs need the cap.
+
+```
+linux/arm64   1-parse: 16 ONNX graphs loaded on the CPU EP;
+                       aarch64 load gate: 1 graph(s) need the optimization cap
+                       (["gender-wav2vec2.onnx"]), as expected
+macOS arm64   1-parse: 16 ONNX graphs loaded on the CPU EP;
+                       aarch64 load gate: no graph needs an optimization workaround here
+x86_64        1-parse: ... aarch64 load gate NOT RUN on x86_64 — it can only be checked
+                       on aarch64 (issue #14)
+```
+
+If any graph *other than* the gender model starts needing the cap, stage 1 **fails and names
+it**, because the workaround is scoped by filename and would not cover it. Without this, a
+future fp16 export would produce a set that provisions cleanly on amd64 and refuses to start on
+arm64 hosts only.
+
+The x86_64 line is deliberately not a pass. That host cannot vouch for arm64, and saying so is
+more useful than implying it checked.
+
+> **This must stay a LOAD check.** An accuracy gate cannot catch this class — the session never
+> opens far enough to produce a number to compare. There is nothing to assert but "did it
+> load". If it is ever "improved" into a numeric check, the gate is silently gone. The code
+> comment says so at the function.
 
 ## If you are picking this up cold
 
@@ -228,3 +263,9 @@ configuration.
 4. The rule that outlives this bug: **an fp16 export must be gated on LOADING on aarch64, not
    only on accuracy.** An accuracy gate cannot see this failure, because the session never
    opens far enough to produce a number.
+
+## Upstream
+
+Drafts for the two reports this uncovered — an `onnxruntime` bug and an `ort` documentation bug
+— are in [`docs/upstream_drafts_ort_fusion.md`](upstream_drafts_ort_fusion.md). **Nothing has
+been filed**; anything outward-facing needs the operator's explicit approval.

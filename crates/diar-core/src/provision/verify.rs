@@ -234,9 +234,62 @@ fn stage1_parse_all(opts: &SmokeOptions) -> Result<StageResult> {
         let p = opts.models_dir.join(name);
         let _session = cpu_session(&p)?;
     }
+    let detail = format!("{} ONNX graphs loaded on the CPU EP", files.len());
     Ok(StageResult {
         stage: "1-parse".into(),
-        detail: format!("{} ONNX graphs loaded on the CPU EP", files.len()),
+        detail: format!("{detail}; {}", aarch64_load_gate(opts, &files)?),
+    })
+}
+
+/// Which graphs cannot be loaded on this build WITHOUT a workaround — issue #14's regression gate.
+///
+/// THIS MUST STAY A LOAD CHECK. An accuracy gate cannot catch this class of failure: ORT's
+/// optimizer synthesizes a contrib op the same build has no kernel for, so the session never
+/// opens far enough to produce a number to compare. There is nothing to assert but "did it
+/// load". If this is ever "improved" into a numeric check, the gate is silently gone.
+///
+/// The workaround in `ort_compat` is scoped by FILENAME to the gender model, which is right
+/// today. But `models_folded/` is a set we EXPORT, and §7.40 measured that 11 of the 15
+/// diarization graphs are rewritten into `com.microsoft::FusedConv`, whose only kernel here is
+/// fp32 — they are safe purely because they are currently fp32, not because they are immune.
+/// The day one of them is exported fp16, it needs the scope widened, and without this gate the
+/// symptom would be a server that starts fine on amd64 and refuses to start on arm64 only.
+fn aarch64_load_gate(opts: &SmokeOptions, files: &[&str]) -> Result<String> {
+    // Only meaningful where the fusion actually fires. §7.40: macOS arm64 has the SAME missing
+    // fp16 kernel as linux/arm64 and loads anyway, because its ORT declines to fuse fp16 — so
+    // this is a property of the ORT BUILD, and the honest thing on any other host is to say
+    // that it cannot vouch for arm64 rather than to imply a pass.
+    if !cfg!(target_arch = "aarch64") {
+        return Ok(format!(
+            "aarch64 load gate NOT RUN on {} — it can only be checked on aarch64 (issue #14)",
+            std::env::consts::ARCH
+        ));
+    }
+    let mut needs: Vec<&str> = Vec::new();
+    for name in files {
+        if !crate::ort_compat::loads_without_workaround(&opts.models_dir.join(name)) {
+            needs.push(name);
+        }
+    }
+    // The gender model is the KNOWN case and is handled. Anything else is a new graph landing
+    // on the same cliff with no workaround covering it, so name it and fail here rather than
+    // at server startup on an arm64 host.
+    let unexpected: Vec<&&str> = needs.iter().filter(|n| **n != GENDER_MODEL).collect();
+    if !unexpected.is_empty() {
+        anyhow::bail!(
+            "STAGE 1 FAILED: {unexpected:?} cannot be loaded on this aarch64 ONNX Runtime \
+             build at ORT's default optimization level, and the issue #14 workaround does not \
+             cover them (it is scoped by filename to {GENDER_MODEL}). This is what a new fp16 \
+             export looks like: ORT fuses the graph into a contrib op it then has no fp16 \
+             kernel for. Widen the scope in `crates/diar-core/src/ort_compat.rs`, or export \
+             these graphs fp32. See docs/ORT_FUSION_FP16_AARCH64.md."
+        );
+    }
+    Ok(match needs.len() {
+        0 => "aarch64 load gate: no graph needs an optimization workaround here".to_string(),
+        n => format!(
+            "aarch64 load gate: {n} graph(s) need the optimization cap ({needs:?}), as expected"
+        ),
     })
 }
 

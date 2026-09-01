@@ -2678,3 +2678,70 @@ either one *replaces* the built-in aarch64 workaround rather than adding to it. 
 speaker gender again. Comments in `ort_compat.rs` now say so at both sites.
 
 No numbers in §7.40 are retracted.
+
+### 7.41 Issue #14 follow-through — floor semantics, comma rejection, and a LOAD gate that cannot be turned into an accuracy gate
+
+Acts on the decisions taken after §7.40, plus the linux/arm64 confirmation of §7.40's two
+disputed claims against the **shipped** artifact rather than the re-export §7.40 measured.
+No §7.40 number is retracted.
+
+**Confirmation (linux/arm64, real hardware, `models_folded/gender-wav2vec2.onnx`, 966 nodes /
+189,431,659 B), full `verify-models` per run:**
+
+| session config | gender loads |
+| --- | --- |
+| `GeluFusion` | no |
+| `GeluFusionL2` | **yes**, gender=2 |
+| `GeluFusionL1;GeluFusionL2` | **yes**, gender=2 |
+| `GeluFusionL1,GeluFusionL2` | no |
+
+Both §7.40 claims hold on the shipped model: the pass is `GeluFusionL2`, and the separator is
+`;`. The 1084-node re-export was a faithful stand-in.
+
+**Change 1 — the level hatch is a FLOOR, not an override.** `DIAR_ORT_OPT_LEVEL` and
+`DIAR_ORT_DISABLED_OPTIMIZERS` both returned early, so setting either silently un-did the
+aarch64 cap: an operator raising the level to tune the *diarization* graphs lost speaker gender
+with no error anywhere. Now the effective level is `min(requested, cap)` and the two hatches
+compose with each other and with the workaround. Asymmetric on purpose — lowering can never
+reintroduce a fused op (Level1 is already bitwise identical to Disable on this graph, §7.40),
+while raising past the cap is the configuration measured to fail. `GraphOptimizationLevel`
+derives `Ord`, so this is `min` rather than a hand-rolled ranking that could drift if ORT adds
+a level.
+
+**Change 2 — a comma-separated optimizer list is refused.** ORT takes `A,B` as one name,
+matches nothing, and disables nothing *silently*. Same reasoning as the `DIAR_ORT_OPT_LEVEL`
+typo fix: a hatch that silently does nothing is worse than no hatch, because it stops the
+operator looking for the real cause. The remaining trap is unfixable here — ORT exposes no list
+of registered optimizer names, so a wrong *name* still cannot be validated.
+
+**Change 3 — `verify-models` stage 1 gained an aarch64 LOAD gate.** §7.40 established that 11
+of 15 diarization graphs are rewritten to `com.microsoft::FusedConv` (fp32-only kernel) and are
+safe purely by being fp32. The workaround is scoped by FILENAME to the gender model, so a
+future fp16 export of any other graph provisions cleanly on amd64 and refuses to start on arm64
+hosts only. Stage 1 now attempts every graph at ORT's default level with no workaround:
+
+```
+linux/arm64  aarch64 load gate: 1 graph(s) need the optimization cap
+             (["gender-wav2vec2.onnx"]), as expected          [measured, full smoke green]
+macOS arm64  aarch64 load gate: no graph needs an optimization workaround here
+x86_64       aarch64 load gate NOT RUN on x86_64 — it can only be checked on aarch64
+```
+
+Any graph other than gender needing the cap FAILS stage 1 and is named. The x86_64 line is
+deliberately not a pass: that host cannot vouch for arm64, and saying so beats implying a check
+that did not happen. The macOS line is the §7.40 result reproduced by the shipped gate — same
+missing fp16 kernel, no fusion, so nothing needs a workaround.
+
+**This gate must stay a LOAD check.** An accuracy gate cannot catch this class: the session
+never opens far enough to produce a number, so there is nothing to compare but load success.
+Stated at the function so it is not later "improved" into a numeric check, which would remove
+the gate silently.
+
+Not a timed leg — every line above is a load/no-load or output-identity fact. 81 diar-core
+tests pass on macOS arm64; the new tests pin the floor rule (`lower_of`) and the comma rule
+directly rather than through the environment, which tests cannot set safely in parallel.
+
+**Upstream:** drafts for the onnxruntime bug (an optimizer emits a node the same build has no
+kernel for) and the `ort` doc bug ("comma-separated" is wrong; it is `;`) are in
+`docs/upstream_drafts_ort_fusion.md`. NOTHING FILED — outward-facing reports need explicit
+operator approval.

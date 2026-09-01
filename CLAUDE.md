@@ -165,9 +165,12 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   on linux/arm64 root-caused to an ORT load-time fusion and FIXED (`c06fa15`,
   `crates/diar-core/src/ort_compat.rs`) — the GENDER session is capped at
   `GraphOptimizationLevel::Level1` on aarch64 only; `GeluFusionL2` is the validated
-  alternative (§7.40). Its `DIAR_ORT_OPT_LEVEL` / `DIAR_ORT_DISABLED_OPTIMIZERS` escape
-  hatches are GLOBAL and each REPLACES the built-in workaround, so
-  `DIAR_ORT_OPT_LEVEL=all` on aarch64 silently re-breaks gender.
+  alternative (§7.40). `DIAR_ORT_OPT_LEVEL` is a FLOOR (it can lower a model's
+  optimization level, never raise it past its cap, so `=all` on aarch64 no longer re-breaks
+  gender) and `DIAR_ORT_DISABLED_OPTIMIZERS` rejects `,` (ORT's separator is `;`) — but an
+  unrecognized optimizer NAME is still silently ignored by ORT and cannot be validated.
+  `verify-models` stage 1 carries an aarch64 LOAD gate that fails if any graph other than
+  gender starts needing the cap; it must stay a load check, never a numeric one.
 
 ## Ground rules
 
