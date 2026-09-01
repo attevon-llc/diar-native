@@ -2,6 +2,9 @@
 name = "diar-cli"
 version = "0.3.0"
 edition = "2021"
+# MSRV: inherited from [workspace.package] in the root Cargo.toml, which explains how the
+# 1.88.0 floor was measured and why it differs from the 1.97.1 build pin.
+rust-version.workspace = true
 license = "Apache-2.0"
 # NOT PUBLISHABLE, and this states it rather than leaving it to be discovered:
 # depends on diar-core by path, which is itself unpublishable.

@@ -48,6 +48,33 @@ That package list is the single source of truth shared with
 `cargo check` on the host works for fast iteration (point `CARGO_TARGET_DIR` at a `/tmp` dir),
 but never trust it as a green light — only a container build is authoritative.
 
+### Toolchain: one pinned version, one minimum version
+
+Two different numbers, and they answer different questions.
+
+| | Where | Value | What it means |
+|---|---|---|---|
+| **Build pin** | `rust-toolchain.toml` | `1.97.1` | The version everything is *actually built and tested with* — CI, the builder image, and your workstation, because rustup honours this file automatically. Bumping it is a deliberate act: change the version, rebuild `docker/Dockerfile.builder`, then run fmt + clippy + tests. Expect new clippy lints. |
+| **MSRV** | `[workspace.package] rust-version` in the root `Cargo.toml` | `1.88.0` | The oldest compiler the source still builds on. Declared so an old toolchain gives one clear error instead of a spray of syntax errors. |
+
+**1.88.0 is measured, not guessed** (2026-09-01):
+
+```text
+rustc 1.87.0   cargo check --workspace --all-targets  -> REFUSED
+               ort, ort-sys, speakrs, time and the icu_* family all declare rust-version 1.88
+rustc 1.88.0   cargo check --workspace --all-targets  -> clean
+               cargo build --release + cargo test --release in diar-native-builder
+               -> green, 82 diar-core + 28 diar-server
+```
+
+It is the floor `ort` and the vendored `speakrs` already impose, not one we picked. Lowering it
+would mean finding a dependency set that resolves below 1.88, which the unbumpable `ort` pin
+forbids.
+
+**CI only ever builds at 1.97.1.** There is no MSRV job, so 1.88.0 can silently rot; if you
+care, re-check it with `cargo +1.88.0 check --workspace --all-targets` (that works on the host —
+`check` does not link, so it needs no OpenBLAS). Raising the number is free.
+
 ### Feature flags
 
 | Feature   | Platform      | Notes                                                        |

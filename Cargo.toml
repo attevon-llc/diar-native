@@ -3,6 +3,25 @@ resolver = "2"
 members = ["crates/diar-core", "crates/diar-cli", "crates/diar-server"]
 exclude = ["vendor/speakrs"]
 
+[workspace.package]
+# MINIMUM supported Rust version. Distinct from `rust-toolchain.toml`, which pins the ONE
+# version everything is BUILT with (1.97.1) for reproducibility. This says how far back the
+# source will still compile, and it is a MEASURED boundary, not an aspiration:
+#
+#   rustc 1.87.0  -> refused: ort, ort-sys, speakrs, time and the icu family all declare 1.88
+#   rustc 1.88.0  -> `cargo check --workspace --all-targets` clean, and a full container
+#                    `cargo build --release` + `cargo test --release` green
+#                    (82 diar-core + 28 diar-server) -- measured 2026-09-01
+#
+# So 1.88.0 is not a floor we chose; it is the floor `ort` and the vendored `speakrs` already
+# impose, confirmed by build rather than read off a manifest. With `resolver = "2"` this key
+# does not influence dependency resolution -- it only produces a clear error instead of a
+# spray of syntax errors when someone builds on an older compiler.
+#
+# CI still builds and tests at 1.97.1 ONLY. Raising this is free; lowering it means finding a
+# dependency set that resolves below 1.88, which `ort` (pinned, unbumpable) currently forbids.
+rust-version = "1.88.0"
+
 [workspace.dependencies]
 speakrs = { path = "vendor/speakrs", default-features = false, features = ["openblas-system"] }
 anyhow = "1"
