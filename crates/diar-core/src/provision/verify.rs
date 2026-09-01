@@ -122,15 +122,34 @@ pub struct SmokeReport {
 fn cpu_session(path: &Path) -> Result<Session> {
     // Must go through ort_compat, or the smoke test verifies a session the server will never
     // build. On aarch64 this is what lets the fp16 gender graph load at all (issue #14).
-    crate::ort_compat::session_for(path)
-        .with_context(|| {
-            format!(
+    crate::ort_compat::session_for(path).map_err(|e| {
+        // "this file is broken" and "this runtime cannot execute this graph" need opposite
+        // remediations, and conflating them sends the operator to re-export a file that is
+        // perfectly good. The aarch64 fp16 GELU case (issue #14) is exactly this: ORT's own
+        // optimizer synthesizes a contrib op the same build has no kernel for, and the
+        // resulting message named an operator our export does not even contain.
+        let detail = e.to_string();
+        let unsupported = detail.contains("Failed to find kernel")
+            || detail.contains("kernel is not supported")
+            || detail.contains("NOT_IMPLEMENTED");
+        if unsupported {
+            e.context(format!(
+                "STAGE 1 FAILED: {} parsed, but THIS ONNX Runtime build cannot execute it. \
+                 The file is not corrupt and re-exporting will produce the same one — the \
+                 runtime is missing a kernel for an operator or dtype on this platform. \
+                 Try `DIAR_ORT_OPT_LEVEL=basic` (ORT's optimizer can fuse graphs into ops it \
+                 then cannot run), and see issue #14.",
+                path.display()
+            ))
+        } else {
+            e.context(format!(
                 "STAGE 1 FAILED: {} could not be loaded as an ONNX graph. The file is \
                  present but not a usable model — it is truncated, corrupt, or not ONNX. \
                  Re-run `provision-models --force`.",
                 path.display()
-            )
-        })
+            ))
+        }
+    })
 }
 
 fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>> {
@@ -855,8 +874,11 @@ fn stage4_end_to_end(opts: &SmokeOptions, audio: &[f32]) -> Result<(StageResult,
             bail!("STAGE 4 FAILED: centroid {i} contains NaN or infinity");
         }
         let l2 = c.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if !(l2 > 0.0) {
-            bail!("STAGE 4 FAILED: centroid {i} has zero magnitude");
+        // Written as an explicit finite-and-positive test rather than `!(l2 > 0.0)`: the
+        // negated form reads as a NaN guard, but line 854 already proved every component
+        // finite, so the only reachable bad values are 0.0 and (on overflow) infinity.
+        if !l2.is_finite() || l2 <= 0.0 {
+            bail!("STAGE 4 FAILED: centroid {i} has zero or non-finite magnitude ({l2})");
         }
     }
 

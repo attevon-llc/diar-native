@@ -121,15 +121,11 @@ jobs:
 
       - name: cargo clippy --all-targets -D warnings
         run: |
-          cargo clippy --release --workspace --all-targets -- \
-            -D warnings \
-            -A clippy::neg_cmp_op_on_partial_ord \
-            -A clippy::chunks_exact_to_as_chunks
-        # Pre-existing, both introduced before this workflow existed:
-        #   clippy::neg_cmp_op_on_partial_ord  crates/diar-core/src/provision/verify.rs:607
-        #   clippy::chunks_exact_to_as_chunks  crates/diar-server/src/main.rs:234
-        # Fix them and delete the matching -A line. Do not add to this list without doing the
-        # same — a growing list is how a gate becomes decoration.
+          cargo clippy --release --workspace --all-targets -- -D warnings
+        # No -A exemptions, deliberately. The two that used to be here
+        # (neg_cmp_op_on_partial_ord, chunks_exact_to_as_chunks) were fixed rather than
+        # carried. Do not add one without fixing the finding instead — a growing list is how
+        # a gate becomes decoration.
 
   # --------------------------------------------------------------------------------------
   # Build and test, default (CPU) features. No models, no token, no network beyond crates.io.
@@ -241,16 +237,18 @@ jobs:
           set -eu
           docker run --rm --entrypoint /usr/local/bin/diar-server diar-server:ci --help
 
-      - name: Starting without models hits the model gate, exit 6
+      - name: Starting without models hits the model gate, exit 8
         run: |
           set -eu
           rc=0
           docker run --rm --name diar-ci -e DIAR_DEVICES=cpu diar-server:ci > gate.log 2>&1 || rc=$?
           cat gate.log
-          # Exit 6 is the startup model gate refusing to serve. Any other code means it fell
-          # over somewhere else, which is what we want to hear about.
-          if [ "$rc" -ne 6 ]; then
-            echo "::error::Expected exit 6 (model gate), got ${rc}."
+          # Exit 8 is the startup model gate refusing to serve. It was 6 until the exit codes
+          # were split: 6 now means "no usable python export environment", which is a
+          # completely different remediation, and a supervisor branching on the code could not
+          # tell them apart. Any other code means it fell over somewhere else.
+          if [ "$rc" -ne 8 ]; then
+            echo "::error::Expected exit 8 (model gate), got ${rc}."
             exit 1
           fi
           grep -q 'provision-models' gate.log || {

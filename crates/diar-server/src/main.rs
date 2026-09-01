@@ -224,10 +224,8 @@ fn decode_samples_b64(b64: &str) -> anyhow::Result<Vec<f32>> {
         bytes.len() % 4 == 0,
         "sample byte length not a multiple of 4"
     );
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect())
+    let (quads, _rest) = bytes.as_chunks::<4>();
+    Ok(quads.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 #[derive(Serialize)]

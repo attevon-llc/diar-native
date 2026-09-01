@@ -298,7 +298,7 @@ fn deep_verification_distinguishes_a_missing_marker_from_a_clean_one() {
     // And an unmarked directory is not simply 'clean': drift is empty in BOTH cases, so the
     // marker's presence is what carries the distinction.
     assert_eq!(bare.drift.len(), marked.drift.len());
-    let _ = std::fs::remove_dir_all(&src.join("__never__"));
+    let _ = std::fs::remove_dir_all(src.join("__never__"));
 }
 
 /// C1: an execution device this build/machine cannot use is an ENVIRONMENT failure, and must
