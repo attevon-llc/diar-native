@@ -1,0 +1,238 @@
+# cargo-deny: supply-chain, licence and duplicate-dependency gates for the diar-native workspace.
+#
+# Run it the same way CI does:
+#
+#     cargo deny --all-features check
+#
+# It needs no compiler and no OpenBLAS — it reads `cargo metadata` and `Cargo.lock` — so unlike
+# the rest of this project it runs on the HOST, not in diar-native-builder. It DOES need
+# `vendor/speakrs` populated (speakrs is a path dependency, so metadata cannot resolve without
+# it): run `scripts/bootstrap_vendor_speakrs.sh` first.
+#
+# HOUSE RULES, matching the clippy job:
+#
+#   * No blanket allows. Every exception below names ONE crate, says WHY, and carries the date it
+#     was accepted and the condition that should retire it. A list that only ever grows is not a
+#     gate, it is decoration.
+#   * `ort` is PINNED to `=2.0.0-rc.12` and MUST NOT be moved to satisfy a finding here. rc.13
+#     ships a static core that mismatches the 1.24.2 provider libs and fails at SESSION LOAD
+#     (RESULTS §4.26) — a runtime failure with model weights in play, which nothing in CI can
+#     see. If an advisory ever lands on this version, the disposition is an `[[advisories.ignore]]`
+#     entry with the reasoning written out, plus an issue, NOT a version bump.
+
+# ---------------------------------------------------------------------------------------------
+# Which graph gets checked.
+# ---------------------------------------------------------------------------------------------
+[graph]
+# The three targets this project actually ships or develops on. Restricting the set is not
+# laziness: leaving it empty checks EVERY target, which drags in the windows-*, wasi, redox and
+# UEFI crates — none of which are ever compiled here, and one of which (r-efi, offered as
+# `MIT OR Apache-2.0 OR LGPL-2.1-or-later`) would put an LGPL option in a report about software
+# that cannot contain it. Add a target here the day this project is built for one.
+targets = [
+  # The CUDA and CPU images, the live sidecar, and CI.
+  "x86_64-unknown-linux-gnu",
+  # docker/Dockerfile.server-cpu's second platform — the one where the ORT fp16 GELU fusion bug
+  # lives (docs/ORT_FUSION_FP16_AARCH64.md), so it is not a hypothetical target.
+  "aarch64-unknown-linux-gnu",
+  # The `coreml` feature. Builds only on macOS (objc2), unreachable through Docker.
+  "aarch64-apple-darwin",
+]
+
+# `cuda` and `coreml` are opt-in features, and `coreml` alone pulls in the whole objc2 family.
+# Checking only the default feature set would leave the Apple dependency tree unaudited while
+# still shipping it.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------------------------
+# Security advisories (RustSec). The advisory database is fetched at run time, so this check can
+# start failing without a commit here — which is the point.
+# ---------------------------------------------------------------------------------------------
+[advisories]
+# A yanked crate in Cargo.lock means the lockfile cannot be reproduced from crates.io. Hard fail.
+yanked = "deny"
+# Report unmaintained crates anywhere in the graph, not just in the workspace. Default is
+# "workspace", which would have said nothing about the ~250 transitive crates that make up
+# essentially all of the risk here. Clean as of 2026-09-01.
+unmaintained = "all"
+
+# EMPTY, and it should stay that way. Each entry silences a real advisory, so each needs the
+# same treatment as a clippy `-A`: the finding, why it does not apply or cannot be acted on, the
+# date, and what retires it.
+ignore = []
+
+# ---------------------------------------------------------------------------------------------
+# Licences.
+#
+# This matters more here than in a typical service. The repo vendors Apache-2.0 `speakrs`
+# (unmodified licence, patched source), publishes container images, and ships alongside
+# terms-gated model weights whose own licence is NOT a cargo concern and is handled separately
+# (see the provisioning gate). Keeping the crate graph to permissive licences keeps that
+# conversation about the weights alone.
+# ---------------------------------------------------------------------------------------------
+[licenses]
+# Permissive only. Every one of these allows redistribution in a binary/container with attribution
+# and no source-disclosure obligation on OUR code.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  # webpki-roots ships Mozilla's CA bundle as DATA under a data licence, not a code licence.
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  # The ICU/`unicode-ident` family. Unicode License v3 — permissive, attribution only.
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+# 0.9 rather than the 0.8 default: a licence text that only 80% matches a known one is a licence
+# we have not actually read.
+confidence-threshold = 0.9
+
+# --- Exceptions: MPL-2.0, 15 crates, accepted 2026-09-01 -------------------------------------
+#
+# MPL-2.0 is NOT in the `allow` list above and must not be, because it is weak copyleft: it is
+# allowed here per-crate, on stated terms, rather than as a blanket property of the graph.
+#
+# The obligation is FILE-scoped. MPL-2.0 §3.2 requires that the source of the MPL-covered FILES
+# be made available to recipients; it explicitly permits combining them into a "Larger Work"
+# under other terms (§3.3), which is what linking them into a Rust binary is. We satisfy §3.2 by
+# consuming these crates UNMODIFIED at the exact versions in Cargo.lock, published on crates.io.
+#
+# WHAT WOULD CHANGE THIS: vendoring or patching any of them the way `vendor/speakrs` is patched.
+# At that point the modified files are ours and their source has to be published. Do not vendor a
+# symphonia crate without revisiting this block.
+#
+# RETIRE WHEN: `symphonia` leaves the tree. It is a direct dependency of diar-core's `audio.rs`
+# (native media ingest), so that is a product decision, not a dependency bump. `option-ext`
+# arrives transitively through `dirs`.
+[[licenses.exceptions]]
+crate = "symphonia"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-core"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-bundle-flac"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-bundle-mp3"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-codec-aac"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-codec-adpcm"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-codec-pcm"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-codec-vorbis"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-format-isomp4"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-format-mkv"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-format-ogg"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-format-riff"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-metadata"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "symphonia-utils-xiph"
+allow = ["MPL-2.0"]
+# Reached through `dirs` -> `dirs-sys` -> `option-ext`. Same MPL-2.0 reasoning, unmodified.
+[[licenses.exceptions]]
+crate = "option-ext"
+allow = ["MPL-2.0"]
+
+[licenses.private]
+# The three workspace crates are Apache-2.0 and are checked like everything else.
+ignore = false
+
+# ---------------------------------------------------------------------------------------------
+# Bans and duplicates.
+# ---------------------------------------------------------------------------------------------
+[bans]
+# DENY, not warn. Six duplicates exist today and every one is enumerated below, so the useful
+# signal — "the dependency you just added dragged in a second copy of half the tree" — is not
+# buried in noise that everyone has learned to scroll past.
+multiple-versions = "deny"
+# A `*` version requirement makes the build unreproducible from the manifest alone.
+wildcards = "deny"
+# `speakrs` is a path dependency with no version requirement, which is the one legitimate
+# "wildcard" here.
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip-tree = []
+
+# --- Accepted duplicates, all reviewed 2026-09-01 --------------------------------------------
+#
+# The version specs are semver REQUIREMENTS, not exact pins, so a patch bump of a duplicate does
+# not turn CI red for no reason — but a NEW major duplicate still does.
+#
+# Three of the six (ureq, base64, webpki-roots) are the same finding wearing three hats, and all
+# three are BUILD-DEPENDENCY-ONLY duplicates: `ureq 3.4` is reached exclusively through
+# `ort-sys`'s and `openblas-build`'s build scripts, so not one byte of it is linked into
+# `diar-server`. The duplicate costs compile time, not binary size and not runtime attack
+# surface. Fixing it means moving diar-core to `ureq` 3, which rewrites `UreqTransport::get` —
+# the ONE function in the provisioning path with no test coverage, whose load-bearing behaviour
+# (redirects disabled so a gated HF resolve's `x-repo-commit` header survives; >=400 treated as a
+# real answer rather than a transport error) can only be exercised against the gated Hugging Face
+# endpoint. Trading an untestable rewrite of the network path for a build-time dedupe is a bad
+# trade. Revisit if ureq 2 draws an advisory, or when diar-core moves to ureq 3 for its own
+# reasons — at which point all three entries go together.
+
+[[bans.skip]]
+crate = "ureq@2"
+reason = "build-dep-only duplicate; ureq 3 arrives via ort-sys/openblas-build build scripts and never links into the binary. Retire with a deliberate diar-core ureq 2->3 migration."
+
+[[bans.skip]]
+crate = "base64@0.22"
+reason = "pulled by ureq 2 only; disappears with the ureq entry above."
+
+[[bans.skip]]
+crate = "webpki-roots@0.26"
+reason = "pulled by ureq 2 only; ureq 3 uses webpki-roots 1.0. Disappears with the ureq entry above."
+
+# The remaining three are not ours to fix: each is pinned by a dependency we do not control, and
+# in two cases by the vendored speakrs' own tree.
+[[bans.skip]]
+crate = "bitflags@1"
+reason = "symphonia-core 0.5.5 (latest published 0.5.x) still requires bitflags 1.x. Retire when symphonia releases a version on bitflags 2."
+
+[[bans.skip]]
+crate = "getrandom@0.2"
+reason = "reached through ndarray-linalg 0.18 -> cauchy -> rand 0.8, inside the vendored speakrs' BLAS stack. Retire when ndarray-linalg moves to rand 0.9+."
+
+[[bans.skip]]
+crate = "syn@2"
+reason = "proc-macro crates (katexit, openssl-macros, pest_generator, ...) are mid-migration to syn 3. Compile-time only; nothing of syn is linked. Retire when the proc-macro ecosystem finishes."
+
+# ---------------------------------------------------------------------------------------------
+# Sources. Everything must come from crates.io — no git dependencies, no alternate registries.
+#
+# `vendor/speakrs` is a PATH dependency and so is not a "source" at all as far as cargo-deny is
+# concerned; its provenance is pinned separately by scripts/bootstrap_vendor_speakrs.sh, which
+# checks out a fixed commit of the public attevon-llc/speakrs fork.
+# ---------------------------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

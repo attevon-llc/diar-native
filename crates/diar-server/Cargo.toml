@@ -3,6 +3,12 @@ name = "diar-server"
 version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
+# NOT PUBLISHABLE, and this states it rather than leaving it to be discovered:
+# depends on diar-core by path, which is itself unpublishable.
+# The shipped artifacts are the `diar-server` BINARY and the container images, not a
+# crates.io release. `cargo deny check bans` also relies on this: without it, every
+# path dependency in the workspace is reported as a wildcard dependency.
+publish = false
 
 [features]
 default = []

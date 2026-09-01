@@ -4,6 +4,12 @@ version = "0.3.0"
 edition = "2021"
 description = "OpenTranscribe diarization engine: speakrs wrapper with centroids, embed_window, and deployment-tier config"
 license = "Apache-2.0"
+# NOT PUBLISHABLE, and this states it rather than leaving it to be discovered:
+# the vendored, patched speakrs is a PATH dependency and crates.io rejects those.
+# The shipped artifacts are the `diar-server` BINARY and the container images, not a
+# crates.io release. `cargo deny check bans` also relies on this: without it, every
+# path dependency in the workspace is reported as a wildcard dependency.
+publish = false
 
 [features]
 default = []

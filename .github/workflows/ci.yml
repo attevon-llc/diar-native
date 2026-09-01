@@ -259,6 +259,70 @@ jobs:
           echo "Image size: $(docker image inspect diar-server:ci --format '{{.Size}}' | numfmt --to=iec)"
 
   # --------------------------------------------------------------------------------------
+  # Supply chain: advisories, licences, duplicate/banned crates, and dependency sources.
+  #
+  # Everything this job decides lives in deny.toml, which carries the reasoning for every
+  # exception. The policy in one line: no blanket allows, same as the clippy job.
+  #
+  # Three properties of THIS project make it worth more than the usual boilerplate:
+  #   * it vendors Apache-2.0 speakrs and republishes patched builds of it;
+  #   * `ort` is pinned to a RELEASE CANDIDATE (`=2.0.0-rc.12`) and must stay there — rc.13 fails
+  #     at session load, which no CI job can observe because CI has no model weights;
+  #   * the runtime ships beside terms-gated weights, so the crate graph is the one part of the
+  #     licence story that can be settled mechanically. Keeping it permissive-only keeps the
+  #     hard conversation about the weights alone.
+  #
+  # NOT ALSO cargo-audit. It reads the same RustSec database that `cargo deny check advisories`
+  # does, and deny additionally covers yanked crates, unmaintained crates (`unmaintained = "all"`
+  # here, not just the workspace), licences, duplicates and sources. The one thing cargo-audit
+  # adds — `cargo audit bin`, auditing a compiled binary through its embedded audit data — needs
+  # a binary built with `cargo auditable`, which this project does not produce. Two tools reading
+  # one database is two things to keep current, not two gates.
+  #
+  # This job needs the vendor bootstrap (cargo has to resolve the path dependency) but NOT
+  # OpenBLAS: cargo-deny reads `cargo metadata` and `Cargo.lock` and compiles nothing. So, like
+  # the fmt job, it skips the full build setup and stays fast.
+  #
+  # The advisory database is fetched at run time, so this job can start failing WITHOUT a commit
+  # in this repo. That is the point of it, not a flake.
+  # --------------------------------------------------------------------------------------
+  supply-chain:
+    name: cargo-deny (advisories, licences, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Populate vendor/speakrs
+        run: ./scripts/bootstrap_vendor_speakrs.sh
+
+      # Pinned by version AND by checksum, and installed from the upstream release rather than
+      # through a third-party action, so what runs here is exactly what was run locally when
+      # deny.toml's exceptions were written down. A floating tool version would let this gate's
+      # verdict change with no commit in this repo and no advisory — the one kind of red that
+      # teaches people to ignore a job.
+      #
+      # TO BUMP: change both lines, re-run `cargo deny --all-features check` locally, and only
+      # then push. Checksums are published beside each asset as `<asset>.sha256`.
+      - name: Install cargo-deny
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+          CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+        run: |
+          set -euo pipefail
+          asset="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSLf -o "$asset" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${asset}"
+          echo "${CARGO_DENY_SHA256}  ${asset}" | sha256sum -c -
+          tar xzf "$asset" --strip-components=1 -C /usr/local/bin "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
+          cargo deny --version
+
+      # --all-features so the `cuda` and `coreml` dependency trees are audited too. Neither is
+      # COMPILED here (CI has no CUDA toolkit, and objc2 needs macOS), but both are shipped, and
+      # cargo-deny only needs to resolve them.
+      - name: cargo deny check
+        run: cargo deny --all-features check
+
+  # --------------------------------------------------------------------------------------
   # Python utility scripts. scripts/ and validation/ are developer tooling, not a package, so
   # the rule set in .ruff.toml is deliberately narrow. `ruff format` is NOT enforced: 14 of 20
   # files would be reformatted today, and that is a separate decision from linting.
