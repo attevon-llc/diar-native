@@ -3,6 +3,37 @@ resolver = "2"
 members = ["crates/diar-core", "crates/diar-cli", "crates/diar-server"]
 exclude = ["vendor/speakrs"]
 
+# Inherited by all three crates via `field.workspace = true`, so there is one place to change.
+[workspace.package]
+# MINIMUM SUPPORTED RUST VERSION.
+#
+# Set to the SAME version rust-toolchain.toml pins, and that is the whole policy: 1.97.1 is not
+# a floor discovered by testing older compilers, it is the only version this project has ever
+# been built with. Claiming anything lower would be a compatibility promise nothing verifies —
+# and this repo cannot verify one cheaply, because every build needs OpenBLAS and the pinned
+# ONNX Runtime, so probing a candidate MSRV is a full container build per toolchain rather than
+# a bare `cargo check`.
+#
+# Declaring it anyway, rather than leaving it unset, buys three things:
+#   * cargo now fails with "requires rustc 1.97.1" instead of a confusing type error when
+#     someone builds outside the container on an older toolchain — precisely the failure
+#     rust-toolchain.toml's own comment calls "confusing and always badly timed";
+#   * clippy gets an `msrv` to reason about, so its version-gated suggestions are correct;
+#   * cargo-deny, dependabot and any downstream consumer can read the requirement.
+#
+# BUMPING IT is the same deliberate act as bumping rust-toolchain.toml, and the two must move
+# together — see CONTRIBUTING.md. Every CI run verifies this value, because CI builds on
+# exactly it and on nothing else.
+rust-version = "1.97.1"
+# NOT PUBLISHABLE, and this is load-bearing rather than a formality.
+#
+# `diar-core` path-depends on `vendor/speakrs`, which is gitignored and absent from every
+# published artifact, so a crates.io release would not build for anybody. It is also what lets
+# deny.toml set `allow-wildcard-paths`: cargo-deny refuses to excuse an unversioned path
+# dependency in a crate that still claims to be publishable, because crates.io forbids path
+# deps outright.
+publish = false
+
 [workspace.dependencies]
 speakrs = { path = "vendor/speakrs", default-features = false, features = ["openblas-system"] }
 anyhow = "1"

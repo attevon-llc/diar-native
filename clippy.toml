@@ -1,11 +1,12 @@
 # Clippy configuration. This file sets lint *parameters* only — lint levels live on the
 # command line in .github/workflows/ci.yml, which is the single place the gate is defined.
 #
-# Deliberately NOT set here:
+# The MSRV is NOT set here on purpose, even though there now is one. `rust-version = "1.97.1"`
+# lives in `[workspace.package]` in the workspace Cargo.toml, and clippy reads it from there —
+# repeating it in this file would create a second copy that can drift from the manifest, and
+# clippy's own docs say the manifest wins. One number, one place.
 #
-#   msrv          There is no declared minimum supported Rust version. The only supported way
-#                 to build this project is the container toolchain, which tracks stable, so
-#                 declaring an MSRV would assert a compatibility promise nothing verifies.
+# Deliberately NOT set here either:
 #
 #   disallowed-*  Tempting, but every candidate either already has no hits or would fire on
 #                 code this repo does not own. An empty policy beats a decorative one.

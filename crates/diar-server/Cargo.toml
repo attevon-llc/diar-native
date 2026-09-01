@@ -2,6 +2,9 @@
 name = "diar-server"
 version = "0.3.0"
 edition = "2021"
+# Both inherited from [workspace.package]; see the workspace Cargo.toml for the reasoning.
+rust-version.workspace = true
+publish.workspace = true
 license = "Apache-2.0"
 
 [features]
