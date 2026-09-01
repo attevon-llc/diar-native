@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true # TODO: remove once the one-shot `cargo fmt` has landed.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install rustfmt
         run: rustup toolchain install stable --profile minimal -c rustfmt && rustup default stable
@@ -113,7 +113,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-build-env
         with:
@@ -134,7 +134,7 @@ jobs:
     name: build + test (CPU features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-build-env
         with:
@@ -171,7 +171,7 @@ jobs:
     name: .dockerignore guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Populate vendor/speakrs
         run: ./scripts/bootstrap_vendor_speakrs.sh
@@ -206,7 +206,7 @@ jobs:
     name: docker build (CPU image)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Populate vendor/speakrs
         run: ./scripts/bootstrap_vendor_speakrs.sh
@@ -267,7 +267,7 @@ jobs:
     name: ruff (scripts/ + validation/)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:

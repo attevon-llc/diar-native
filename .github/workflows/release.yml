@@ -52,7 +52,7 @@ jobs:
     name: Build and publish the multi-arch CPU image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Work out the tag
         id: meta
