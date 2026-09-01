@@ -152,8 +152,13 @@ needs a consumer-side decision.
   by `ort-sys`, so `ldd diar-server` shows no ONNX Runtime `NEEDED` entry at all. Verified
   empirically against the already-shipped `davidamacey/diar-native:0.2.0` with `DIAR_MODE=cpu`,
   no `--gpus` and no `/dev/nvidia*`. **Image size unchanged at 3.46 GB**; the second engine costs
-  **+620 MB host RSS and 0 MiB VRAM**, and output is **bit-identical between devices (max
-  centroid delta 0.0)**. (RESULTS §7.34)
+  **+620 MB host RSS and 0 MiB VRAM**. **Speaker centroids are bit-identical between devices**
+  (max delta 0.0, on every clip tested). Segment *boundaries* can differ by up to one
+  segmentation frame (0.016875 s) where a posterior sits on the binarisation threshold and
+  lands on opposite sides under CPU vs CUDA float arithmetic — speaker count, segment count,
+  exclusive count and gender verdicts are unaffected. An earlier draft of this entry said
+  "output is bit-identical between devices"; that held on the 26 s smoke fixture it was
+  measured on but does not generalise. (RESULTS §7.34, corrected by §7.49)
 - `DIAR_DEVICES` (comma-separated; first entry is the default device, wins over `DIAR_MODE`) and
   an optional `DIAR_MAX_INFLIGHT_CPU` sub-gate beneath the global `DIAR_MAX_INFLIGHT`.
 - **Structured logging.** `diar-server` now installs a `tracing` subscriber — it previously
