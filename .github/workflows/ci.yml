@@ -192,6 +192,99 @@ jobs:
           echo "Both binaries run."
 
   # --------------------------------------------------------------------------------------
+  # Coverage.
+  #
+  # REPORTS, NEVER GATES. There is no threshold and no day-one target, on purpose.
+  #
+  # THE NUMBER IS AN UNDERCOUNT, AND NOT BY A LITTLE. Ten integration tests in
+  # crates/diar-core/tests/provision_smoke.rs are `#[ignore]`d behind DIAR_TEST_MODELS_DIR,
+  # DIAR_TEST_SMALL_MODELS_DIR, DIAR_TEST_ZEROED_DIR and DIAR_TEST_ZEROED_MULTIMASK_DIR, because
+  # they need terms-gated derivatives of pyannote community-1 weights that MUST NOT reach CI.
+  # They are the tests that exercise provision/verify.rs, gender.rs and audio.rs — which is
+  # exactly why those files read as 0-14% here. Those paths are tested; they are tested on a
+  # workstation that holds the weights (see CONTRIBUTING.md), not on this runner.
+  #
+  # So a low number in this job means "CI cannot see it", not "nobody wrote a test". The job
+  # prints that caveat next to the number every run rather than leaving it in a comment nobody
+  # opens, because a bare percentage in a CI summary WILL eventually be read as neglect and
+  # someone will "fix" it by loosening something that matters.
+  #
+  # A threshold would make this worse, not better: it would be set against the crippled number,
+  # and the cheapest way to move it is always to test the easy code.
+  # --------------------------------------------------------------------------------------
+  coverage:
+    name: coverage (report only, no gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-key: coverage
+
+      # Not in rust-toolchain.toml's `components`: that file is honoured by the builder image and
+      # every workstation too, and this is ~25 MB of LLVM tooling that only this job needs.
+      - name: Add llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      # Pinned by tag AND sha256, same reasoning as the cargo-deny job: a coverage number that
+      # moves because the tool silently updated is not a measurement.
+      - name: Install cargo-llvm-cov
+        env:
+          LLVM_COV_VERSION: "v0.9.0"
+          LLVM_COV_SHA256: "bc2122fd7bd9b6d3eb371690ed085f82e5a8bf1851f4645ef521d12ed04b2616"
+        run: |
+          set -euo pipefail
+          asset="cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSLf -o "$asset" \
+            "https://github.com/taiki-e/cargo-llvm-cov/releases/download/${LLVM_COV_VERSION}/${asset}"
+          echo "${LLVM_COV_SHA256}  ${asset}" | sha256sum -c -
+          tar xzf "$asset" -C /usr/local/bin cargo-llvm-cov
+
+      # One instrumented test run produces the lcov file; `report` then re-renders the SAME
+      # profile data as a table, so the tests are not run twice.
+      - name: Measure coverage
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee coverage.txt
+
+      - name: Report the number, and what it cannot see
+        run: |
+          set -euo pipefail
+          # Counts the `#[ignore = "..."]` attributes, all of which gate on a DIAR_TEST_* models
+          # directory. If this ever prints 0, the gating scheme changed and this caveat is stale.
+          ignored=$(grep -rho '#\[ignore = ' crates/ --include='*.rs' | wc -l)
+          total=$(awk '/^TOTAL/ {print $(NF-3)}' coverage.txt)
+          {
+            echo "## Coverage: ${total} lines (report only — no gate)"
+            echo
+            echo "**This is a floor, not the real figure.** \`${ignored}\` integration tests are"
+            echo "\`#[ignore]\`d behind \`DIAR_TEST_*\` environment variables because they need"
+            echo "terms-gated pyannote community-1 model derivatives, which must never reach CI."
+            echo "They are the tests that cover \`provision/verify.rs\`, \`gender.rs\` and"
+            echo "\`audio.rs\` — so those files reading near zero below is CI's blind spot, not"
+            echo "missing tests. Run them locally with the weights present; see CONTRIBUTING.md."
+            echo
+            echo "\`diar-cli/src/main.rs\` and \`diar-server/src/main.rs\` also read 0%: the first"
+            echo "is the benchmark runner (exercised by docs/BENCHMARK_PROTOCOL.md, not by"
+            echo "\`cargo test\`), and the second is process wiring in a binary crate that has no"
+            echo "\`tests/\` directory at all — which is why the testable logic was moved into"
+            echo "diar-core in the first place."
+            echo
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload lcov
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------------------
   # Docker build-context guard.
   #
   # The context was 8.3 GB and contained 1.1 GB of TERMS-GATED WEIGHTS until .dockerignore
