@@ -3341,3 +3341,48 @@ a stale premise. Flagging it for reconciliation rather than silently overwriting
 (`faf30c2f47fe9d82…`), independently confirming the documented scoping that
 `DIAR_ORT_OPT_LEVEL` does not reach speakrs' diarization graphs. Gender labels **agree 2/2**
 (female / male) at the historical operating point, with confidence deltas 3.98e-05 and 1.70e-06.
+
+### 7.49 CPU/CUDA output identity is clip-dependent: centroids always agree, one segment boundary can move by one frame (corrects §7.34's generalisation)
+
+**Correcting a claim we published, not retracting a measurement.** §7.34 measured CPU-vs-CUDA
+output on the 26 s smoke fixture, found it bit-identical with max centroid delta 0.0, and that
+became "output is **bit-identical** between devices" in the CHANGELOG, in issue #1's closing
+comment, and in two OpenTranscribe issues. The measurement was correct. **The generalisation
+from one clip was not.**
+
+Measured on `diar-server:0.3.0-rel` (final release build), same container, same models, both
+requests carrying an **identical `file_id`** (see the test-artifact note below), `gender:true`:
+
+| clip | rttm identical | segments identical | max boundary delta | max centroid delta |
+|---|---|---|---|---|
+| `fixtures/test.wav` (26 s) | yes | yes | 0 | 0 |
+| karpathy `clip30.wav` (30 s) | **no** | **no** | **0.016875 s** | **0** |
+
+Both clips: `num_speakers`, segment count, exclusive-segment count and gender verdicts all
+agree exactly (1 speaker / 2 segments / 2 exclusive / male 0.999 on the real clip).
+
+**What actually differs is one boundary, by exactly one frame.** 0.016875 s is a single
+segmentation frame at this model's resolution; the two segment lists differ only in the `end` of
+segment 1 (27.53721875 vs 27.52034375). That is a posterior sitting on the binarisation
+threshold and landing on opposite sides under CPU vs CUDA float arithmetic — the ordinary
+consequence of different kernels, not a defect, and not something a tolerance should be widened
+to hide.
+
+**Centroids were bit-identical on BOTH clips.** That is the stronger and more useful invariant,
+and it is the one consumers doing embedding-only work on CPU actually depend on: speaker
+*embeddings* do not move between devices; segment *boundaries* can, by one frame.
+
+#### A test artefact worth recording, because it wasted a cycle
+
+The first comparison reported `rttm_identical=False` even on the smoke clip, which briefly looked
+like a much larger problem. Cause: the two requests were sent with different `file_id` values
+(`smoke-cuda` / `smoke-cpu`) and **the RTTM embeds the file id**, so the payloads could not
+possibly match. Re-run with one id, the smoke clip is identical on every field. Any future
+cross-device or cross-build identity check must hold `file_id` constant or diff a field that
+does not contain it.
+
+#### Disposition
+
+The CHANGELOG, issue #1 and the OpenTranscribe issues are corrected to state the invariant that
+holds — centroids identical, boundaries within one frame — rather than the one that does not.
+§7.34's numbers stand as measured on the clip it measured.
