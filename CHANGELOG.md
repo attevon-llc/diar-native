@@ -176,11 +176,36 @@ consumer-side decision.
 - `docs/ORT_FUSION_FP16_AARCH64.md`, explaining the fp16 load failure above, plus
   `validation/ort_fusion_probe/` — a standalone harness that dumps ORT's *optimized* graph so
   load-time fusions can be observed directly rather than inferred from an error message.
-- CI (rustfmt, clippy, CPU build + tests, `.dockerignore` guard, CPU image build, ruff), a
+- CI (rustfmt, clippy, CPU build + tests, `.dockerignore` guard, CPU image build, ruff — see
+  below for the three gates added after this list was written), a
   release workflow, Dependabot, `.pre-commit-config.yaml`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CODEOWNERS`, `rustfmt.toml`, `clippy.toml`, `.editorconfig`, `.gitattributes`, a PR template,
   and this changelog. CI builds only the default (CPU) feature set, downloads no model weights,
   and requires no secrets.
+- **Three more CI gates: `cargo-deny`, `cargo doc` and coverage.**
+  - **`cargo-deny`** (blocking) covers advisories, licences, banned and duplicate crates, and
+    crate sources; the policy, with reasoning and a review date beside every allowance, is in
+    `deny.toml`. Zero advisories today, with `unmaintained = "all"` and `yanked = "deny"` —
+    including against the pinned `ort` release candidate. Licences that carry an actual
+    obligation (MPL-2.0 for `symphonia`, CDLA-Permissive-2.0 for `webpki-roots`) are per-crate
+    exceptions rather than blanket allowances, so a *new* crate under one of them fails and gets
+    a decision. Duplicate versions are denied with six named, dated skips; four of the six are
+    one cause — `openblas-build` and `ort-sys` fetch with `ureq` 3 from **build scripts** while
+    `diar-core` uses `ureq` 2 at runtime, so none of that second HTTP/TLS stack (nor the
+    `openssl` it drags in) is linked into `diar-server`. Not paired with `cargo-audit`: it reads
+    the same RustSec database.
+  - **`cargo doc --no-deps --workspace` with `-D warnings`** (blocking). The documentation had
+    never been built; it immediately caught `<label>_run<N>.json` in `diar-cli --help`, which
+    rustdoc read as unclosed HTML tags. `missing_docs` is deliberately not enabled.
+  - **Coverage** via `cargo-llvm-cov`, which **reports and never gates** — no threshold. It
+    prints its own caveat, because the number understates reality by construction: the ten
+    `#[ignore]`d integration tests that cover provisioning and verification need terms-gated
+    weights that must never reach CI.
+- **A declared MSRV.** `rust-version = "1.97.1"` in `[workspace.package]`, matching the
+  `rust-toolchain.toml` pin, plus `publish = false` on all three crates (`diar-core`
+  path-depends on the gitignored `vendor/speakrs`, so a crates.io release could not build for
+  anyone). The MSRV is stated as *the only version tested*, not as a floor established by
+  testing older compilers — see CONTRIBUTING.md.
 - Apache-2.0 `LICENSE`.
 
 ### Changed
