@@ -91,8 +91,7 @@ impl LogSettings {
     /// Fresh filter per call: `EnvFilter` is not `Clone`, and building it twice (once to
     /// validate, once to install) is cheaper than the alternatives.
     pub fn env_filter(&self) -> EnvFilter {
-        EnvFilter::try_new(&self.filter)
-            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
+        EnvFilter::try_new(&self.filter).unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
     }
 }
 
@@ -258,9 +257,15 @@ mod tests {
         assert_eq!(settings.filter, DEFAULT_FILTER);
         assert!(settings.warnings.is_empty());
         let out = emit(&settings);
-        assert!(out.contains("diarize complete"), "info was dropped: {out:?}");
+        assert!(
+            out.contains("diarize complete"),
+            "info was dropped: {out:?}"
+        );
         // ...but info is a *floor*, not "everything": debug/trace stay off by default.
-        assert!(!out.contains("clustering done"), "debug leaked at default: {out:?}");
+        assert!(
+            !out.contains("clustering done"),
+            "debug leaked at default: {out:?}"
+        );
     }
 
     /// Characterization test for the thing this module exists to avoid.
@@ -299,8 +304,14 @@ mod tests {
     #[test]
     fn the_default_suppresses_ort_graph_chatter_but_keeps_its_warnings() {
         let out = emit(&settings_from(None, None));
-        assert!(!out.contains("Removing NodeArg"), "ORT INFO flood leaked: {out:?}");
-        assert!(out.contains("Memcpy nodes"), "ORT warnings must survive: {out:?}");
+        assert!(
+            !out.contains("Removing NodeArg"),
+            "ORT INFO flood leaked: {out:?}"
+        );
+        assert!(
+            out.contains("Memcpy nodes"),
+            "ORT warnings must survive: {out:?}"
+        );
         assert!(
             out.contains("CUDAExecutionProvider"),
             "ort::ep says which EP loaded and must survive: {out:?}"
@@ -331,8 +342,14 @@ mod tests {
         assert_eq!(settings.filter, "speakrs=debug");
         let out = emit(&settings);
         // The documented incantation must actually surface speakrs' pipeline events.
-        assert!(out.contains("clustering done"), "speakrs debug missing: {out:?}");
-        assert!(!out.contains("trace detail"), "trace leaked at debug: {out:?}");
+        assert!(
+            out.contains("clustering done"),
+            "speakrs debug missing: {out:?}"
+        );
+        assert!(
+            !out.contains("trace detail"),
+            "trace leaked at debug: {out:?}"
+        );
     }
 
     #[test]
@@ -420,7 +437,10 @@ mod tests {
             span.in_scope(|| tracing::info!(outcome = "ok", "request complete"));
         });
         let out = capture.text();
-        let line = out.lines().find(|l| l.contains("request complete")).unwrap();
+        let line = out
+            .lines()
+            .find(|l| l.contains("request complete"))
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["span"]["request_id"], "abc123");
         assert_eq!(v["span"]["endpoint"], "/diarize");

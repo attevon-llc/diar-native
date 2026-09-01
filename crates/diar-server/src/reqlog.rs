@@ -267,14 +267,20 @@ mod tests {
         let b = RequestLog::new("/diarize", &HeaderMap::new());
         assert_ne!(a.id(), b.id(), "ids must not repeat within a process");
         assert!(!a.id().is_empty());
-        assert!(a.id().chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        assert!(a
+            .id()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
     }
 
     #[test]
     fn control_characters_cannot_be_smuggled_into_the_log() {
         // A newline in an id would let a caller forge a whole log record.
         assert_eq!(sanitize_id("ab\ncd"), Some("abcd".to_string()));
-        assert_eq!(sanitize_id("a\r\nINFO forged"), Some("aINFOforged".to_string()));
+        assert_eq!(
+            sanitize_id("a\r\nINFO forged"),
+            Some("aINFOforged".to_string())
+        );
         assert_eq!(sanitize_id("a\u{1b}[31mred"), Some("a31mred".to_string()));
         assert!(!sanitize_id("x\ty").unwrap().contains('\t'));
     }
@@ -284,7 +290,11 @@ mod tests {
         assert_eq!(sanitize_id(""), None);
         assert_eq!(sanitize_id("!!!"), None);
         let log = RequestLog::new("/diarize", &headers("   "));
-        assert!(log.id().contains('-'), "expected a generated id, got {}", log.id());
+        assert!(
+            log.id().contains('-'),
+            "expected a generated id, got {}",
+            log.id()
+        );
     }
 
     #[test]
@@ -300,14 +310,19 @@ mod tests {
     #[test]
     fn an_error_message_cannot_republish_the_full_media_path() {
         let log = RequestLog::new("/diarize", &HeaderMap::new());
-        log.set_audio(Path::new("/audio/private/Board Meeting Q3 - CONFIDENTIAL.wav"));
+        log.set_audio(Path::new(
+            "/audio/private/Board Meeting Q3 - CONFIDENTIAL.wav",
+        ));
         let leaked = "opening /audio/private/Board Meeting Q3 - CONFIDENTIAL.wav: \
                       No such file or directory (os error 2)";
         let redacted = log.redact(leaked);
         assert!(!redacted.contains("/audio/private"), "{redacted}");
         assert!(!redacted.contains("private"), "{redacted}");
         // The basename survives: "which file failed" must still be answerable.
-        assert!(redacted.contains("Board Meeting Q3 - CONFIDENTIAL.wav"), "{redacted}");
+        assert!(
+            redacted.contains("Board Meeting Q3 - CONFIDENTIAL.wav"),
+            "{redacted}"
+        );
         assert!(redacted.starts_with("opening Board Meeting"), "{redacted}");
     }
 
@@ -322,7 +337,10 @@ mod tests {
     fn a_bare_filename_needs_no_redaction_and_is_not_mangled() {
         let log = RequestLog::new("/diarize", &HeaderMap::new());
         log.set_audio(Path::new("smoke.wav"));
-        assert_eq!(log.redact("opening smoke.wav: boom"), "opening smoke.wav: boom");
+        assert_eq!(
+            log.redact("opening smoke.wav: boom"),
+            "opening smoke.wav: boom"
+        );
     }
 
     #[test]

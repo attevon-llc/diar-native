@@ -14,9 +14,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use diar_core::provision::{
-    self, exit as exit_code, files::ModelSet, marker, preflight, verify,
-};
+use diar_core::provision::{self, exit as exit_code, files::ModelSet, marker, preflight, verify};
 use diar_core::Mode;
 
 // The smoke-clip search path lives in `diar_core::provision::CLIP_CANDIDATES`, next to the
@@ -226,7 +224,10 @@ pub fn run_provision(args: ProvisionArgs) -> i32 {
     match provision::provision(&opts) {
         Ok(outcome) => {
             if args.json {
-                println!("{}", serde_json::to_string_pretty(&outcome).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&outcome).unwrap_or_default()
+                );
             } else if let Some(msg) = &outcome.message {
                 println!("{msg}");
             } else {
@@ -241,11 +242,15 @@ pub fn run_provision(args: ProvisionArgs) -> i32 {
                 // the pinned torch and costs ~500 MiB more VRAM than fp16 (RESULTS §7.18) —
                 // a number the operator needs BEFORE the first OOM, not after.
                 if let Some(p) = &outcome.gender_precision {
-                    println!("  gender classifier: {p}{}", match p.as_str() {
-                        "fp32" => " (onnxconverter_common could not convert this graph; \
+                    println!(
+                        "  gender classifier: {p}{}",
+                        match p.as_str() {
+                            "fp32" =>
+                                " (onnxconverter_common could not convert this graph; \
                                    ~500 MiB more VRAM than fp16 — RESULTS §7.18)",
-                        _ => "",
-                    });
+                            _ => "",
+                        }
+                    );
                 }
             }
             exit_code::OK

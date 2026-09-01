@@ -120,8 +120,8 @@ pub struct SmokeReport {
 
 /// Load a session on the CPU EP. Every stage-1..3 session goes through here.
 fn cpu_session(path: &Path) -> Result<Session> {
-    let mut builder = Session::builder()
-        .map_err(|e| anyhow!("ORT session builder unavailable: {e}"))?;
+    let mut builder =
+        Session::builder().map_err(|e| anyhow!("ORT session builder unavailable: {e}"))?;
     builder
         .commit_from_file(path)
         .map_err(|e| anyhow!("{e}"))
@@ -165,9 +165,7 @@ fn seeded_mask(n: usize, seed: u64) -> Vec<f32> {
     // `seeded_mask(n, 43)` were byte-identical — which would have made half the 64 mask
     // rows in stage 3e duplicates and quietly halved the strength of the batch-invariance
     // check. Both operations here are bijections, so distinct seeds stay distinct.
-    let mut s = seed
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ 0xDEAD_BEEF_CAFE_BABE;
+    let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xDEAD_BEEF_CAFE_BABE;
     if s == 0 {
         s = 0x1234_5678_9ABC_DEF0;
     }
@@ -189,7 +187,14 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
-fn run_f32(session: &mut Session, inputs: Vec<(std::borrow::Cow<'_, str>, ort::session::SessionInputValue<'_>)>, out_name: &str) -> Result<(Vec<i64>, Vec<f32>)> {
+fn run_f32(
+    session: &mut Session,
+    inputs: Vec<(
+        std::borrow::Cow<'_, str>,
+        ort::session::SessionInputValue<'_>,
+    )>,
+    out_name: &str,
+) -> Result<(Vec<i64>, Vec<f32>)> {
     let outputs = session
         .run(inputs)
         .map_err(|e| anyhow!("inference failed: {e}"))?;
@@ -251,7 +256,10 @@ fn check_io(session: &Session, spec: &IoSpec) -> Result<()> {
                 );
             }
             let Some(got) = shape_of(outlet.dtype()) else {
-                bail!("STAGE 2 FAILED: {} {kind} `{want_name}` is not a tensor", spec.file);
+                bail!(
+                    "STAGE 2 FAILED: {} {kind} `{want_name}` is not a tensor",
+                    spec.file
+                );
             };
             if got.len() != want_shape.len() {
                 bail!(
@@ -299,10 +307,10 @@ fn stage2_io_contract(opts: &SmokeOptions) -> Result<StageResult> {
     // reorders id2label, the engine would silently report every speaker's gender inverted.
     if opts.with_gender && opts.set == ModelSet::Fast {
         let p = opts.models_dir.join(GENDER_META);
-        let raw = std::fs::read_to_string(&p)
-            .with_context(|| format!("reading {}", p.display()))?;
-        let v: serde_json::Value = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", p.display()))?;
+        let raw =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", p.display()))?;
         let map = v
             .get("id2label")
             .and_then(|m| m.as_object())
@@ -718,8 +726,7 @@ fn stage5_plda(opts: &SmokeOptions) -> Result<StageResult> {
     let p = opts
         .models_dir
         .join("wespeaker-voxceleb-resnet34.min_num_samples.txt");
-    let raw = std::fs::read_to_string(&p)
-        .with_context(|| format!("reading {}", p.display()))?;
+    let raw = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
     let n: u64 = raw
         .trim()
         .parse()
@@ -807,14 +814,11 @@ fn stage4_end_to_end(opts: &SmokeOptions, audio: &[f32]) -> Result<(StageResult,
                     }))
                 }
                 Err(_) => {
-                    return Err(e)
-                        .context("STAGE 4 FAILED: the engine could not load these models")
+                    return Err(e).context("STAGE 4 FAILED: the engine could not load these models")
                 }
             }
         }
-        Err(e) => {
-            return Err(e).context("STAGE 4 FAILED: the engine could not load these models")
-        }
+        Err(e) => return Err(e).context("STAGE 4 FAILED: the engine could not load these models"),
     };
     let out = engine
         .diarize_with(audio, "smoke", gender_present)
@@ -875,9 +879,7 @@ fn stage4_end_to_end(opts: &SmokeOptions, audio: &[f32]) -> Result<(StageResult,
     }
     let speech: f64 = sorted.iter().map(|s| s.end - s.start).sum();
     if speech > duration_s + 1e-3 {
-        bail!(
-            "STAGE 4 FAILED: {speech:.2} s of exclusive speech in a {duration_s:.2} s clip"
-        );
+        bail!("STAGE 4 FAILED: {speech:.2} s of exclusive speech in a {duration_s:.2} s clip");
     }
 
     if let Some(genders) = &out.speaker_gender {

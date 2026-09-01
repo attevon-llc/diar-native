@@ -10,9 +10,9 @@
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -84,9 +84,8 @@ pub fn decode_to_16k_mono(path: &Path) -> Result<Vec<f32>> {
 
         let spec = *decoded.spec();
         let channels = spec.channels.count().max(1);
-        let buf = sample_buf.get_or_insert_with(|| {
-            SampleBuffer::<f32>::new(decoded.capacity() as u64, spec)
-        });
+        let buf = sample_buf
+            .get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
         buf.copy_interleaved_ref(decoded);
 
         let samples = buf.samples();
@@ -124,8 +123,9 @@ pub fn resample_to_16k(input: &[f32], in_rate: u32) -> Result<Vec<f32>> {
     let mut resampler = FftFixedIn::<f32>::new(in_rate as usize, TARGET_RATE as usize, CHUNK, 2, 1)
         .map_err(|e| anyhow!("building resampler ({in_rate} Hz -> 16 kHz): {e}"))?;
 
-    let mut out =
-        Vec::with_capacity((input.len() as u64 * u64::from(TARGET_RATE) / u64::from(in_rate)) as usize + CHUNK);
+    let mut out = Vec::with_capacity(
+        (input.len() as u64 * u64::from(TARGET_RATE) / u64::from(in_rate)) as usize + CHUNK,
+    );
     for chunk in input.chunks(CHUNK) {
         let produced = if chunk.len() == CHUNK {
             resampler

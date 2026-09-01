@@ -20,7 +20,9 @@ use diar_core::provision::verify::{self, SmokeOptions};
 use diar_core::Mode;
 
 fn models_dir() -> Option<PathBuf> {
-    std::env::var("DIAR_TEST_MODELS_DIR").ok().map(PathBuf::from)
+    std::env::var("DIAR_TEST_MODELS_DIR")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn clip() -> PathBuf {
@@ -121,7 +123,10 @@ fn a_flipped_byte_is_caught_by_stage_1_and_the_file_is_named() {
         .expect_err("a corrupted graph must not pass verification");
     let msg = format!("{err:#}");
     println!("stage 1 error: {msg}");
-    assert!(msg.contains(target), "error must name the corrupted file: {msg}");
+    assert!(
+        msg.contains(target),
+        "error must name the corrupted file: {msg}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -136,9 +141,8 @@ fn a_flipped_byte_is_caught_by_stage_1_and_the_file_is_named() {
 #[test]
 #[ignore = "needs DIAR_TEST_ZEROED_DIR from validation/make_corrupt_fixture.py"]
 fn zeroed_weights_still_parse_but_are_caught_by_stage_3() {
-    let dir = PathBuf::from(
-        std::env::var("DIAR_TEST_ZEROED_DIR").expect("set DIAR_TEST_ZEROED_DIR"),
-    );
+    let dir =
+        PathBuf::from(std::env::var("DIAR_TEST_ZEROED_DIR").expect("set DIAR_TEST_ZEROED_DIR"));
     let o = opts(&dir, ModelSet::Fast);
 
     let err = verify::run(&o).expect_err("zeroed weights must not pass verification");
@@ -185,7 +189,10 @@ fn a_relabelled_gender_meta_is_caught() {
     let err = verify::run(&opts(&dir, ModelSet::Fast)).expect_err("relabelling must fail");
     let msg = format!("{err:#}");
     println!("gender meta error: {msg}");
-    assert!(msg.contains("invert") || msg.contains("relabelled"), "{msg}");
+    assert!(
+        msg.contains("invert") || msg.contains("relabelled"),
+        "{msg}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -208,7 +215,10 @@ fn a_multimask_b64_that_is_not_a_copy_of_b32_is_rejected() {
     let err = verify::run(&opts(&dir, ModelSet::Fast)).expect_err("must reject a non-copy");
     let msg = format!("{err:#}");
     println!("stage 3d error: {msg}");
-    assert!(msg.contains("byte-for-byte") || msg.contains("STAGE"), "{msg}");
+    assert!(
+        msg.contains("byte-for-byte") || msg.contains("STAGE"),
+        "{msg}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

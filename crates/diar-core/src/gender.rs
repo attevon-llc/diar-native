@@ -115,8 +115,7 @@ impl GenderModel {
 
         self.scratch.clear();
         self.scratch.reserve(n);
-        self.scratch
-            .extend(clip.iter().map(|s| (s - mean) / denom));
+        self.scratch.extend(clip.iter().map(|s| (s - mean) / denom));
 
         let input = Array2::from_shape_vec((1, n), self.scratch.clone())?;
         let tensor =
@@ -154,7 +153,10 @@ impl GenderModel {
     ) -> HashMap<String, GenderVerdict> {
         let mut by_speaker: HashMap<&str, Vec<&crate::SegmentOut>> = HashMap::new();
         for seg in segments {
-            by_speaker.entry(seg.speaker.as_str()).or_default().push(seg);
+            by_speaker
+                .entry(seg.speaker.as_str())
+                .or_default()
+                .push(seg);
         }
 
         let cap = max_samples(sample_rate);

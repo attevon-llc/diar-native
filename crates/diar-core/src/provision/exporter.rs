@@ -41,11 +41,26 @@ use super::files::ModelSet;
 /// `patches/0001-cuda-performance-patch-set.patch`, which feeds seven upstream PR-prep
 /// branches whose whole purpose is clean review of CUDA *performance* work.
 const SCRIPTS: &[(&str, &str)] = &[
-    ("provision.py", include_str!("../../../../scripts/provision/provision.py")),
-    ("export_models.py", include_str!("../../../../scripts/provision/export_models.py")),
-    ("fold_segmentation.py", include_str!("../../../../scripts/provision/fold_segmentation.py")),
-    ("export_tail_b64.py", include_str!("../../../../scripts/provision/export_tail_b64.py")),
-    ("export_gender.py", include_str!("../../../../scripts/provision/export_gender.py")),
+    (
+        "provision.py",
+        include_str!("../../../../scripts/provision/provision.py"),
+    ),
+    (
+        "export_models.py",
+        include_str!("../../../../scripts/provision/export_models.py"),
+    ),
+    (
+        "fold_segmentation.py",
+        include_str!("../../../../scripts/provision/fold_segmentation.py"),
+    ),
+    (
+        "export_tail_b64.py",
+        include_str!("../../../../scripts/provision/export_tail_b64.py"),
+    ),
+    (
+        "export_gender.py",
+        include_str!("../../../../scripts/provision/export_gender.py"),
+    ),
 ];
 
 /// What the python side reports back, via a JSON file rather than stdout scraping (stdout
@@ -200,7 +215,11 @@ pub const REQUIRED_MODULES: &[ModuleReq] = &[
 pub fn resolve_python(explicit: Option<&str>) -> String {
     explicit
         .map(str::to_string)
-        .or_else(|| std::env::var("DIAR_EXPORT_PYTHON").ok().filter(|v| !v.is_empty()))
+        .or_else(|| {
+            std::env::var("DIAR_EXPORT_PYTHON")
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
         .unwrap_or_else(|| "python3".to_string())
 }
 
@@ -342,7 +361,10 @@ pub fn run_export(req: &ExportRequest<'_>) -> Result<ExportReport, ExportError> 
             .unwrap_or(0)
     ));
     materialize(&work).map_err(|e| {
-        ExportError::Failed(format!("could not stage the export scripts in {}: {e}", work.display()))
+        ExportError::Failed(format!(
+            "could not stage the export scripts in {}: {e}",
+            work.display()
+        ))
     })?;
     let report_path = work.join("report.json");
 
@@ -514,7 +536,10 @@ mod tests {
         // A stale token in the subprocess environment must not leak either.
         let out = scrub("token=hf_someOtherTokenAAAAAAAA end", None);
         assert!(!out.contains("hf_someOtherTokenAAAAAAAA"), "{out}");
-        assert!(out.contains("end"), "must not eat the rest of the line: {out}");
+        assert!(
+            out.contains("end"),
+            "must not eat the rest of the line: {out}"
+        );
     }
 
     #[test]
@@ -675,7 +700,10 @@ mod tests {
             .copied()
             .collect();
         assert!(gender_only.contains(&"transformers"), "{gender_only:?}");
-        assert!(gender_only.contains(&"onnxconverter_common"), "{gender_only:?}");
+        assert!(
+            gender_only.contains(&"onnxconverter_common"),
+            "{gender_only:?}"
+        );
     }
 
     /// F11: `assert` is not a gate. `PYTHONOPTIMIZE=1` in the environment or a base image
@@ -756,7 +784,10 @@ mod tests {
 
     #[test]
     fn python_resolution_prefers_the_explicit_flag() {
-        assert_eq!(resolve_python(Some("/usr/bin/python3.11")), "/usr/bin/python3.11");
+        assert_eq!(
+            resolve_python(Some("/usr/bin/python3.11")),
+            "/usr/bin/python3.11"
+        );
         std::env::remove_var("DIAR_EXPORT_PYTHON");
         assert_eq!(resolve_python(None), "python3");
         std::env::set_var("DIAR_EXPORT_PYTHON", "/opt/env/bin/python");

@@ -103,8 +103,8 @@ pub const ALLOW_UNVERIFIED_ENV: &str = "DIAR_ALLOW_UNVERIFIED_MODELS";
 
 pub fn sha256_file(path: &Path) -> Result<String, String> {
     use std::io::Read;
-    let mut f = std::fs::File::open(path)
-        .map_err(|e| format!("opening {}: {e}", path.display()))?;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("opening {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -128,7 +128,10 @@ pub fn now_rfc3339() -> String {
 /// Outcome of the startup gate.
 pub enum StartupGate {
     /// Serve. `status` carries the state to report on `/healthz` and `/readyz`.
-    Proceed { status: ModelsStatus, warning: Option<String> },
+    Proceed {
+        status: ModelsStatus,
+        warning: Option<String>,
+    },
     /// Do not serve. Exit with `exit::NO_EXPORTER_ENV` after printing this.
     Fatal(String),
 }
@@ -240,7 +243,9 @@ pub fn startup_gate_with(
             );
             if allow_unverified {
                 StartupGate::Proceed {
-                    warning: Some(format!("{msg}\n\n({ALLOW_UNVERIFIED_ENV} is set — starting anyway.)")),
+                    warning: Some(format!(
+                        "{msg}\n\n({ALLOW_UNVERIFIED_ENV} is set — starting anyway.)"
+                    )),
                     status,
                 }
             } else {
@@ -359,8 +364,8 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
     // 4b. Is there a clip to verify WITH? Late enough that the operator has already been told
     //     about a bad token or a missing torch, early enough that nobody downloads 470 MB
     //     only to be told at the end that the last step cannot run.
-    let clip = resolve_clip(opts.clip.as_deref())
-        .map_err(|e| ProvisionFailure::new(exit::USAGE, e))?;
+    let clip =
+        resolve_clip(opts.clip.as_deref()).map_err(|e| ProvisionFailure::new(exit::USAGE, e))?;
 
     // 5. Export.
     let report = exporter::run_export(&exporter::ExportRequest {
@@ -372,9 +377,7 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
         hf_cache: opts.hf_cache.as_deref(),
     })
     .map_err(|e| match e {
-        exporter::ExportError::NoExporterEnv(m) => {
-            ProvisionFailure::new(exit::NO_EXPORTER_ENV, m)
-        }
+        exporter::ExportError::NoExporterEnv(m) => ProvisionFailure::new(exit::NO_EXPORTER_ENV, m),
         exporter::ExportError::Failed(m) => ProvisionFailure::new(exit::EXPORT_FAILED, m),
     })?;
 
@@ -663,7 +666,10 @@ mod tests {
         match startup_gate_with(&d, ModelSet::Fast, ModelSet::Fast, false) {
             StartupGate::Proceed { status, warning } => {
                 assert_eq!(status.state, ModelsState::Unverified);
-                assert!(warning.is_some(), "operator should be told, but not blocked");
+                assert!(
+                    warning.is_some(),
+                    "operator should be told, but not blocked"
+                );
             }
             StartupGate::Fatal(m) => panic!("must not be fatal: {m}"),
         }
@@ -820,7 +826,10 @@ mod tests {
         let d = scratch();
         write_all_required(&d, ModelSet::Small);
         marker_recording(&d, ModelSet::Small, "fail");
-        assert_eq!(marker::evaluate(&d, ModelSet::Small).state, ModelsState::Failed);
+        assert_eq!(
+            marker::evaluate(&d, ModelSet::Small).state,
+            ModelsState::Failed
+        );
 
         let deep = verify::DeepReport {
             smoke: verify::SmokeReport {
@@ -841,7 +850,10 @@ mod tests {
             Attestation::Updated(detail) => assert!(detail.contains("fail -> pass"), "{detail}"),
             other => panic!("expected an update, got {other:?}"),
         }
-        assert_eq!(marker::evaluate(&d, ModelSet::Small).state, ModelsState::Verified);
+        assert_eq!(
+            marker::evaluate(&d, ModelSet::Small).state,
+            ModelsState::Verified
+        );
 
         // Provenance is NOT invented or overwritten, and repeat runs do not grow the field.
         let m = Marker::read(&d).unwrap().unwrap();
@@ -871,7 +883,10 @@ mod tests {
         };
         assert!(!deep.fully_verified(), "no marker is not full verification");
         assert_eq!(attest(&d, &deep), Attestation::NoMarker);
-        assert!(!Marker::path_in(&d).exists(), "must not fabricate provenance");
+        assert!(
+            !Marker::path_in(&d).exists(),
+            "must not fabricate provenance"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -907,7 +922,10 @@ mod tests {
         ];
         let mut seen = std::collections::BTreeSet::new();
         for c in codes {
-            assert!(seen.insert(c), "exit code {c} is used for two different things");
+            assert!(
+                seen.insert(c),
+                "exit code {c} is used for two different things"
+            );
         }
     }
 

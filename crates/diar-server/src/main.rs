@@ -210,10 +210,7 @@ fn decode_samples_b64(b64: &str) -> anyhow::Result<Vec<f32>> {
     let clean: Vec<u8> = b64.bytes().filter(|b| !b" \n\r\t=".contains(b)).collect();
     let mut bytes = Vec::with_capacity(clean.len() * 3 / 4);
     for chunk in clean.chunks(4) {
-        let vals: Vec<u8> = chunk
-            .iter()
-            .map(|&c| rev[c as usize])
-            .collect();
+        let vals: Vec<u8> = chunk.iter().map(|&c| rev[c as usize]).collect();
         anyhow::ensure!(vals.iter().all(|&v| v != 255), "invalid base64");
         let mut acc: u32 = 0;
         for &v in &vals {
@@ -223,7 +220,10 @@ fn decode_samples_b64(b64: &str) -> anyhow::Result<Vec<f32>> {
         let out = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
         bytes.extend_from_slice(&out[..vals.len().saturating_sub(1)]);
     }
-    anyhow::ensure!(bytes.len() % 4 == 0, "sample byte length not a multiple of 4");
+    anyhow::ensure!(
+        bytes.len() % 4 == 0,
+        "sample byte length not a multiple of 4"
+    );
     Ok(bytes
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -313,7 +313,14 @@ async fn diarize(
     // Resolve BEFORE admission: a bad device name must cost a 400, not an admission permit.
     let device = match state.engines.resolve(req.device.as_deref()) {
         Ok(device) => device,
-        Err(e) => return Err(fail(log, "bad_device", StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => {
+            return Err(fail(
+                log,
+                "bad_device",
+                StatusCode::BAD_REQUEST,
+                e.to_string(),
+            ))
+        }
     };
     log.set_device(device.as_str());
 
@@ -394,7 +401,14 @@ async fn embed_window(
 
     let device = match state.engines.resolve(req.device.as_deref()) {
         Ok(device) => device,
-        Err(e) => return Err(fail(log, "bad_device", StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => {
+            return Err(fail(
+                log,
+                "bad_device",
+                StatusCode::BAD_REQUEST,
+                e.to_string(),
+            ))
+        }
     };
     log.set_device(device.as_str());
 
@@ -525,7 +539,10 @@ fn health_body(state: &AppState) -> HealthResponse {
         models_exporter_version: m.exporter_version,
         models_pipeline_revision: m.pipeline_revision.clone(),
         models_smoke_at: m.smoke_at.clone(),
-        models_gender: m.dir.join(diar_core::provision::files::GENDER_MODEL).exists(),
+        models_gender: m
+            .dir
+            .join(diar_core::provision::files::GENDER_MODEL)
+            .exists(),
         models_reason: m.reason.clone(),
     }
 }
@@ -571,9 +588,7 @@ fn main() -> anyhow::Result<()> {
         // The provisioning subcommands never construct an engine: no ORT, no VRAM, no
         // device. They must work on a box with no GPU and an empty models directory —
         // which is precisely the situation they exist to fix.
-        Some(cli::Command::ProvisionModels(args)) => {
-            std::process::exit(cli::run_provision(args))
-        }
+        Some(cli::Command::ProvisionModels(args)) => std::process::exit(cli::run_provision(args)),
         Some(cli::Command::VerifyModels(args)) => std::process::exit(cli::run_verify(args)),
         Some(cli::Command::CheckToken(args)) => std::process::exit(cli::run_check_token(args)),
     }
@@ -593,8 +608,7 @@ async fn run() -> anyhow::Result<()> {
     // interleaved with log records.
     let log_settings = diar_core::logging::init_stdout();
 
-    let models_dir =
-        std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
+    let models_dir = std::env::var("DIAR_MODELS_DIR").unwrap_or_else(|_| "/models".to_string());
     let max_inflight: usize = std::env::var("DIAR_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse().ok())

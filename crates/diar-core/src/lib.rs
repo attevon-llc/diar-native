@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use speakrs::inference::{EmbeddingModel, MaskedEmbeddingInput, SegmentationModel};
-use speakrs::pipeline::{DiarizationPipeline, RuntimeConfig, segmentation_step_seconds};
+use speakrs::pipeline::{segmentation_step_seconds, DiarizationPipeline, RuntimeConfig};
 use speakrs::ExecutionMode;
 
 pub mod audio;
@@ -189,16 +189,24 @@ impl DiarEngine {
 
         // Exclusive variant: the engine resolves overlaps by activation score and applies the
         // same duration filter and gap merging the full segments get.
-        let exclusive_segments: Vec<SegmentOut> =
-            result.exclusive_segments.iter().map(to_segment_out).collect();
+        let exclusive_segments: Vec<SegmentOut> = result
+            .exclusive_segments
+            .iter()
+            .map(to_segment_out)
+            .collect();
 
         // Classify while the decoded audio is still here: the caller's buffer is the same one
         // diarization just used, so this costs windows of an existing allocation rather than a
         // second fetch, decode and copy.
         let speaker_gender = match (with_gender, self.gender.as_mut()) {
-            (true, Some(model)) => Some(model.classify_speakers(audio, &exclusive_segments, 16_000)),
+            (true, Some(model)) => {
+                Some(model.classify_speakers(audio, &exclusive_segments, 16_000))
+            }
             (true, None) => {
-                tracing::warn!("gender requested but {} is not deployed", gender::GENDER_MODEL_FILE);
+                tracing::warn!(
+                    "gender requested but {} is not deployed",
+                    gender::GENDER_MODEL_FILE
+                );
                 None
             }
             _ => None,

@@ -25,9 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::files::{
-    required_files, ModelSet, EXPORT_RECIPE_VERSION, MARKER_FILE, MARKER_SCHEMA,
-};
+use super::files::{required_files, ModelSet, EXPORT_RECIPE_VERSION, MARKER_FILE, MARKER_SCHEMA};
 
 /// Verification state of a models directory, as reported by `/healthz` and `/readyz`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,8 +188,8 @@ impl Marker {
     pub fn write(&self, dir: &Path) -> Result<(), String> {
         let path = Self::path_in(dir);
         let tmp = dir.join(format!("{MARKER_FILE}.tmp"));
-        let body = serde_json::to_vec_pretty(self)
-            .map_err(|e| format!("serializing marker: {e}"))?;
+        let body =
+            serde_json::to_vec_pretty(self).map_err(|e| format!("serializing marker: {e}"))?;
         std::fs::write(&tmp, &body).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, &path)
             .map_err(|e| format!("renaming {} -> {}: {e}", tmp.display(), path.display()))?;
@@ -297,7 +295,12 @@ pub fn evaluate(dir: &Path, wanted: ModelSet) -> ModelsStatus {
         let p = dir.join(&rec.name);
         match std::fs::metadata(&p) {
             Ok(md) if md.len() == rec.bytes => {}
-            Ok(md) => bad.push(format!("{} ({} bytes, expected {})", rec.name, md.len(), rec.bytes)),
+            Ok(md) => bad.push(format!(
+                "{} ({} bytes, expected {})",
+                rec.name,
+                md.len(),
+                rec.bytes
+            )),
             Err(_) => bad.push(format!("{} (missing)", rec.name)),
         }
     }
@@ -461,7 +464,10 @@ mod tests {
         let st = evaluate(d.path(), ModelSet::Fast);
         assert_eq!(st.state, ModelsState::Unverified);
         let reason = st.reason.unwrap();
-        assert!(reason.contains("provision-models"), "no remedy in: {reason}");
+        assert!(
+            reason.contains("provision-models"),
+            "no remedy in: {reason}"
+        );
     }
 
     #[test]
@@ -477,10 +483,20 @@ mod tests {
     fn good_marker_with_present_files_is_verified() {
         let d = scratch(&[("a.onnx", 10), ("b.npy", 20)]);
         let files = vec![
-            FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() },
-            FileRecord { name: "b.npy".into(), bytes: 20, sha256: "y".into() },
+            FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            },
+            FileRecord {
+                name: "b.npy".into(),
+                bytes: 20,
+                sha256: "y".into(),
+            },
         ];
-        marker_for(d.path(), ModelSet::Fast, files).write(d.path()).unwrap();
+        marker_for(d.path(), ModelSet::Fast, files)
+            .write(d.path())
+            .unwrap();
         let st = evaluate(d.path(), ModelSet::Fast);
         assert_eq!(st.state, ModelsState::Verified, "reason: {:?}", st.reason);
         assert!(st.reason.is_none());
@@ -493,7 +509,11 @@ mod tests {
         let mut m = marker_for(
             d.path(),
             ModelSet::Fast,
-            vec![FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         );
         m.smoke.status = "fail".into();
         m.smoke.error = Some("stage 3b disagreed".into());
@@ -511,7 +531,11 @@ mod tests {
         marker_for(
             d.path(),
             ModelSet::Fast,
-            vec![FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         )
         .write(d.path())
         .unwrap();
@@ -528,7 +552,11 @@ mod tests {
         marker_for(
             d.path(),
             ModelSet::Fast,
-            vec![FileRecord { name: "gone.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "gone.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         )
         .write(d.path())
         .unwrap();
@@ -543,7 +571,11 @@ mod tests {
         let mut m = marker_for(
             d.path(),
             ModelSet::Fast,
-            vec![FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         );
         m.exporter_version = EXPORT_RECIPE_VERSION.wrapping_sub(1);
         m.write(d.path()).unwrap();
@@ -558,7 +590,11 @@ mod tests {
         marker_for(
             d.path(),
             ModelSet::Small,
-            vec![FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         )
         .write(d.path())
         .unwrap();
@@ -574,11 +610,18 @@ mod tests {
         marker_for(
             d.path(),
             ModelSet::Fast,
-            vec![FileRecord { name: "a.onnx".into(), bytes: 10, sha256: "x".into() }],
+            vec![FileRecord {
+                name: "a.onnx".into(),
+                bytes: 10,
+                sha256: "x".into(),
+            }],
         )
         .write(d.path())
         .unwrap();
-        assert_eq!(evaluate(d.path(), ModelSet::Small).state, ModelsState::Verified);
+        assert_eq!(
+            evaluate(d.path(), ModelSet::Small).state,
+            ModelsState::Verified
+        );
     }
 
     #[test]
@@ -612,8 +655,12 @@ mod tests {
         std::fs::write(d.path().join("wespeaker-fbank.onnx"), b"").unwrap();
         let missing = missing_required(d.path(), ModelSet::Small, false);
         assert!(missing.contains(&"plda_lda.npy".to_string()));
-        assert!(missing.iter().any(|m| m.starts_with("wespeaker-fbank.onnx (empty)")));
-        assert!(!missing.iter().any(|m| m.starts_with("segmentation-3.0.onnx")));
+        assert!(missing
+            .iter()
+            .any(|m| m.starts_with("wespeaker-fbank.onnx (empty)")));
+        assert!(!missing
+            .iter()
+            .any(|m| m.starts_with("segmentation-3.0.onnx")));
     }
 
     /// Minimal scoped temp directory — avoids pulling a dev-dependency in for four tests.
@@ -629,7 +676,10 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos();
-                p.push(format!("diar-marker-test-{n}-{:?}", std::thread::current().id()));
+                p.push(format!(
+                    "diar-marker-test-{n}-{:?}",
+                    std::thread::current().id()
+                ));
                 std::fs::create_dir_all(&p).unwrap();
                 Dir(p)
             }

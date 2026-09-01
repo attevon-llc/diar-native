@@ -269,9 +269,17 @@ impl Transport for UreqTransport {
         }
         // A 3xx from the no-redirect agent is a SUCCESSFUL resolve: access was granted and
         // HuggingFace is pointing at storage. Normalize it so callers see 200.
-        let status = if (300..400).contains(&status) { 200 } else { status };
+        let status = if (300..400).contains(&status) {
+            200
+        } else {
+            status
+        };
         let body = resp.into_string().unwrap_or_default();
-        Ok(Response { status, headers, body })
+        Ok(Response {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -327,7 +335,10 @@ mod tests {
     fn no_token_reports_a_missing_token_and_names_the_token_page() {
         let t = Canned::new(vec![resp(401, &[], "")]);
         let err = check(&t, None).unwrap_err();
-        assert_eq!(err, PreflightError::TokenMissingOrInvalid { had_token: false });
+        assert_eq!(
+            err,
+            PreflightError::TokenMissingOrInvalid { had_token: false }
+        );
         let m = err.message();
         assert!(m.contains("settings/tokens"), "{m}");
         assert!(m.contains("No HuggingFace token was supplied"), "{m}");
@@ -337,7 +348,10 @@ mod tests {
     fn garbage_token_reports_rejection_not_a_gate_problem() {
         let t = Canned::new(vec![resp(401, &[], "")]);
         let err = check(&t, Some("hf_invalid")).unwrap_err();
-        assert_eq!(err, PreflightError::TokenMissingOrInvalid { had_token: true });
+        assert_eq!(
+            err,
+            PreflightError::TokenMissingOrInvalid { had_token: true }
+        );
         let m = err.message();
         assert!(m.contains("rejected"), "{m}");
         // Must NOT send the operator to accept terms — the token is the problem.
@@ -352,9 +366,17 @@ mod tests {
             resp(401, &[("x-error-code", "GatedRepo")], ""),
         ]);
         let err = check(&t, Some("hf_good")).unwrap_err();
-        assert_eq!(err, PreflightError::GateNotAccepted { user: "dave".into() });
+        assert_eq!(
+            err,
+            PreflightError::GateNotAccepted {
+                user: "dave".into()
+            }
+        );
         let m = err.message();
-        assert!(m.contains(&format!("https://huggingface.co/{PIPELINE_REPO}")), "{m}");
+        assert!(
+            m.contains(&format!("https://huggingface.co/{PIPELINE_REPO}")),
+            "{m}"
+        );
         assert!(m.contains("dave"), "must name the signed-in account: {m}");
         assert!(m.contains("CC-BY-4.0"), "{m}");
         assert!(!m.contains("hf_good"), "token leaked: {m}");

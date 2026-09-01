@@ -145,7 +145,10 @@ pub enum DeviceError {
     NotCompiledIn(Device),
     /// A device this build supports, but which this *process* did not load. Distinct from
     /// `NotCompiledIn` because the fix is different: set `DIAR_DEVICES`, not rebuild.
-    NotLoaded { requested: Device, loaded: Vec<Device> },
+    NotLoaded {
+        requested: Device,
+        loaded: Vec<Device>,
+    },
 }
 
 impl std::fmt::Display for DeviceError {
@@ -424,7 +427,10 @@ mod tests {
     fn blank_diar_devices_falls_back_to_diar_mode() {
         // `DIAR_DEVICES=${FOO:-}` in a compose file expands to "" — must not be fatal.
         assert_eq!(plan_devices(Some(""), Some("cpu")), Ok(vec![Device::Cpu]));
-        assert_eq!(plan_devices(Some("  , ,"), Some("cpu")), Ok(vec![Device::Cpu]));
+        assert_eq!(
+            plan_devices(Some("  , ,"), Some("cpu")),
+            Ok(vec![Device::Cpu])
+        );
     }
 
     #[test]
