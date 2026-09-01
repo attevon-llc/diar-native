@@ -3,14 +3,45 @@
 Speaker diarization — "who spoke when" — as a small self-hosted HTTP service, or as a
 one-shot command-line tool. Rust + ONNX Runtime, no Python at serving time.
 
+**Deploying it needs no clone of this repository.** Two files and published images are the
+whole deployment; the repo is for *contributing to* diar-native, not for *running* it.
+
 ```bash
-git clone https://github.com/attevon-llc/diar-native
-cd diar-native
-./start.sh
+mkdir -p diar-native/audio && cd diar-native
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+$EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
+docker compose up
 ```
 
-That is the whole thing. It will ask for a HuggingFace token once, explain why, export the
-models, start the server, and print a `curl` you can paste.
+That one command exports the models with your token (~484 MB, ~3 minutes, once) and then
+serves on port 8701. Re-running it is a fast no-op that needs no token and no network.
+
+### Pick the right image
+
+Every published tag is **single-platform** — there is no multi-arch manifest, so nothing will
+stop you pulling an amd64 image onto an arm64 machine. The default is the amd64 CPU image.
+
+| your machine | add to `.env` | notes |
+|---|---|---|
+| linux/amd64, CPU | *(nothing)* | 195 MB, the default |
+| linux/amd64 + NVIDIA GPU | `DIAR_IMAGE=davidamacey/diar-native:0.3.0` | 3.04 GB, serves `cuda` **and** `cpu` per request. Also add the GPU overlay (below) |
+| linux/arm64 · Apple Silicon | `DIAR_IMAGE=davidamacey/diar-native:0.3.0-cpu-arm64`<br>`DIAR_PROVISION_IMAGE=davidamacey/diar-native:0.3.0-provision-arm64` | 223 MB. Runs on **CPU cores** — not the Apple GPU, not the Neural Engine |
+
+For the GPU, fetch the overlay too and name both files. The reservation lives in a separate
+file because compose cannot make a device request conditional — present and unsatisfiable, it
+is a hard startup failure on every host without an NVIDIA runtime:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
+
+On Apple Silicon, be clear-eyed about what Docker gives you: the correct instruction set and
+nothing more. Docker on macOS has no Metal access at any image architecture. A native
+**CoreML** build that does use the Apple GPU exists and works (M2 Max, 93 vs 92 segments
+against the CUDA reference — `validation/RESULTS.md` §7.31), but it is **not published** and
+must be compiled from source on the machine.
 
 ---
 
@@ -18,12 +49,13 @@ models, start the server, and print a `curl` you can paste.
 
 - **Docker** with the Compose v2 plugin (`docker compose version` works).
 - **A HuggingFace account and a read token.** Free. See [The token](#the-token) below.
-- **~5 GB of disk** for the GPU image, or **~700 MB** total if you use `--cpu`.
-- **A GPU is optional.** `start.sh` detects one and uses it; without one it silently and
-  correctly runs on the CPU. Nothing is degraded except speed.
+- **~700 MB of disk** on a CPU host (195 MB image + 484 MB of models), or ~3.5 GB for the CUDA
+  image. Provisioning temporarily needs a further ~2 GB for the export environment, which can
+  be deleted afterwards.
+- **A GPU is optional.** Without one everything runs correctly on the CPU; only speed changes.
 
 Nothing else — no Python environment, no CUDA toolkit on the host, no model downloads to
-manage by hand.
+manage by hand, and no clone.
 
 ---
 
@@ -60,8 +92,12 @@ download; serving never touches the network.
 
 ## Path 1 — the server
 
+Either `docker compose up` with the two fetched files above, or — from a clone — the wrapper
+script, which adds platform detection, a hidden token prompt and a wait on `/readyz`:
+
 ```bash
-./start.sh                    # build, provision, serve, wait for ready
+./start.sh                    # pull, provision, serve, wait for ready
+./start.sh --build            # compile from this checkout instead (contributors)
 ```
 
 On success it prints the health JSON and a ready-to-paste request. To diarize a file, drop it
@@ -178,7 +214,10 @@ Do *not* chown to `10001`. Owning the directory yourself is what keeps re-provis
 
 ---
 
-## Doing it without `start.sh`
+## Building it from source (contributors)
+
+Only needed when you are changing diar-native, or running a commit that was never published.
+`./start.sh --build` does all of this; by hand it is:
 
 ```bash
 cp .env.example .env
@@ -197,10 +236,26 @@ docker compose up -d
 curl -s localhost:8701/readyz
 ```
 
+Note `docker-compose.yml` — the source-build file, where `provision` sits behind a profile and
+the models are a bind mount you own. `docker-compose.prod.yml` is its published-image sibling:
+no `build:` key, provisioning wired into a plain `up`, named volumes by default.
+
 Add the GPU overlay to use a GPU, and point `DIAR_IMAGE` at a CUDA build:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+The provisioning image is the only one that must be built rather than pulled even on the
+published path: the serving images carry **no Python at all** (which is why the CPU one is
+195 MB and not ~2 GB), and the export needs torch + pyannote.audio. Asking a serving image to
+provision fails immediately with exit 6, `No python interpreter at 'python3'`. Building it is a
+pip install on top of the image you already have — no Rust, no compiler:
+
+```bash
+docker build -f docker/Dockerfile.provision \
+  --build-arg BASE=davidamacey/diar-native:0.3.0-cpu \
+  -t davidamacey/diar-native:0.3.0-provision .
 ```
 
 Every knob is documented in `.env.example`; `README.md` §6e is the authoritative table of the

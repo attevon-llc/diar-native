@@ -1,4 +1,141 @@
-# diar-native — Fast, Deployable Speaker Diarization for OpenTranscribe
+# diar-native — Fast, Deployable Speaker Diarization
+
+Speaker diarization — **"who spoke when"** — as a small self-hosted HTTP service. Rust and ONNX
+Runtime, no Python at serving time, **195 MB** on a CPU host. It matches the pyannote
+`speaker-diarization-community-1` pipeline's accuracy at a fraction of its wall time and
+deployment weight.
+
+## Run it
+
+**You do not need this repository to run diar-native.** The deployment is two files — a compose
+file and a `.env` — plus images published on Docker Hub. Nothing is cloned, built or compiled.
+
+One thing cannot be shipped for you: the models are derivatives of the **gated**
+[`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
+weights, which nobody may redistribute. So you need a free **HuggingFace read token**, once, and
+the first startup exports your own copy of the models locally (~484 MB, ~3 minutes). See
+[The token](#the-token) — it is two clicks and there is no waiting list.
+
+### Linux/amd64, CPU only
+
+The default. Works on any amd64 machine, GPU or not, and needs no NVIDIA runtime.
+
+```bash
+mkdir -p diar-native/audio && cd diar-native
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+$EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...   (the only thing you must supply)
+docker compose up
+```
+
+That single `up` exports the models and then serves on port 8701. **Every later `docker compose
+up` skips the export** — it finds the provenance marker and starts serving in seconds, with no
+token and no network access at all.
+
+### Linux/amd64 with an NVIDIA GPU
+
+The CUDA image (3.04 GB) serves **both `cuda` and `cpu`**, chosen per request. It needs the
+NVIDIA container toolkit installed and registered with Docker — a working `nvidia-smi` on the
+host is not sufficient by itself.
+
+```bash
+mkdir -p diar-native/audio && cd diar-native
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+printf 'DIAR_IMAGE=davidamacey/diar-native:0.3.0\n' >> .env
+$EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
+
+The GPU is opt-in through that overlay because a compose device reservation cannot be made
+conditional: present and unsatisfiable, it is a hard startup failure on every GPU-less host.
+
+### macOS / Apple Silicon, and arm64 Linux
+
+Docker runs the **arm64 CPU image**, and it is worth being blunt about what that is: it uses
+your **CPU cores**. It does **not** use the GPU and does **not** use the Neural Engine. Docker
+on macOS has no Metal access at any image architecture, so an `arm64` tag buys you the right
+instruction set and nothing else. It works correctly; it is simply not accelerated.
+
+```bash
+mkdir -p diar-native/audio && cd diar-native
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+printf 'DIAR_IMAGE=davidamacey/diar-native:0.3.0-cpu-arm64\nDIAR_PROVISION_IMAGE=davidamacey/diar-native:0.3.0-provision-arm64\n' >> .env
+$EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
+docker compose up
+```
+
+**Do not use `:latest` or `:0.3.0` on an arm64 host.** Every published tag is single-platform
+and those two are amd64; Docker Desktop will emulate them rather than refuse them, so the
+symptom is "inexplicably slow" rather than an error you can act on.
+
+A native **CoreML** build does exist that uses the Apple GPU, and it works — verified on an
+M2 Max at 93 vs 92 segments against the CUDA reference
+([`validation/RESULTS.md`](validation/RESULTS.md) §7.31). But it is **not published**, and
+Docker cannot reach Metal, so it has to be compiled from source on the machine itself. See §6.
+
+### The token
+
+Two free, instant, auto-approved steps — no waiting list, no human review, and the pipeline
+itself is CC-BY-4.0:
+
+1. Create a **read** token at <https://huggingface.co/settings/tokens>.
+2. **Signed in as that same account**, accept the terms at
+   <https://huggingface.co/pyannote/speaker-diarization-community-1>.
+
+Step 2 catches people out: a perfectly valid token whose account never accepted the gate fails
+with HTTP 403, and accepting while signed in as a *different* account fails identically. Only
+~32 MB is downloaded; the rest is converted on your machine. Serving never touches the network.
+
+### Diarize something
+
+```bash
+curl -s localhost:8701/readyz                     # 200 only when models are loaded + verified
+
+cp ~/meeting.wav ./audio/
+curl -s -X POST localhost:8701/diarize \
+  -H 'content-type: application/json' \
+  -d '{"wav_path": "/audio/meeting.wav", "gender": true}'
+```
+
+`/diarize` takes a **path inside the container**, not an upload — which is why the audio
+directory is bind-mounted at `/audio`. Despite the field name, wav/flac/mp3/m4a/ogg all decode.
+
+## Use it
+
+Four routes, documented in full in §6b-§6e:
+
+| route | what it is |
+|---|---|
+| `POST /diarize` | the whole job: `segments[]` (may overlap), `exclusive_segments[]` (overlaps resolved — **use these for transcripts**), `num_speakers`, `rttm`, and `speaker_gender` when you send `"gender": true` |
+| `POST /embed_window` | a speaker embedding for one time window |
+| `GET /healthz` | **always 200 while the process is serving**, in every model state. Carries `models_state`/`models_reason`, plus `devices` and `supported_devices`. Liveness — gate container health on this |
+| `GET /readyz` | 200 **only** once the models are verified. Readiness — gate your rollout on this |
+
+Speaker labels (`SPEAKER_00`, …) are arbitrary and stable only within one response; the same
+person in two files will not get the same label. Every environment variable the binary reads is
+tabulated in [§6e](#6e-environment-variables--the-authoritative-list).
+
+## Develop it
+
+Only needed if you are **changing** diar-native. Everything above runs without a checkout.
+
+```bash
+git clone https://github.com/attevon-llc/diar-native && cd diar-native
+./start.sh --build          # compile from this checkout, provision, serve, wait on /readyz
+./start.sh --cli meeting.wav   # one-shot diarization, no server (always builds — diar-cli is
+                               # the one binary that is not published)
+```
+
+Without `--build`, `./start.sh` pulls the published image matching your architecture and GPU —
+the same thing the compose file does, with platform detection and a token prompt on top. Build
+rules, traps and the benchmark protocol are in [`CONTRIBUTING.md`](CONTRIBUTING.md),
+[`CLAUDE.md`](CLAUDE.md) and [`docs/BENCHMARK_PROTOCOL.md`](docs/BENCHMARK_PROTOCOL.md). Longer
+walkthrough of both paths: [`QUICKSTART.md`](QUICKSTART.md).
+
+---
 
 [![CI](https://github.com/attevon-llc/diar-native/actions/workflows/ci.yml/badge.svg)](https://github.com/attevon-llc/diar-native/actions/workflows/ci.yml)
 [![Release](https://github.com/attevon-llc/diar-native/actions/workflows/release.yml/badge.svg)](https://github.com/attevon-llc/diar-native/actions/workflows/release.yml)
@@ -7,10 +144,9 @@
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Vulnerabilities:
 [`SECURITY.md`](SECURITY.md) · Release history: [`CHANGELOG.md`](CHANGELOG.md)
 
-> **Just want to run it?** [`QUICKSTART.md`](QUICKSTART.md) — `./start.sh` builds, exports the
-> models with your own HuggingFace token, and serves. Works with or without a GPU, and there is
-> a `--cli` path that needs no server at all. This README is the reference manual, not the
-> getting-started guide.
+> **Everything below this line is the reference manual** — architecture, benchmarks, the
+> deployment tiers and the authoritative environment table. The four sections above are the
+> whole of what running diar-native requires.
 
 Native (Rust/ONNX) speaker diarization engine for OpenTranscribe, built on a vendored,
 heavily-patched [`speakrs`](https://github.com/avencera/speakrs) (upstream) —
@@ -274,6 +410,19 @@ platform column rather than assuming `:latest` matches your host.
 | `davidamacey/diar-native:0.3.0`<br>`davidamacey/diar-native:latest` | linux/amd64 | 3.04 GB | CUDA **and** CPU, selected per request (§6b) |
 | `davidamacey/diar-native:0.3.0-cpu` | linux/amd64 | 195 MB | CPU only — no CUDA libraries, no NVIDIA runtime needed |
 | `davidamacey/diar-native:0.3.0-cpu-arm64` | linux/arm64 | 223 MB | CPU only. Runs on ARM Linux and on Apple Silicon under Docker — **on CPU cores**, not the GPU or Neural Engine (Docker on macOS has no Metal access; that needs a native `coreml` build, which is not published) |
+| `davidamacey/diar-native:0.3.0-provision`<br>`davidamacey/diar-native:0.3.0-provision-arm64` | linux/amd64<br>linux/arm64 | ~1.9 GB | **Provisioning only.** The serving image plus a pinned CPU-only torch + pyannote.audio environment. Referenced by `docker-compose.prod.yml`; delete it once the models exist |
+
+None of the serving images contain Python — that is why the CPU one is 195 MB rather than
+~2 GB — so `provision-models` run against one exits **6** with `No python interpreter at
+'python3'`. That is what the separate provisioning tag is for, and why it is CPU-based even for
+GPU deployments: the export does `pipeline.to(torch.device("cpu"))` and never touches an
+accelerator. It builds with no compiler at all, as a pip layer on the image you already have:
+
+```bash
+docker build -f docker/Dockerfile.provision \
+  --build-arg BASE=davidamacey/diar-native:0.3.0-cpu \
+  -t davidamacey/diar-native:0.3.0-provision .
+```
 
 Digests, for pinning:
 
@@ -292,10 +441,21 @@ the binary out of the image (see §6a) want the **amd64 CUDA** digest — that i
 - **Release images** publish to Docker Hub as `davidamacey/diar-native:<version>` (+ `:latest`),
   after a `trivy image --severity HIGH,CRITICAL` scan comes back clean (or documented as
   accepted). Built via `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`, then
-  `docker tag`/`docker push` to the registry name. The multi-arch CPU image is published by
+  `docker tag`/`docker push` to the registry name. The CPU image is published by
   `.github/workflows/release.yml` on a tag push.
+  - **Mind the discrepancy.** That workflow builds `platforms: linux/amd64,linux/arm64` under
+    the single tag `:<version>-cpu`, which would publish a **multi-arch manifest** — but what is
+    actually on Docker Hub is a single-platform amd64 `:0.3.0-cpu` and a separate
+    `:0.3.0-cpu-arm64`, i.e. the 0.3.0 arm64 image was pushed by hand, not by this job. Until
+    that is reconciled, do not assume a tag's platform from the workflow; check the registry.
+  - The two **provisioning** tags are not built by CI at all. Publish them alongside a release:
+    `docker build -f docker/Dockerfile.provision --build-arg BASE=davidamacey/diar-native:<ver>-cpu -t davidamacey/diar-native:<ver>-provision .`
+    (and the same with the `-cpu-arm64` base for `-provision-arm64`), then push.
+    `docker-compose.prod.yml` references them by default, so a release without them leaves the
+    documented no-clone install unable to export models.
 - **Non-developers / prod:** pull the published tag — no Rust toolchain, no clone of this repo,
-  no local build.
+  no local build. The whole deployment is `docker-compose.prod.yml` + `.env`; see "Run it" at
+  the top of this file.
 - **Developers modifying diar-native:** clone this repo and build locally
   (`docker build -f docker/Dockerfile.server -t diar-server:dev .`). Point a local
   `transcribe-app` deployment at it by setting `DIAR_NATIVE_IMAGE=diar-server:dev` in that

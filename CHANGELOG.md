@@ -87,6 +87,44 @@ needs a consumer-side decision.
 
 ### Added
 
+- **Running diar-native no longer requires this repository.** The published images existed but
+  nothing shipped here used them: `docker-compose.yml` defaulted to a local tag and `start.sh`
+  *built*, so the fastest documented route to a working sidecar was a 20-minute Rust
+  compilation in place of a 195 MB pull. The deployment is now two files and no checkout.
+  - **`docker-compose.prod.yml`** — pulls published images, with no `build:` key anywhere and
+    no reference to any path inside the source tree. A single `docker compose up` provisions
+    *and then* serves: the export runs as a service that must exit 0, and the sidecar waits on
+    it with `depends_on: { condition: service_completed_successfully }`, so there is no
+    two-command dance and no profile to remember. Provisioning is idempotent, so every
+    subsequent `up` costs about a second and needs neither token nor network. The healthcheck
+    is on `/healthz`, never `/readyz` — an unprovisioned container must not be marked unhealthy
+    — and the GPU stays opt-in through the existing `docker-compose.gpu.yml` overlay so the
+    base file runs unchanged on a GPU-less host. Pinned by tag, with the three release digests
+    in a comment for anyone who wants to pin harder.
+  - Models and the HuggingFace cache default to **named volumes** rather than bind mounts,
+    because compose creates a missing bind-mount source as **root** (measured): a first run in
+    an empty directory would otherwise hand the non-root export a directory it cannot write,
+    fail with exit 7 on a path the operator never touched, and leave files needing `sudo` to
+    remove. A host directory still works — set `DIAR_MODELS_HOST_DIR` together with
+    `DIAR_UID`/`DIAR_GID`, which is exactly what `start.sh` does.
+  - **`docker/Dockerfile.provision` now creates `/models` owned by uid 10001.** Docker seeds a
+    fresh named volume's ownership from the image directory it covers, and creates it
+    `root:root` when that directory does not exist — so without this line the zero-configuration
+    volume above is not writable by the very image that has to write it.
+- **`start.sh` pulls by default; `--build` is the contributor path.** It selects the image for
+  the machine it is on — amd64 + GPU → `:0.3.0`, amd64 → `:0.3.0-cpu`, arm64 →
+  `:0.3.0-cpu-arm64` — and the release version appears in exactly one place in the script.
+  Because every published tag is single-platform and `:latest` is the amd64 CUDA image, the
+  script also **verifies the architecture of every image it is about to run** and refuses a
+  mismatch with an actionable message: Docker Desktop emulates a wrong-architecture image
+  rather than rejecting it, which turns "you pulled the wrong tag" into "diarization is
+  inexplicably slow". `--cli` still builds, because `diar-cli` is the one binary not published.
+- **A "Run it / Use it / Develop it" front door on `README.md`**, above the badges, with literal
+  commands for the three host types rather than a pointer to another file. The Apple Silicon
+  case states plainly that Docker uses **CPU cores and neither the GPU nor the Neural Engine** —
+  an `arm64` tag invites the opposite assumption — and mentions the native `coreml` build as
+  something that exists, works (§7.31) and is *not* published. `QUICKSTART.md` leads with the
+  same no-clone path and keeps the build path as the contributor route.
 - **A standalone one-command quickstart.** The repository could be built and deployed but not
   *started* by anyone who had not read `docs/INSTALL_NATIVE.md` end to end: there was no
   `.env.example`, no compose file, no start script and no quickstart, so a newcomer had to
