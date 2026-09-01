@@ -63,13 +63,15 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
 - `ort` is PINNED `=2.0.0-rc.12`; rc.13 fails at session load. Do not bump.
 - Build in the container, never on the host (host lacks openblas; `target/` and
   `Cargo.lock` end up root-owned from container writes — chown via a container if hit):
-  `docker run --rm -v $PWD:/build -v /tmp/diar_target:/tmp/target -w /build -e CARGO_TARGET_DIR=/tmp/target diar-bench-builder:latest cargo build --release --features cuda -p diar-server -p diar-cli`
-  **`diar-bench-builder:latest` is a machine-local image; no Dockerfile in this repo produces
-  it.** On any other machine, build the equivalent from `ubuntu:24.04` + apt `build-essential
-  pkg-config cmake ca-certificates curl git libssl-dev libclang-dev libopenblas-dev` + rustup
-  stable. That is exactly what CI installs — `.github/actions/setup-build-env` is the single
-  definition, and `CONTRIBUTING.md` documents reproducing it locally. openblas is needed because
-  speakrs is built with `openblas-system`; libclang is for bindgen (`ort-sys`).
+  `docker run --rm -v $PWD:/build -v /tmp/diar_target:/tmp/target -w /build -e CARGO_TARGET_DIR=/tmp/target diar-native-builder:latest cargo build --release --features cuda -p diar-server -p diar-cli`
+  **Build the builder image from the repo**: `docker build -f docker/Dockerfile.builder -t
+  diar-native-builder:latest .`. (The older `diar-bench-builder:latest` is a machine-local image
+  that no Dockerfile produced — that gap is now closed, but the stale image may still be lying
+  around on this box.) The package list lives once in `scripts/build-deps.txt` and is shared with
+  `.github/actions/setup-build-env`; the CI job `dev-container-parity` fails if they diverge. The
+  compiler is pinned in `rust-toolchain.toml` (1.97.1) and honoured automatically by rustup
+  everywhere. openblas is needed because speakrs is built with `openblas-system`; libclang is for
+  bindgen (`ort-sys`).
 - speakrs tests: same container, `-w /build/vendor/speakrs`, `RUST_MIN_STACK=16777216`,
   `cargo test --release --no-default-features --features openblas-system,online`
   (94 tests; plain `--features openblas-system` fails — duplicate BLAS).

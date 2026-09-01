@@ -143,6 +143,13 @@ consumer-side decision.
   `diar-server` and `diar-cli`. Not reachable through Docker — macOS grants containers no Metal
   access regardless of image architecture. (RESULTS §7.31)
 - A CPU-only multi-architecture image variant (`linux/amd64` + `linux/arm64`).
+- **A reproducible build environment.** `docker/Dockerfile.builder` builds the container the
+  project is meant to be built in — previously the documented image was machine-local and no
+  Dockerfile produced it, so a fresh clone could not reproduce the documented build at all. The
+  apt package list now lives once in `scripts/build-deps.txt`, shared with
+  `.github/actions/setup-build-env`; `rust-toolchain.toml` pins the compiler (1.97.1) for the
+  container, CI and a bare workstation `cargo` alike; `scripts/setup_dev_env.sh` sets up a host;
+  and a `dev-container-parity` CI job fails if the environments drift apart.
 - `docs/ORT_FUSION_FP16_AARCH64.md`, explaining the fp16 load failure above, plus
   `validation/ort_fusion_probe/` — a standalone harness that dumps ORT's *optimized* graph so
   load-time fusions can be observed directly rather than inferred from an error message.
