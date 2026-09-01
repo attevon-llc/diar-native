@@ -104,7 +104,7 @@ struct AppState {
     cpu_gate: Option<Semaphore>,
     /// Provisioning state of the models directory, decided ONCE at startup by a `stat`-only
     /// pass. Not re-read per request: `/healthz` is polled by a compose healthcheck on a
-    /// short interval, and re-hashing (or even re-stat-ing) 470 MB on every poll would be a
+    /// short interval, and re-hashing (or even re-stat-ing) 484 MB on every poll would be a
     /// self-inflicted load source. It answers "is this the directory that passed", which is
     /// a startup-time fact.
     models: ModelsStatus,

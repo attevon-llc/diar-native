@@ -10,7 +10,7 @@
 //! - **Startup / `/healthz` (fast, O(files) `stat`)** — marker parses, schema known,
 //!   recipe version current, smoke recorded as passing, every recorded file present at its
 //!   recorded byte length, and the set covers the configured mode. Deliberately NO hashing:
-//!   re-reading 470 MB on every boot is not acceptable, and mtime is unusable as a proxy
+//!   re-reading 484 MB on every boot is not acceptable, and mtime is unusable as a proxy
 //!   because `docker cp` and volume copies rewrite it.
 //! - **`provision-models` / `verify-models` (deep)** — full sha256 of every file plus the
 //!   whole smoke test.

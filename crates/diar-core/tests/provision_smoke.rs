@@ -46,7 +46,7 @@ fn opts(dir: &Path, set: ModelSet) -> SmokeOptions {
     }
 }
 
-/// Build a scratch models dir that hardlinks every file from `src`, so a 470 MB set costs
+/// Build a scratch models dir that hardlinks every file from `src`, so a 484 MB set costs
 /// nothing to "copy". The caller then replaces individual files with real copies.
 fn linked_dir(src: &Path, tag: &str) -> PathBuf {
     let dst = std::env::temp_dir().join(format!("diar-smoke-{tag}-{}", std::process::id()));

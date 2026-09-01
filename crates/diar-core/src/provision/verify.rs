@@ -58,7 +58,7 @@ const PROBE_ROW: usize = 5;
 ///
 /// This distinction is load-bearing, not cosmetic. `provision-models` writes a `fail` marker
 /// when the smoke test rejects a directory, and a `fail` marker makes every later
-/// `diar-server` start exit non-zero. Conflating "this box has no GPU" with "these 470 MB of
+/// `diar-server` start exit non-zero. Conflating "this box has no GPU" with "these 484 MB of
 /// models are bad" therefore takes a perfectly good models directory permanently out of
 /// service (and, on the CPU-only image, would do so on EVERY provisioning run). Whenever this
 /// error is raised, the same directory has just been proven to load on the CPU EP.

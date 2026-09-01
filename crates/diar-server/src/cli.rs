@@ -69,7 +69,7 @@ pub struct ProvisionArgs {
     /// Stages 1, 2, 3 and 5 always run on the CPU execution provider, which is statically
     /// linked into every build, so provisioning needs no GPU at all — and this default is
     /// what makes that true. It used to fall through to `cuda`, which meant the documented
-    /// `docker run … diar-provision` line (no `--gpus`) exported 470 MB of correct models
+    /// `docker run … diar-provision` line (no `--gpus`) exported ~484 MB of correct models
     /// and then recorded them as known-bad because the verification stage could not open a
     /// device. Set this to `cuda` only if you specifically want the models exercised on the
     /// accelerator; `DIAR_DEVICES`' first entry is honoured too, so serving and provisioning
@@ -496,7 +496,7 @@ mod tests {
     ///
     /// This is the whole bug in one assertion. The old `parse_mode` fell through to
     /// `Mode::Cuda`, so the `docker run --rm -e HF_TOKEN=… -v …:/models diar-provision` line
-    /// that `Dockerfile.provision` itself documents — no `--gpus` — exported 470 MB of
+    /// that `Dockerfile.provision` itself documents — no `--gpus` — exported 484 MB of
     /// correct models and then stamped them known-bad because stage 4 could not open a
     /// device. In the CPU-only image, where CUDA is not compiled in at all, it could never
     /// have succeeded.

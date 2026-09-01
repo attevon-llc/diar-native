@@ -143,7 +143,7 @@ pub struct ModuleReq {
 ///   silently produces the fp32 classifier, ~500 MiB more VRAM (RESULTS §7.18) with no
 ///   diagnostic anywhere.
 /// * `onnxsim`/`onnxslim` — absence raises a good error, but only from step 2b, i.e. after
-///   the full ~470 MB download and the entire base export have already run.
+///   the full ~484 MB download and the entire base export have already run.
 /// * `onnxruntime` — lazily imported by the fold parity check; same wasted work.
 ///
 /// `torchaudio` and `huggingface_hub` are also imported (`export_models.py` uses
@@ -487,7 +487,7 @@ fn read_report(path: &Path) -> Result<ExportReport, String> {
 }
 
 /// Is `dir` writable? Checked UP FRONT, because live compose mounts `/models` read-only and
-/// discovering that after a 470 MB download would be gratuitous.
+/// discovering that after a 484 MB download would be gratuitous.
 pub fn check_writable(dir: &Path) -> Result<(), String> {
     if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(dir) {
@@ -672,7 +672,7 @@ mod tests {
     }
 
     /// F4: the preflight probe exists so a missing dependency produces a pip line BEFORE a
-    /// ~470 MB download. Three modules the scripts import were absent from it — most damaging
+    /// ~484 MB download. Three modules the scripts import were absent from it — most damaging
     /// `onnxconverter_common`, whose absence raises nothing at all and silently downgrades the
     /// gender classifier to fp32. This pins the list against the scripts themselves, so adding
     /// an import without adding a probe fails here rather than in the field.

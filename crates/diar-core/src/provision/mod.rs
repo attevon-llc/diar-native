@@ -321,7 +321,7 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
     let started = std::time::Instant::now();
     let with_gender = !opts.skip_gender;
 
-    // 1. Writable? Up front — never discover a read-only mount after a 470 MB download.
+    // 1. Writable? Up front — never discover a read-only mount after a 484 MB download.
     exporter::check_writable(&opts.models_dir)
         .map_err(|e| ProvisionFailure::new(exit::NOT_WRITABLE, e))?;
 
@@ -365,7 +365,7 @@ pub fn provision(opts: &ProvisionOptions) -> Result<ProvisionOutcome, ProvisionF
         .map_err(|e| ProvisionFailure::new(exit::NO_EXPORTER_ENV, e.message()))?;
 
     // 4b. Is there a clip to verify WITH? Late enough that the operator has already been told
-    //     about a bad token or a missing torch, early enough that nobody downloads 470 MB
+    //     about a bad token or a missing torch, early enough that nobody downloads 484 MB
     //     only to be told at the end that the last step cannot run.
     let clip =
         resolve_clip(opts.clip.as_deref()).map_err(|e| ProvisionFailure::new(exit::USAGE, e))?;
@@ -804,7 +804,7 @@ mod tests {
 
     /// C1: a device that is not usable HERE says nothing about the models, and must never be
     /// recorded as a smoke failure — a `fail` marker takes the directory out of service until
-    /// someone re-exports 470 MB.
+    /// someone re-exports 484 MB.
     #[test]
     fn an_unusable_device_is_never_recorded_as_a_model_failure() {
         let device = anyhow::Error::new(verify::DeviceUnavailable {
