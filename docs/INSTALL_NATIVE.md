@@ -13,9 +13,15 @@ export HF_TOKEN=<your huggingface read token>
 diar-server provision-models --models-dir /models --set fast
 ```
 
-Expect roughly **470 MB** written and **a few minutes**. About 32 MB is downloaded from the
-gated repo; the rest is produced locally by the export. 189 MB of the output (~40%) is the
-gender classifier — `--skip-gender` omits it, at the cost of speaker gender detection.
+Expect roughly **484 MB** written and **a couple of minutes** — the acceptance run measured
+**119.5 s** cold. About 32 MB is downloaded from the gated repo; the rest is produced locally by
+the export. 189.5 MB of the output (~40%) is the gender classifier — `--skip-gender` omits it, at
+the cost of speaker gender detection.
+
+> The §7.36 acceptance run reports **673 MB**, not 484 MB. That run predates the fp16 gender fix
+> (RESULTS §7.39) and hit the 378.5 MB fp32 fallback. Export recipe 2 restores fp16, so a
+> directory provisioned by the current build is ~484 MB. `models_folded/` is the reference:
+> 483,411,782 bytes.
 
 ### Prerequisites
 
@@ -49,28 +55,75 @@ gender classifier — `--skip-gender` omits it, at the cost of speaker gender de
 The serving compose file mounts `/models:ro`. Provisioning needs read-write, so run it
 against the host path (or mount `:rw` for that one command) and leave serving read-only.
 `provision-models` checks writability up front and exits 7 naming the mount, rather than
-discovering it after a 470 MB export.
+discovering it after a 484 MB export.
+
+### Which device provisioning uses
+
+**`provision-models` and `verify-models` default to CPU**, deliberately — not to the serving
+default of `cuda`. Provisioning is a once-per-deployment step that must work on a build host with
+no GPU. `--mode` (or `DIAR_MODE`, or the first entry of `DIAR_DEVICES`) overrides it; an
+unrecognized name is exit 2 here rather than the serving path's silent fall-through to `cuda`.
+
+If the requested device genuinely is not usable, both commands exit **9** and write **no marker
+at all** — "I could not test this" must never be recorded as "this is broken".
 
 ### Idempotency
 
 A valid marker makes this a no-op, so it is safe to run unconditionally on every start.
-`--force` re-exports.
+`--force` re-exports. The no-op is decided before preflight, so it needs neither network nor
+python nor a token.
 
 ```bash
 diar-server verify-models --models-dir /models   # deep check: full sha256 + smoke test
 ```
 
+### `verify-models` re-attests by default
+
+On a directory that fully verifies (marker present, no hash drift, smoke test green),
+`verify-models` **rewrites the marker's `smoke` record** with a fresh pass — mode, clip sha,
+speakers, segments, duration, timestamp — and appends `(re-attested by verify-models)` to
+`generated_by`. Provenance (`upstream`, `toolchain`, `speakrs`, `files`) is left untouched,
+because this run exported nothing.
+
+That is the supported recovery path for a directory carrying a stale `fail` record: it clears the
+record without a full re-export. `--no-attest` opts out. A read-only mount is **not** an error —
+verification still passes and the exit code is unaffected; the marker simply is not updated.
+
+### Choosing the smoke clip
+
+Stage 4 needs one 16 kHz mono WAV of at least 10 s containing speech. Both serving images bake
+one in at `/usr/local/share/diar-native/smoke.wav`; the fallback is
+`vendor/speakrs/fixtures/test.wav`. Images that merely *copy the binary out* of a diar-server
+image — OpenTranscribe's backend image is exactly that — have neither, so pass
+`--smoke-clip /path/to/clip.wav`. Any short recording will do; it is only ever read, never
+redistributed.
+
+The clip is resolved **late**, after the writability, idempotency, token and python checks, so
+the documented provision-from-the-backend-image route no longer dies at exit 2 before it has so
+much as looked at the token.
+
 ### Exit codes
 
-| code | meaning |
-|---|---|
-| 0 | provisioned, or already up to date |
-| 2 | bad arguments |
-| 3 | files were produced but failed the smoke test |
-| 4 | the export subprocess failed |
-| 5 | token missing/invalid, or repo terms not accepted |
-| 6 | no usable python export environment |
-| 7 | models directory not writable |
+Authoritative source: `crates/diar-core/src/provision/mod.rs::exit`.
+
+| code | name | meaning | emitted by |
+|---|---|---|---|
+| 0 | `OK` | provisioned, or already up to date | all |
+| 1 | *(none)* | serve only: any other startup failure (bind failed, engine load failed) | serve |
+| 2 | `USAGE` | bad arguments | all |
+| 3 | `SMOKE_FAILED` | files were produced but failed the smoke test; in `verify-models`, also recorded-hash drift | provision, verify |
+| 4 | `EXPORT_FAILED` | the export subprocess failed | provision |
+| 5 | `TOKEN_DENIED` | token missing/invalid, or repo terms not accepted | provision, check-token |
+| 6 | `NO_EXPORTER_ENV` | no usable python export environment | provision |
+| 7 | `NOT_WRITABLE` | models directory not writable | provision |
+| 8 | `MODELS_UNUSABLE` | **serve only:** the models directory is too broken to start against | serve |
+| 9 | `DEVICE_UNAVAILABLE` | the requested execution device is not usable here; no marker is written | provision, verify |
+| 10 | `UNVERIFIABLE` | **verify only:** the files work, but there is no marker to compare them against | verify |
+
+> **Changed in 0.3.0: the startup model gate exits 8, not 6.** The two used to share a code, so a
+> supervisor could not distinguish "install torch into the exporter" from "provision the models".
+> Serving needs no python at all. Any script branching on `6` for a startup failure must be
+> updated. Codes 9 and 10 are also new.
 
 ### What the marker does and does not claim
 
@@ -82,7 +135,7 @@ Be precise about what is checked when:
 
 - **At startup and on `/healthz`** the check is `stat`-only: the marker parses, the recipe
   version is current, the smoke test passed, and every recorded file is present at its
-  recorded length. There is deliberately **no hashing** — re-reading 470 MB on every boot is
+  recorded length. There is deliberately **no hashing** — re-reading ~484 MB on every boot is
   unacceptable, and mtime is useless as a proxy because `docker cp` and volume copies rewrite
   it.
 - **`verify-models` and `provision-models`** do the deep tier: full sha256 plus the whole
@@ -104,9 +157,17 @@ validate a different runtime). Stages 1-3 and 5 run on CPU — no GPU needed.
    right-filename/wrong-model case (RESULTS §1).
 3. **Cross-path numeric agreement**: fbank b1 vs b32; the fused embedding graph vs the split
    fbank→tail path; multimask vs single tail; the b64 multimask is a byte copy of b32; the
-   b64 tail is batch-invariant. No reference data is committed (it would be a derivative of
+   b64 tail is batch-invariant; **and (3e) the b32 multimask graph agrees with the b1 multimask
+   graph under an identical mask.** No reference data is committed (it would be a derivative of
    gated weights), and cross-path agreement is stronger anyway — it cannot be satisfied by a
    consistently-wrong export.
+
+   > 3e is the stage that verifies **what production actually runs**. Live compose sets
+   > `SPEAKRS_LAZY_SESSIONS=1`, under which speakrs skips the batched sessions but **not** the
+   > multimask ones — so before 3e existed, a `wespeaker-multimask-tail-b32.onnx` with its
+   > largest weight tensor zeroed passed all five stages green, earned a `verified` marker and a
+   > 200 from `/readyz`, while every file longer than one window was embedded by a broken graph.
+   > It is now caught at 9.222e-1 against a 1e-4 bar (RESULTS §7.38).
 4. **End-to-end** diarization of a 26 s fixture, with sanity bounds on speakers, segments,
    centroids and gender verdicts.
 5. **PLDA** `.npy` headers: exact dtype and shape.
@@ -118,9 +179,21 @@ Live deployment consumes the **binary**, not this repo's image:
 `COPY --from` the `diar-server` binary and three ORT `.so`s into the backend image. The
 sidecar then runs as compose service `diar-native` with `command: ["diar-server"]`.
 
-See `transcribe-app/docker-compose.diar-native.yml`. Compose var defaults:
-`DIAR_NATIVE_GPU=0`, `DIAR_NATIVE_MODE=cuda`, `DIAR_NATIVE_MODELS_DIR=<your models dir>`,
-`DIAR_NATIVE_MAX_INFLIGHT=2`.
+See `transcribe-app/docker-compose.diar-native.yml`. Its `DIAR_NATIVE_*` variables are
+compose-level indirection that expand into the `DIAR_*` variables `diar-server` actually reads
+(README §6e). Current defaults in that file:
+
+| compose var | expands to | default |
+|---|---|---|
+| `DIAR_NATIVE_IMAGE` | the service `image:` | `davidamacey/opentranscribe-backend:${OT_IMAGE_TAG:-latest}` — the **shared backend image**, not a diar-server image |
+| `DIAR_NATIVE_MODE` | `DIAR_MODE` | `cuda` |
+| `DIAR_NATIVE_MAX_INFLIGHT` | `DIAR_MAX_INFLIGHT` | `2` |
+| `DIAR_NATIVE_MODELS_DIR` | the `/models:ro` bind source | `${MODEL_CACHE_DIR:-./models}/diar-native` |
+| `DIAR_NATIVE_LAZY_SESSIONS` | `SPEAKRS_LAZY_SESSIONS` | `1` |
+| `DIAR_NATIVE_GPU` | `deploy.…device_ids` | `${GPU_DEVICE_ID:-0}` — **not** a bare `0`; enabling the overlay without setting it used to reserve the wrong GPU |
+
+`DIAR_MODELS_DIR=/models` and `DIAR_BIND=0.0.0.0:8701` are set literally in that file, not
+through an indirection.
 
 > `DIARIZER_ENGINE` is **obsolete** — the compose file's own comment notes it "now selects
 > nothing". Engine selection is handled by `opentranscribe.sh` and the release manifest.
@@ -153,21 +226,33 @@ radius on existing callers.
 Before loading any engine, the server does a `stat`-only pass over the required files. The
 asymmetry is deliberate:
 
-- **A missing model file is fatal** (exit 6), with a message naming provisioning and the gate
-  URL. Without this, a half-provisioned directory surfaces as "CUDA session load failed" once
-  per configured device, inside a `restart: unless-stopped` crash loop that also fails
-  `up --wait` — and the operator's actual problem never appears in the logs.
+- **A missing or zero-length model file is fatal** (exit **8**), with a message naming
+  provisioning and the gate URL. Without this, a half-provisioned directory surfaces as "CUDA
+  session load failed" once per configured device, inside a `restart: unless-stopped` crash loop
+  that also fails `up --wait` — and the operator's actual problem never appears in the logs.
+  A marker that records a failed smoke test, or vouches for a file that is now the wrong length,
+  is equally fatal.
 - **A missing marker is only a warning.** Every models directory deployed before this feature
   shipped has no marker; refusing to start on those would turn a provenance improvement into
-  an outage.
+  an outage. An unparseable marker, and one written to a newer schema, are likewise warnings.
+- **A stale marker is only a warning.** `stale` means the recipe version differs from the one
+  this build ships (`EXPORT_RECIPE_VERSION`, currently **2**), or the directory is a `small` set
+  being asked to serve `fast`. Stale directories serve normally — but they return 503 from
+  `/readyz`, since that gates on `verified` exactly.
 
-`DIAR_ALLOW_UNVERIFIED_MODELS=1` downgrades the fatal cases to warnings.
+Which tier the gate requires is read from the directory's **own marker**, falling back to `fast`
+when there is none. `DIAR_MODEL_SET=fast|small` overrides it, for an operator who wants to assert
+that a directory ought to be a given tier and get a loud complaint when it is not.
+
+`DIAR_ALLOW_UNVERIFIED_MODELS=1` downgrades the fatal cases to warnings. It matches exactly `1`,
+`true`, `TRUE` or `yes` — note that `True` does not work.
 
 ## Step 4 — logs
 
 The server logs to **stdout** with `tracing`, so `docker logs diar-native` and `docker compose
 logs` show it with no configuration. Fatal startup errors (the gate block above) stay on
-stderr. Two knobs:
+stderr. Two knobs (the full env-var list, for every subcommand, is README §6e — that table is
+authoritative and this one is a convenience excerpt):
 
 | var | default | meaning |
 |---|---|---|
