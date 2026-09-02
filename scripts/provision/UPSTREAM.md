@@ -35,9 +35,8 @@ diff -u validation/export_tail_b64_addendum.py scripts/provision/export_tail_b64
    segmentation fold-under-the-plain-name (step 2b) are diar-native-specific workarounds for
    loader/exporter mismatches. Upstreaming them as-is would be wrong; the correct upstream fix
    is to make exporter and loader agree, which is tracked separately.
-4. **Precedent exists.** `validation/export_b64_addendum.py` and
-   `validation/export_tail_b64_addendum.py` already copy the same wrappers verbatim with
-   Apache-2.0 attribution.
+4. **Precedent exists.** `validation/export_tail_b64_addendum.py` already copies the same
+   wrapper verbatim with Apache-2.0 attribution.
 
 `vendor/speakrs` is **not modified by this work** — verified with `git -C vendor/speakrs diff
 HEAD --stat` before and after (unchanged at 23 files / 1359 insertions / 256 deletions).

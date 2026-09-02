@@ -1,7 +1,12 @@
 """Export the missing wespeaker-voxceleb-resnet34-tail-b64.onnx.
 
-Same bug class as validation/export_b64_addendum.py (which added the missing
-multimask b64 tail). speakrs' loader asks for
+Same bug class as the missing multimask b64 tail (RESULTS §4.15), but NOT the same
+fix: that one ships as a byte COPY of the b32 graph, because speakrs sizes its
+multimask runtime buffers for 32 and a genuine batch-64 graph under that filename
+crashes the worker. This file is a REAL batch-64 export. See
+scripts/provision/export_tail_b64.py, which contrasts the two treatments in full.
+
+speakrs' loader asks for
 split_tail_model_path(model_path, PRIMARY_BATCH_SIZE=64) =>
 wespeaker-voxceleb-resnet34-tail-b64.onnx (load/sessions.rs:70), and on CoreML for
 the .mlmodelc compiled from it (embedding/native/loaders.rs::load_native_tail).

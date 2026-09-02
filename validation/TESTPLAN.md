@@ -9,7 +9,7 @@ Companion to [RESULTS.md](RESULTS.md) (measurements) and the repo [README](../RE
 |---|---|---|---|---|
 | **A** | pyannote fork (production baseline) | `davidamacey/pyannote-audio` `gpu-optimizations` @ `a3f38afb` | `opentranscribe-backend:latest` image, fork bind-mounted ro over site-packages (exact production code path) | `validation/run_fork_baseline.py` + transcribe-app's own `benchmark-pyannote-direct.py` for the canonical duration curve |
 | **B** | speakrs | `avencera/speakrs` @ `b0756b1` | `diar-bench:latest` (docker/Dockerfile.bench: ORT 1.24.2 GPU, CUDA 12.8, cuDNN 9) | `validation/run_speakrs.sh` → `xtask diarize` |
-| **S** | Triton serving spike | tritonserver 26.06-py3 (ORT backend; TRT backend planned) | model repo `triton/models/` | `validation/triton_bench.py` |
+| **S** | Triton serving spike — **RETIRED**, see RESULTS §7.26 | tritonserver 26.06-py3 (ORT backend; TRT backend planned) | model repo `triton/models/` | harness deleted; §7.26 *is* the recipe |
 
 **Models (both engines):** self-exported from the production HF cache of
 `pyannote/speaker-diarization-community-1` (segmentation 4-layer-LSTM checkpoint, WeSpeaker
@@ -105,11 +105,12 @@ docker run --rm --entrypoint bash -v /path/to/diar-native:/work \
 # speakrs image
 docker build -f docker/Dockerfile.bench -t diar-bench:latest vendor/speakrs
 
-# Triton spike (GPU 1)
+# Triton spike (GPU 1) — RETIRED. TensorRT/Triton was measured and rolled back; RESULTS §7.26
+# is the reproduction recipe and the cost-benefit to re-judge. The gRPC bench harness that
+# produced the spike numbers was deleted (recover: `git show <sha>:validation/triton_bench.py`).
 docker run -d --name diar-triton-spike --gpus '"device=1"' -p 8610:8000 -p 8611:8001 -p 8612:8002 \
   -v /path/to/diar-native/triton/models:/models:ro nvcr.io/nvidia/tritonserver:26.06-py3 \
   tritonserver --model-store=/models
-venv/bin/python3 validation/triton_bench.py localhost:8611
 ```
 
 Corpora locations: AMI + VoxConverse + Karpathy ground truth under
