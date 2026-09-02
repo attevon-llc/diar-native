@@ -31,11 +31,23 @@
 # hands an arm64 user a diarizer with no GPU support while an amd64 user gets one with it. That
 # is worse than being explicit, so they stay amd64-only and README §"Published images" says so.
 #
-# Why the `-arm64` ALIASES still exist alongside the manifest lists: `start.sh` and
-# `docker-compose.prod.yml` name an exact tag per host and then assert the architecture of what
-# they pulled. That path wants a tag that is arm64 *by name*, so a mismatch is a clean error
-# rather than a slow emulated one. The manifest list is for `docker pull` doing the right thing
-# automatically; the alias is for naming it deliberately. Both are published, both documented.
+# Why the `-arm64` ALIASES still exist alongside the manifest lists, rather than being dropped
+# now that the base tag resolves correctly. Two reasons, and the second is the deciding one:
+#
+#   1. `start.sh` and `docker-compose.prod.yml` name an exact tag per host and then assert the
+#      architecture of what they pulled. That path wants a tag that is arm64 *by name*, so a
+#      mismatch is a clean error rather than a slow emulated one. The manifest list is for
+#      `docker pull` doing the right thing on its own; the alias is for naming it deliberately.
+#
+#   2. They are what keeps the DOCUMENTATION true across the transition. All six published
+#      0.3.0 tags are plain single-platform manifests — verified against the registry, not
+#      assumed — and README.md, QUICKSTART.md, docker-compose.prod.yml and start.sh all pin
+#      0.3.0. Dropping the aliases would make every one of those instructions wrong TODAY and
+#      correct only after the next release ships. Keeping them means every statement in those
+#      files is true now AND after the next release, with no flag day in between.
+#
+# Both shapes are published, both are documented, and README §"Published images" is the single
+# authoritative statement of the model.
 #
 # WHAT THIS DOES NOT DO, on purpose:
 #
