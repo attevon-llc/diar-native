@@ -3711,3 +3711,70 @@ was **not** edited here; flagged for its owner rather than changed.
 x86_64, glibc 2.39, ort 2.0.0-rc.12, rustc 1.97.1, host build, default (CPU) features. Machine was
 under unrelated load (load average ~13 of 48 cores) — irrelevant to exit codes, and no timing claim
 is made in this section.
+
+#### §7.51 addendum — the 139 is the 134, and one rationale in §7.51 is RETRACTED
+
+Follow-up sweep (185 runs, host + container) plus a first-hand PID-1 control. Two corrections to
+§7.51 above, which stands otherwise. Nothing about the fix changes; the shipped behaviour is
+unaffected.
+
+**1. Exit 139 DOES reproduce — in the container — and it is the SAME fault, not a second one.**
+§7.51 said SIGSEGV/139 "was never reproduced". That was true of the *host* and is misleading as
+written. In the container it reproduces 100%. The difference is entirely **where PID 1 sits**.
+Same image, same env, same clip, only the PID-1 position changed:
+
+| invocation | PID 1 | exit |
+|---|---|---|
+| `docker run ... diar-native-cli:local-cpu` | `diar-cli` itself | **139** x3 |
+| `docker run --init ...` | tini | **134** x3 |
+| `docker run --entrypoint /bin/sh ... -c 'diar-cli ...; echo $?'` | `sh` | **134** x3 |
+
+As PID 1 in the namespace a `SIG_DFL` SIGABRT is discarded by the kernel, so glibc's `abort()`
+falls through its `raise()` path into the trailing `ABORT_INSTRUCTION` and the death is reported
+as 128+11 instead of 128+6. The stderr text is byte-identical in all cases — the TLS
+`AccessError` and `failed to initiate panic, error 5, aborting`. So the issue's "139" and this
+section's "134" were always one bug, observed through different PID-1 positions.
+
+**`corrupted double-linked list` was never reproduced at all** — zero hits for `corrupted`,
+`free()`, `malloc` or `SIGSEGV` across 185 stderr captures on host and in the container. The
+issue title's glibc heap message remains unexplained and unreproduced; every observed failure was
+the TLS abort. This is recorded as "could not reproduce", not as "the reporter was wrong".
+
+**2. RETRACTED: the stated reason for preferring `_exit` over `std::process::exit`.** §7.51
+justified `_exit` partly because it "additionally skips `ReleaseEnv` reaching into
+`libonnxruntime.so` during `_dl_fini` — the plausible origin of the reported `corrupted
+double-linked list`". **That hypothesis is disproven**: there is no heap-corruption flavour to
+explain, and `Environment::drop` (ort `src/environment.rs:240-245`) calls `ReleaseEnv` *first* and
+logs *second*, so `ReleaseEnv` had already completed successfully every time the abort fired.
+
+`std::process::exit` would therefore have been a sufficient fix for the only fault ever observed.
+`_exit` is **kept** — it is what shipped, is verified end to end, and removes the entire class
+(any `.fini_array` destructor doing anything unsafe after `main`, not just this one) rather than
+relying on Rust's guarantee that `process::exit` skips TLS destructors. But that is now the whole
+of the argument, and it is weaker than §7.51 claimed. No re-measurement was needed: both
+mechanisms were already measured clean.
+
+**3. The trigger is narrower than `RUST_LOG=trace`.** The only directive that matters is one
+enabling target **`ort::lifetime`** at TRACE. Host matrix, 15 runs per cell on two clips
+(`clip30.wav` and `vendor/speakrs/fixtures/test.wav`), pre-fix binary, `--mode cpu`:
+
+| `RUST_LOG` | clip30 | test.wav |
+|---|---|---|
+| unset / `warn` / `info` / `speakrs=trace` | 0 x15 each | 0 x15 each |
+| `ort::lifetime=trace` | **134 x15** | **134 x15** |
+
+120/120 clean, 30/30 abort. **`speakrs=trace` — the incantation CLAUDE.md documents for engine
+stage timings — is safe and always was.** `RUST_LOG=trace`, the natural thing to reach for when
+debugging, is the trigger. This is why the original report's own repro line looked flaky: it
+never triggered the fault at all, and the failures attributed to it came from elsewhere.
+
+**Container before/after, PID 1, the reporter's exact configuration:**
+
+| binary | `ort::lifetime=trace` | `RUST_LOG=trace` |
+|---|---|---|
+| pre-fix | **139, 139, 139** | 139 x5 (swept) |
+| post-fix | **0, 0, 0** | **0, 0, 0** |
+
+Post-fix container RTTM is byte-identical to the known-good host run. Verified by mounting the
+fixed binary into the unchanged pre-fix image, so the image, models, clip and PID-1 position are
+held constant and only the binary differs.

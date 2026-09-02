@@ -90,6 +90,18 @@ cleanly — the environment is still released from `.fini_array`, only TLS is st
 
 Measured on x86_64 Linux, glibc 2.39, ort 2.0.0-rc.12, rustc 1.97.1.
 
+**Expect two different exit codes for this one bug.** Normally it is `SIGABRT` (134). If the
+process is **PID 1** — the common case in a container — the kernel discards the default-disposition
+SIGABRT, glibc's `abort()` falls through its `raise()` path into the trailing `ABORT_INSTRUCTION`,
+and the death is reported as **139**. Same image and same stderr; only the PID-1 position differs
+(`docker run --init`, or any wrapper that leaves the binary as a child, restores 134). A bug
+report saying "SIGSEGV" is very likely this.
+
+**The trigger is narrower than it looks.** Only a directive that enables target `ort::lifetime` at
+`TRACE` reaches the faulting path. `RUST_LOG=trace` does; a targeted filter like
+`RUST_LOG=mycrate=trace` does not. Measured: 120/120 clean across `unset`/`warn`/`info`/targeted,
+and 30/30 aborts at `ort::lifetime=trace`.
+
 ## Suggested upstream fixes
 
 In rough order of preference:
@@ -110,9 +122,13 @@ uninstalled once set.
 ## What we do about it
 
 `diar_core::shutdown::exit` terminates via `_exit`, so libc's exit handlers — and therefore
-`release_env_on_exit` — never run. Both binaries route every exit through it. This also sidesteps
-the second-order hazard in the same window: `ReleaseEnv` reaching into `libonnxruntime.so` during
-`_dl_fini`, where destructor ordering across shared objects is not guaranteed.
+`release_env_on_exit` — never run. Both binaries route every exit through it.
+
+`std::process::exit` would also have sufficed, and is the smaller change: it skips Rust's TLS
+teardown, so the event formats fine. `_exit` was kept because it removes the whole class — any
+`.fini_array` destructor doing anything unsafe after `main`, not only this one. Note that
+`ReleaseEnv` itself is **not** implicated: `Environment::drop` calls it *before* it logs, and it
+completed successfully on every observed abort.
 
 If upstream takes fix 1 or 2, `crates/diar-core/src/shutdown.rs` stays worth keeping anyway — it
 keeps the whole ordering question out of our exit path — but

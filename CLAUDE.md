@@ -57,8 +57,11 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
   `std::process::exit` — lets libc run ort's `.fini_array` destructor, which LOGS the drop of
   its global `Environment` after the main thread's TLS is gone; with a subscriber installed and
   `ort::lifetime` at TRACE that aborts the process *after* the work is written and the output
-  flushed. It cost `diar-cli` exit 134 at `RUST_LOG=trace` and made `diar-server` answer a port
-  conflict with a heap-corruption abort instead of "address already in use". Not fixable
+  flushed. It cost `diar-cli` exit 134 (139 in a container, where it is PID 1 — same SIGABRT)
+  and made `diar-server` answer a port conflict with an abort instead of "address already in
+  use". **Only a directive enabling `ort::lifetime` at TRACE triggers it — `RUST_LOG=trace`
+  does, `speakrs=trace` does not** (so the stage-timing incantation above was always safe).
+  Not fixable
   downstream: ort's `G_ENV` is private and strong, and the tracing dispatcher cannot be
   uninstalled. Guarded by `crates/diar-core/tests/shutdown_teardown.rs`.
 - `upstream-work/` (gitignored) — upstream-tip clone with the 7 prepared PR branches;

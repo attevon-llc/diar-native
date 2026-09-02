@@ -23,9 +23,10 @@ Measurements referenced here are recorded in
 ### Fixed
 
 - **`diar-cli` and `diar-server` no longer die by signal at teardown (issue #19).** `diar-cli`
-  aborted with exit 134 (`corrupted double-linked list` / SIGABRT) *after* writing a complete,
-  correct RTTM, so any caller checking the exit code — a script, CI, a supervisor — discarded a
-  good run. `diar-server` had the same defect on its bind-failure path, where it answered a port
+  aborted *after* writing a complete, correct RTTM, so any caller checking the exit code — a
+  script, CI, a supervisor — discarded a good run. It surfaced as exit 134 on a host and 139 in
+  a container; those are the same SIGABRT, because as PID 1 the default-disposition signal is
+  discarded and glibc's `abort()` falls through to its trailing trap. `diar-server` had the same defect on its bind-failure path, where it answered a port
   conflict with a heap-corruption abort instead of `Address already in use`. Root cause is
   upstream and not a race: `ort` releases its process-global `Environment` from an ELF
   `.fini_array` destructor and *logs* the drop, which runs after `main` has returned and after
