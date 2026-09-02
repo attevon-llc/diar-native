@@ -5,8 +5,8 @@
 # source repository. Two files on disk, one command:
 #
 #   mkdir -p diar-native/audio && cd diar-native
-#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
-#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.prod.yml -o docker-compose.yml
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/.env.example -o .env
 #   $EDITOR .env            # set HUGGINGFACE_TOKEN — the only thing you must supply
 #   docker compose up
 #
@@ -26,11 +26,11 @@
 # wrong architecture:
 #
 #   host                        DIAR_IMAGE                               DIAR_PROVISION_IMAGE
-#   linux/amd64, NVIDIA GPU     davidamacey/diar-native:0.3.0            ...:0.3.0-provision
-#   linux/amd64, CPU (default)  davidamacey/diar-native:0.3.0-cpu        ...:0.3.0-provision
-#   linux/arm64 · Apple Sili.   davidamacey/diar-native:0.3.0-cpu-arm64  ...:0.3.0-provision-arm64
+#   linux/amd64, NVIDIA GPU     davidamacey/diar-native:0.3.1            ...:0.3.1-provision
+#   linux/amd64, CPU (default)  davidamacey/diar-native:0.3.1-cpu        ...:0.3.1-provision
+#   linux/arm64 · Apple Sili.   davidamacey/diar-native:0.3.1-cpu-arm64  ...:0.3.1-provision-arm64
 #
-# On an arm64 host this matters more than it looks. `:latest` and `:0.3.0` are the CUDA image
+# On an arm64 host this matters more than it looks. `:latest` and `:0.3.1` are the CUDA image
 # and are published for linux/amd64 ONLY — permanently, since no aarch64 ONNX Runtime GPU build
 # exists — and Docker Desktop will not refuse them; it emulates, so the failure is "inexplicably
 # slow" rather than a clean error. Pick the `-arm64` tag deliberately.
@@ -38,26 +38,26 @@
 # The `-arm64` tags are single-platform and stay that way, which is the point: they are arm64 BY
 # NAME, so the wrong one on the wrong host is unambiguous instead of quietly emulated. From the
 # first release published by scripts/release.sh, `:<ver>-cpu` and `:<ver>-provision`
-# are ALSO multi-arch manifest lists that resolve per-architecture on their own — but 0.3.0
-# predates that workflow and every 0.3.0 tag is single-platform, so name them explicitly here
-# (issue #20; README "Published images" is the authoritative tag model).
+# are ALSO multi-arch manifest lists that resolve per-architecture on their own — but 0.3.0 and
+# 0.3.1 both predate that workflow and every tag published so far is single-platform, so name
+# them explicitly here (issue #20; README "Published images" is the authoritative tag model).
 #
 # Pinned by TAG so `docker compose pull` can move you forward. To pin harder, swap the tag for
-# a digest (verified by fresh pull 2026-09-01; trivy 0.67.1 clean, 0 HIGH / 0 CRITICAL; all
+# a digest (verified by fresh pull 2026-09-02; trivy 0.67.1 clean, 0 HIGH / 0 CRITICAL; all
 # run as uid 10001):
 #
-#   0.3.0 / latest    sha256:f1f9773edc34a6116cb761166ed0811665b3b82b9b475578ac21dc0dbc8a1584
-#   0.3.0-cpu         sha256:1ffd2700b7b9d4c0c3980058f7767caf629129134d42e77e0ddfcf7c5caee1a9
-#   0.3.0-cpu-arm64   sha256:41b328a58fe982ae65e1642fc9b461e766058d3b1e8b02607aff053867697268
+#   0.3.1 / latest    sha256:83a709be94d0ca06441fa10aea0680f53b03cc10eb3ce11c4eeb84478400567d
+#   0.3.1-cpu         sha256:b00b4bb5999d0b5cc353dae27c07b17fe61b232517f250aaf3ef03536c610879
+#   0.3.1-cpu-arm64   sha256:63e7a7275aada3da8c4840cbc5e2b4e498605a6658086355c62b84af75232d64
 #
-#   image: davidamacey/diar-native@sha256:1ffd2700b7b9d4c0c3980058f7767caf629129134d42e77e0ddfcf7c5caee1a9
+#   image: davidamacey/diar-native@sha256:b00b4bb5999d0b5cc353dae27c07b17fe61b232517f250aaf3ef03536c610879
 #
 # ── GPU ───────────────────────────────────────────────────────────────────────────────────
 # Opt-in, never assumed, because a compose device reservation cannot be made conditional:
 # present and unsatisfiable it is a hard startup failure on every machine without an NVIDIA
 # runtime. Set DIAR_IMAGE to the CUDA tag above, then add the overlay:
 #
-#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
+#   curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.gpu.yml -o docker-compose.gpu.yml
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 #
 # The overlay sets DIAR_DEVICES=cuda,cpu, which is fatal at startup against a `-cpu` image —

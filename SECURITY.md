@@ -12,7 +12,8 @@ Report privately, whichever is easier for you:
    advisory in one place.
 2. **Email** — <davidamacey@gmail.com>, with `diar-native security` in the subject.
 
-Please include enough to reproduce: affected version or image tag (e.g. `diar-server:0.2.0`),
+Please include enough to reproduce: affected version or image tag (e.g.
+`davidamacey/diar-native:0.3.1`),
 the request or input that triggers it, what you expected, what happened, and the impact you
 believe it has. A minimal reproducer is worth more than a long description.
 
@@ -24,8 +25,13 @@ disclosing publicly.
 ## Supported versions
 
 This project ships as a container image rather than a versioned library. Only the **latest
-released image** receives security fixes. The currently deployed sidecar is
-`diar-server:0.2.0`; see `CHANGELOG.md` for what has landed since.
+released image** receives security fixes — currently **0.3.1**
+(`davidamacey/diar-native:0.3.1` and the `-cpu`, `-cpu-arm64` and `-provision` variants; see
+`docs/DEPLOYMENT.md` for digests, all scanned at 0 HIGH / 0 CRITICAL).
+
+Note that the image and the **deployed binary** are not the same thing here: OpenTranscribe
+copies `diar-server` out of this image at build time, so the sidecar running there is whatever
+its pinned digest last provided, not necessarily the latest release. See `CHANGELOG.md`.
 
 ## Scope
 
