@@ -34,3 +34,7 @@ results/rttm/*/*.log
 target/
 upstream-work/
 venv-export/
+
+# Editor directories — local to a developer, never part of a build.
+.vscode/
+.idea/

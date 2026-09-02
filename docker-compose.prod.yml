@@ -104,7 +104,7 @@ services:
   # (export_models.py does `pipeline.to(torch.device("cpu"))`), so a CUDA-based provisioning
   # image would add 3 GB for nothing. Once the models exist you can `docker image rm` it.
   provision:
-    image: ${DIAR_PROVISION_IMAGE:-davidamacey/diar-native:0.3.0-provision}
+    image: ${DIAR_PROVISION_IMAGE:-davidamacey/diar-native:0.3.1-provision}
     # Not a service that should ever come back up on its own: it is a job, and it is
     # expected to exit 0.
     restart: "no"
@@ -147,7 +147,7 @@ services:
   diar-native:
     # No `build:` key anywhere in this file, on purpose: that is the entire point of it.
     # Nothing here can silently start compiling, and nothing here needs the source tree.
-    image: ${DIAR_IMAGE:-davidamacey/diar-native:0.3.0-cpu}
+    image: ${DIAR_IMAGE:-davidamacey/diar-native:0.3.1-cpu}
     container_name: diar-native
     restart: unless-stopped
     depends_on:

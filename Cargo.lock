@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "diar-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "diar-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "hound",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "diar-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",

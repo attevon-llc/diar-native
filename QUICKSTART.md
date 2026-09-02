@@ -8,8 +8,8 @@ whole deployment; the repo is for *contributing to* diar-native, not for *runnin
 
 ```bash
 mkdir -p diar-native/audio && cd diar-native
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/.env.example -o .env
 $EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
 docker compose up
 ```
@@ -37,7 +37,7 @@ file because compose cannot make a device request conditional — present and un
 is a hard startup failure on every host without an NVIDIA runtime:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.gpu.yml -o docker-compose.gpu.yml
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 ```
 

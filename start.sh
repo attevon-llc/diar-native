@@ -25,7 +25,7 @@ MARKER_NAME="diar-provision.json"
 # THE one place the version lives in this script. Pinned rather than tracking `:latest` on
 # purpose: `:latest` is the amd64 CUDA image, so on any other host it is not merely stale,
 # it is the wrong architecture. Every tag below is derived from these two lines.
-DIAR_VERSION=0.3.0
+DIAR_VERSION=0.3.1
 REGISTRY=davidamacey/diar-native
 
 # The image's built-in non-root user. Must match docker/Dockerfile.server,

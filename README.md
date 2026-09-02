@@ -22,8 +22,8 @@ The default. Works on any amd64 machine, GPU or not, and needs no NVIDIA runtime
 
 ```bash
 mkdir -p diar-native/audio && cd diar-native
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/.env.example -o .env
 $EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...   (the only thing you must supply)
 docker compose up
 ```
@@ -40,9 +40,9 @@ host is not sufficient by itself.
 
 ```bash
 mkdir -p diar-native/audio && cd diar-native
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.gpu.yml -o docker-compose.gpu.yml
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.gpu.yml -o docker-compose.gpu.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/.env.example -o .env
 printf 'DIAR_IMAGE=davidamacey/diar-native:0.3.0\n' >> .env
 $EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
@@ -60,8 +60,8 @@ instruction set and nothing else. It works correctly; it is simply not accelerat
 
 ```bash
 mkdir -p diar-native/audio && cd diar-native
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/docker-compose.prod.yml -o docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.0/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/docker-compose.prod.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/attevon-llc/diar-native/v0.3.1/.env.example -o .env
 printf 'DIAR_IMAGE=davidamacey/diar-native:0.3.0-cpu-arm64\nDIAR_PROVISION_IMAGE=davidamacey/diar-native:0.3.0-provision-arm64\n' >> .env
 $EDITOR .env      # set HUGGINGFACE_TOKEN=hf_...
 docker compose up

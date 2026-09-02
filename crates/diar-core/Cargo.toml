@@ -1,6 +1,6 @@
 [package]
 name = "diar-core"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 # MSRV: inherited from [workspace.package] in the root Cargo.toml, which explains how the
 # 1.88.0 floor was measured and why it differs from the 1.97.1 build pin.
