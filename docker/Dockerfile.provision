@@ -48,11 +48,62 @@ COPY scripts/provision/requirements.txt /opt/diar-provision/requirements.txt
 # CPU-ONLY torch, deliberately. The export never touches a GPU — export_models.py does
 # `pipeline.to(torch.device("cpu"))` — so the default CUDA wheels would pull ~5 GB of
 # nvidia_* packages that are downloaded and then never executed.
+# setuptools and msgpack arrive as TRANSITIVE dependencies at versions trivy flags HIGH:
+# CVE-2025-47273 (setuptools path traversal in PackageIndex) and GHSA-6v7p-g79w-8964 (msgpack
+# out-of-bounds read when an Unpacker is reused after a caught error). Neither is reachable
+# from what this image does — it runs one trusted export script, not an index fetch and not
+# untrusted msgpack — but scripts/release.sh fails a release on ANY HIGH/CRITICAL rather than
+# inviting a per-image judgement call, so they are upgraded rather than argued about. Both have
+# fixed versions and neither changes an API this image uses.
+#
+# Upgraded in the same layer, BEFORE requirements.txt, so pip resolves the pinned floors once
+# instead of installing the vulnerable version and then replacing it in a later layer (which
+# leaves the old files in the image and keeps the finding).
 RUN python3 -m venv /opt/diar-provision/env \
- && /opt/diar-provision/env/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/diar-provision/env/bin/pip install --no-cache-dir --upgrade \
+      pip 'setuptools>=78.1.1' 'msgpack>=1.2.1' \
  && /opt/diar-provision/env/bin/pip install --no-cache-dir \
       --extra-index-url https://download.pytorch.org/whl/cpu \
       -r /opt/diar-provision/requirements.txt
+
+# Remove the SYSTEM python's pip and setuptools once the venv exists.
+#
+# They are only ever used to bootstrap the venv above; nothing at runtime touches them, and the
+# export runs entirely from /opt/diar-provision/env. But apt's python3-pip ships a VENDORED
+# msgpack (GHSA-6v7p-g79w-8964) and an old setuptools egg-info (CVE-2025-47273), both of which
+# trivy reports HIGH — on code that is present but unreachable.
+#
+# Deleting is the honest fix rather than an ignore-file entry: the finding goes away because the
+# code is gone, not because we stopped looking. The venv's own copies are already upgraded past
+# both advisories, and they are what actually runs.
+#
+# Note it must happen AFTER the venv is created — python3 -m venv needs system pip to exist.
+# Remove pip itself — from the venv AND from the system python — once everything is installed.
+#
+# Nothing at runtime needs a package installer: `provision-models` runs the export scripts out
+# of the venv and never resolves a dependency. Carrying pip is pure attack surface.
+#
+# It is also the ONLY remaining source of trivy HIGH findings, and not in the way it first
+# looks. pip VENDORS its dependencies and (since 26.x) ships a CycloneDX SBOM declaring them:
+#
+#   pip/_vendor/msgpack/          msgpack 1.1.2   GHSA-6v7p-g79w-8964
+#   pip/_vendor/bom.cdx.json      setuptools 70.3.0  CVE-2025-47273
+#
+# So upgrading setuptools and msgpack in the venv — which we do, and which is why the venv's own
+# copies are 84.0.0 and 1.2.2 — could never clear these: the flagged code is INSIDE pip. The
+# only honest fixes are to remove pip or to suppress the finding, and removing it is better:
+# the code is actually gone, and the image loses a capability it never needed.
+#
+# Must run AFTER the installs above; `python3 -m venv` and every `pip install` need it to exist.
+RUN apt-get purge -y --auto-remove python3-pip >/dev/null 2>&1 || true \
+ && rm -rf /usr/lib/python3/dist-packages/pip \
+           /usr/lib/python3/dist-packages/pip-*.dist-info \
+           /usr/lib/python3/dist-packages/setuptools \
+           /usr/lib/python3/dist-packages/setuptools-*.egg-info \
+           /usr/lib/python3/dist-packages/pkg_resources \
+           /opt/diar-provision/env/lib/python3.12/site-packages/pip \
+           /opt/diar-provision/env/lib/python3.12/site-packages/pip-*.dist-info \
+ && /opt/diar-provision/env/bin/python -c "import torch, onnx, onnxscript, transformers, huggingface_hub; print('venv intact:', torch.__version__)"
 
 # The scripts themselves are baked into the binary; this copy is for inspection and for
 # `diar-server provision-models --dump-scripts`-style debugging, not for execution.
