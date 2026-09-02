@@ -16,6 +16,37 @@ Before adding a file here, check it is not a one-off. Git history preserves anyt
 (`git show <sha>:validation/<file>`), so the bar is "would someone reach for this again?", not
 "could this ever matter?".
 
+## Why this is not merged into `scripts/`
+
+Asked and declined on 2026-09-01. The split is not stylistic — the two trees have opposite
+relationships to the build:
+
+- **`scripts/provision/*.py` is compiled into the product.**
+  `crates/diar-core/src/provision/exporter.rs` `include_str!`s all five, so the exporter *is*
+  the binary's own bytes. §7.35 records a build failing because a Dockerfile did not `COPY
+  scripts/`. Editing a file there changes a shipped artifact.
+- **`validation/` is deliberately excluded from the build.** `ort_fusion_probe/` is
+  specifically not a workspace member so a root `cargo build` never touches it.
+
+The second reason is harder still: **`RESULTS.md` is append-only and cites both trees by
+path** — `validation/score_der.py`, `validation/b*.sh`, `validation/make_corrupt_fixture.py`,
+and equally `scripts/compare_model_sets.py`, `scripts/provision/provision.py`. A move would
+break citations in a document that by policy can never be corrected. Paths in both trees are
+effectively frozen.
+
+The three files that look misfiled are not:
+
+- `score_der.py` stays — RESULTS' front matter names it as *the* scoring instrument behind
+  every DER number in the log.
+- `make_corrupt_fixture.py` stays — `crates/diar-core/tests/provision_smoke.rs` names it in
+  four places as the builder for its `#[ignore]`d fixtures.
+- `compare_model_sets.py` stays in `scripts/` — it is the acceptance check you run *after*
+  provisioning, it lives next to the `scripts/provision/` recipe it checks, and §7.36 records
+  a bugfix to the tool itself.
+
+Structure inside `validation/` is handled by the sections of this file, which costs no path
+churn. Prefer that to new subdirectories.
+
 ## Records
 
 | file | what it is |
