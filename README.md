@@ -42,8 +42,20 @@ beats the production Python fork it replaces:
 | **13.101%** DER | **8.219%** DER | **4.847%** DER |
 
 Speed, warm engine on an RTX A6000: 66.5 minutes of audio diarized in **21.6 s — 184× realtime**.
+Measured against the two things it replaces, same clip, same hardware, accuracy preserved:
+
+| compared with | speed-up | evidence |
+|---|---|---|
+| the **PyAnnote fork** this replaces in production | **2.2×** faster (48.0 s → 21.6 s, 83× → 184× RT) | Karpathy 66.5 min, one A6000; DER 8.194% → 8.219%, +0.025 pp |
+| **stock `speakrs`**, which it is built on | **3.1×** faster (39.4 s → 12.9 s) | ES2004a 36.4 min, same session A/B; **RTTM byte-identical at every step** |
+
+The speakrs gain is our patch set — folded segmentation graphs, a multimask-batching fix, and an
+fbank session pool that removed a CPU bottleneck the GPU was never responsible for. Every step of
+it was verified output-identical, not merely faster.
+
 Concurrent requests share one engine's VRAM. A GPU is optional; the CPU path produces the same
-output, only slower. Conditions and the full record: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+output, only slower. Conditions and the full record: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
+and [validation/RESULTS.md](validation/RESULTS.md).
 
 ## Use it
 
