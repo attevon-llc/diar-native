@@ -110,6 +110,8 @@ does the copy; do not "fix" it into an export.
 | `ort_fusion_probe/` | Makes ORT's **load-time** graph rewriting observable — serializes the optimized graph and reports load success per configuration. Built for issue #14 (fp16 gender fails to load on linux/arm64). Not a workspace member, so a root `cargo build` never touches it. Read `docs/ORT_FUSION_FP16_AARCH64.md` before re-running. | §7.40 |
 | `asr_timestamp_spike.py` | Word-timestamp accuracy vs hand labels (SequenceMatcher alignment, \|Δstart\| on matches) — faster-whisper vs parakeet. The harness for the table in `docs/ASR_TRITON_NOTES.md`; re-run protocol is to swap the model name in `run_parakeet()`. | — (`docs/ASR_TRITON_NOTES.md`) |
 
+- **`triton_bench.py`** — Triton gRPC latency/throughput bench. **Future work, not current.** TensorRT-in-`ort` was rolled back (RESULTS §7.26), but Triton remains the intended T2 multi-user tier (2.14x throughput at 8 clients) and running TensorRT locally is a separate question. Kept so revisiting means re-running, not re-deriving.
+
 ## Removed
 
 Deleted as spent; recover any of them with `git show <sha>:validation/<file>`.
@@ -117,7 +119,5 @@ Deleted as spent; recover any of them with `git show <sha>:validation/<file>`.
 - `export_b64_addendum.py` — exported a **real** batch-64 multimask graph, which is exactly the
   artifact that crashes the worker (§4.15). Superseded by the byte copy in
   `scripts/provision/provision.py` step 2c.
-- `triton_bench.py` — Triton gRPC bench for the serving spike. TensorRT/Triton was rolled back;
-  §7.26 states that *it* is the recipe if the question is ever reopened.
 - `ort_cuda_microbench.py` — one-off re-test of a phase-6 claim about the ORT CUDA EP on an
   unfolded segmentation graph. The claim was settled and the graph is folded now.
