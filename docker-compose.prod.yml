@@ -37,7 +37,7 @@
 #
 # The `-arm64` tags are single-platform and stay that way, which is the point: they are arm64 BY
 # NAME, so the wrong one on the wrong host is unambiguous instead of quietly emulated. From the
-# first release published by .github/workflows/release.yml, `:<ver>-cpu` and `:<ver>-provision`
+# first release published by scripts/release.sh, `:<ver>-cpu` and `:<ver>-provision`
 # are ALSO multi-arch manifest lists that resolve per-architecture on their own — but 0.3.0
 # predates that workflow and every 0.3.0 tag is single-platform, so name them explicitly here
 # (issue #20; README "Published images" is the authoritative tag model).

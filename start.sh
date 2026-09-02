@@ -369,7 +369,7 @@ image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
 # DIAR_IMAGE.
 #
 # This stays correct if a tag DOES become a manifest list. From the first release published by
-# .github/workflows/release.yml, `:<ver>-cpu` and `:<ver>-provision` are multi-arch (issue #20)
+# scripts/release.sh, `:<ver>-cpu` and `:<ver>-provision` are multi-arch (issue #20)
 # — `docker pull` then selects the matching architecture and the check below simply passes.
 # The explicit `-arm64` aliases keep being published, which is why the selection above still
 # names them: an explicit tag turns a mistake into this error message instead of a slow run.
