@@ -299,7 +299,17 @@ single-maintainer project.
 
 ---
 
-## Branches prepared (2026-08-19, this session) — awaiting approval to push
+## Branches prepared (2026-08-19) — PUSHED, and 7 PRs are open upstream
+
+**Status corrected 2026-09-02.** This section was written before the branches were pushed and
+said "awaiting approval". They were pushed, and as of today `avencera/speakrs` has **7 open PRs**
+from `attevon-admin` (#8, #9, #10, #14, #15, #17, plus upstream's own #6 which we adopted). Check
+the live list rather than trusting the state recorded below:
+
+    gh pr list --repo avencera/speakrs --state open
+
+What follows is the preparation record — what each branch contains and why — which is still
+accurate. Only the "not yet pushed" framing was stale.
 
 Work clone: `upstream-work/` (gitignored; upstream tip verified NOT moved past `b0756b1`).
 All branches compile warning-clean and pass the full 94-test suite in isolation

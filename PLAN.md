@@ -139,7 +139,7 @@ Milestones:
     NO `tracing-subscriber` and never installed one, so speakrs' 40 events and diar-core's 2
     warnings went nowhere and the operator saw two `eprintln!` lines and crashes. `RUST_LOG`
     now defaults to `info,ort::logging=warn` (unset must not mean silent; ORT's native bridge
-    emits 5797 INFO lines per CUDA startup and would bury everything), `DIAR_LOG_FORMAT` selects
+    emits 5812 INFO lines per CUDA startup and would bury everything), `DIAR_LOG_FORMAT` selects
     the rendering, logs go to stdout, and every `/diarize` / `/embed_window` request gets a
     span (`request_id`, device, duration, outcome, `error_class`) that speakrs' own events
     nest under. Policy lives in `diar_core::logging` so the server and the CLI cannot drift.
