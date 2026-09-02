@@ -52,6 +52,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 die() { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# --diarize is resolved to an ABSOLUTE path here, while we are still in the directory the user
+# ran us from. Everything below runs after `cd "$DIR"`, so a relative path like `clip30.wav`
+# silently stops resolving — which is exactly what happened the first time this script was run
+# end to end from a clean directory.
+if [[ -n "$DIARIZE" ]]; then
+  [[ -f "$DIARIZE" ]] || { printf '\n\033[31merror:\033[0m no such file: %s\n' "$DIARIZE" >&2; exit 1; }
+  DIARIZE="$(cd "$(dirname "$DIARIZE")" && pwd)/$(basename "$DIARIZE")"
+fi
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 ok()  { printf '  \033[32mok\033[0m  %s\n' "$*"; }
 
@@ -167,7 +176,6 @@ STATE="$(curl -s "http://localhost:${PORT}/healthz" 2>/dev/null \
 ok "models: $STATE"
 
 if [[ -n "$DIARIZE" ]]; then
-  [[ -f "$DIARIZE" ]] || die "no such file: $DIARIZE"
   cp -f "$DIARIZE" audio/
   say "Diarizing $(basename "$DIARIZE")"
   curl -s "http://localhost:${PORT}/diarize" -H 'Content-Type: application/json' \
