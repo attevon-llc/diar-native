@@ -315,7 +315,7 @@ All branches compile warning-clean and pass the full 94-test suite in isolation
 | `perf/cuda-pipeline-series` | 3 commits | PR-B as submitted (i+ii+iii cherry-picked) |
 | `feat/shared-sessions` | 1a51e8b | PR-4 as a REAL PR (T9a, minus pool/lazy/TRT) |
 
-Final PR/issue text: `docs/pr_drafts.md`. Remaining before submission: per-branch isolated
+Final PR/issue text now lives in the filed PRs themselves (the drafts file was deleted; see git history). Remaining before submission: per-branch isolated
 E2E speed re-confirmation on a quiet machine (accuracy/bit-identity claims already verified),
 then operator approval to open the intro issue + PRs against avencera/speakrs.
 

@@ -10,7 +10,7 @@
 # This script exists to detect your platform, prompt for the token and wait on /readyz.
 #
 # Safe to re-run: with the models already on disk it is a fast no-op that needs no token and
-# no network. See QUICKSTART.md.
+# no network. See docs/DEPLOYMENT.md.
 
 set -euo pipefail
 
@@ -29,7 +29,7 @@ DIAR_VERSION=0.3.1
 REGISTRY=davidamacey/diar-native
 
 # The image's built-in non-root user. Must match docker/Dockerfile.server,
-# docker/Dockerfile.server-cpu, docker-compose.yml, QUICKSTART.md and docs/INSTALL_NATIVE.md.
+# docker/Dockerfile.server-cpu, docker-compose.yml and docs/PROVISIONING.md.
 IMAGE_UID=10001
 IMAGE_GID=10001
 

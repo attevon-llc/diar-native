@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # T9a gate: N concurrent /diarize jobs on ONE shared-session engine must produce outputs
 # byte-identical to the same jobs run serially, at >= 2x serial throughput, without VRAM
-# scaling per job (HANDOFF_T9A_SHARED_SESSIONS.md §5).
+# scaling per job (see validation/RESULTS.md §7.25).
 #
 # Assumes a diar-server with the shared-session build is up on $PORT with the AMI audio
 # dir mounted at /audio and DIAR_MAX_INFLIGHT >= N. VRAM is sampled DURING the concurrent

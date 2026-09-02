@@ -137,7 +137,7 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
 
 - Live sidecar = compose service `diar-native` in transcribe-app (5 compose files; see
   `docker-compose.diar-native.yml`). Old image kept as `diar-server:pre-t9a` for rollback.
-- **Env knobs: `README.md` §6e is the ONE authoritative table** (name, effect, default, which
+- **Env knobs: `docs/CONFIGURATION.md` is the ONE authoritative table** (name, effect, default, which
   subcommand reads it) and is checked in both directions — anything not in it has no read site.
   Do not maintain a second list here; the highlights only:
   - serve: `DIAR_MODELS_DIR` (`/models`), `DIAR_BIND` (`0.0.0.0:8701`), `DIAR_MAX_INFLIGHT` (2),
@@ -165,7 +165,7 @@ Read `PLAN.md` for roadmap/decisions and `validation/RESULTS.md`
     `DIAR_DEVICES=cuda,cpu` ran the second `setenv` while the first engine's ORT threads were
     live. `SPEAKRS_TRT`/`SPEAKRS_TRT_CACHE` are dead — no read sites.
 - Exit codes are a stable contract (`crates/diar-core/src/provision/mod.rs::exit`), tabulated in
-  README §6d and `docs/INSTALL_NATIVE.md`. Note **8** = serve-time "models unusable" (was 6, which
+  `docs/DEPLOYMENT.md` (Exit codes) and `docs/PROVISIONING.md`. Note **8** = serve-time "models unusable" (was 6, which
   now means only "no usable python export env"); 9 = device unavailable, no marker written;
   10 = `verify-models` found nothing to verify against.
 - Server logs go to **stdout** (so `docker logs`/compose capture them); fatal startup errors

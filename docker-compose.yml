@@ -26,7 +26,7 @@ services:
     # and if compose could build this service it would happily build the CPU Dockerfile and
     # tag it `...-cuda` whenever the CUDA image happened to be missing — a silent mismatch
     # that would look like "my GPU box is inexplicably slow". start.sh builds the right one;
-    # to do it by hand see QUICKSTART.md.
+    # to do it by hand see docs/DEPLOYMENT.md.
     image: ${DIAR_IMAGE:-diar-native:local-cpu}
     container_name: diar-native
     restart: unless-stopped

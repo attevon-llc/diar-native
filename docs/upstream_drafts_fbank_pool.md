@@ -4,7 +4,7 @@
 needs the operator's explicit approval, per the ground rules in `CLAUDE.md`.
 
 This is a small API addition that stands on its own merits, independent of the seven prepared
-PR branches in `docs/pr_drafts.md`. It belongs on top of the **fbank session-pool fan-out** PR
+PR branches are listed in `docs/UPSTREAM_PRS.md`. It belongs on top of the **fbank session-pool fan-out** PR
 (queue item 2, `docs/UPSTREAM_PRS.md` §fbank pool), since it modifies code that PR introduces:
 if the pool PR is not accepted, this one is moot; if it is, this should be folded into it rather
 than filed separately, because it changes the very lines that PR adds.

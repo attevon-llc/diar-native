@@ -45,7 +45,7 @@ back to fp32. The exporter now elides them; `EXPORT_RECIPE_VERSION` was bumped t
 the change. Directories provisioned by recipe 1 are reported `stale` — they still serve, but they
 carry the heavy classifier. `provision-models --force` brings them current.
 
-On **aarch64** the fp16 model needs an ORT optimization-level cap to load at all — see README §6f.
+On **aarch64** the fp16 model needs an ORT optimization-level cap to load at all — see `docs/DEPLOYMENT.md`.
 That is handled automatically in `crates/diar-core/src/ort_compat.rs`; nothing to configure.
 
 The authoritative list lives in `crates/diar-core/src/provision/files.rs`

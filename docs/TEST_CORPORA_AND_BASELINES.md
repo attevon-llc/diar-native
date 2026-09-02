@@ -119,7 +119,10 @@ sampling afterwards reports the idle floor (§7.14).
 
 - `ort` pinned `=2.0.0-rc.12`; rc.13 fails at session load.
 - Tests: `cargo test --release --no-default-features --features openblas-system,online`
-  with `RUST_MIN_STACK=16777216`, built in `diar-bench-builder` (host `target/` is root-owned).
+  with `RUST_MIN_STACK=16777216`, built in `diar-native-builder:latest` (built from
+  `docker/Dockerfile.builder`; host `target/` is root-owned). The older hand-built
+  `diar-bench-builder:latest` image no longer has a Dockerfile — see
+  [DEVELOPMENT.md](DEVELOPMENT.md#building).
 - Model files are **gitignored** (`models*/`) — gated community-1 derivatives, never committed.
 - Worker `/tmp` is wiped on container recreate; re-stage bench files after any restart.
 - `BATCH_SIZE` is not the compose variable (`GPU_DEFAULT_BATCH_SIZE` is) — a sweep that sets the

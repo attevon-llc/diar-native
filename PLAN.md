@@ -29,7 +29,7 @@ overhead, which is what limits media under a minute.
 
 1. **Adopt speakrs** (validated: G1/G2 accuracy parity, patched-build speed > fork) as the engine
    inside a new wrapper, vendored + pinned; upstream PRs for our fixes.
-2. **Two deployment tiers** (README §6): T1 shared-weights sidecar = DEFAULT open-source path
+2. **Two deployment tiers** (`docs/ARCHITECTURE.md`): T1 shared-weights sidecar = DEFAULT open-source path
    (laptops → single-GPU boxes); T2 Triton + TRT = opt-in for large home servers + AWS.
 3. **Celery owns ALL job orchestration** (queue/retry/priority/routing). The sidecar is a
    stateless executor with only an admission semaphore (max in-flight) — mirrors the current
@@ -198,7 +198,7 @@ hand-labelled ground truth, so speed and accuracy regress on the same file. Long
 the 2.1 h seed file, 206.7 s → 120.3 s. Protocol, gates and the accuracy checks that must
 accompany any speed claim: `docs/BENCHMARK_PROTOCOL.md`.
 
-## Post-flip optimization sequence (ACCEPTED 2026-08-19 — full detail: docs/E2E_PIPELINE_MAP.md)
+## Post-flip optimization sequence (ACCEPTED 2026-08-19)
 
 User-confirmed direction: progressive updates, async task loads, and downstream overlap
 wherever outputs allow. Execution order after the flip + baseline run:
@@ -214,7 +214,7 @@ wherever outputs allow. Execution order after the flip + baseline run:
    clip fetches, unblocks LLM speaker-ID sooner — visible enrichment latency)
 5. L9+L7 telemetry completeness + batched progress writes (baseline hygiene)
 6. L6 precompute_vad implementation; L8 VAD silence knob WSER-test
-7. Text-model Rust absorption stays PROFILE-GATED (ladder in RUST_SERVICES_PLAN §3)
+7. Text-model Rust absorption stays PROFILE-GATED (ladder recorded in git history)
 - **L10 ASR int8 quant: TESTED BY USER — REAL DEGRADATION OBSERVED → last-if-at-all**
   (user's measurement overrides literature expectations, per evidence policy).
 Each lever gates on output-identity/accuracy checks (WSER/DER harness) and is judged by
