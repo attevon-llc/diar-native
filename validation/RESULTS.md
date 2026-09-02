@@ -3778,3 +3778,196 @@ never triggered the fault at all, and the failures attributed to it came from el
 Post-fix container RTTM is byte-identical to the known-good host run. Verified by mounting the
 fixed binary into the unchanged pre-fix image, so the image, models, clip and PID-1 position are
 held constant and only the binary differs.
+
+### 7.52 The 26.04/arm64 divergence is OpenBLAS 0.3.32, and it is a **severe clustering regression**, not float noise: AMI-16 exclusive DER 18.7% -> 52.4%, all of it confusion (issue #18)
+
+**This corrects the working hypothesis, not a published measurement.** §7.42 recorded the 24.04 ->
+26.04 bump and flagged that the arm64 leg was never exercised; `1bbba89` reverted the bump on the
+evidence that the smoke fixture's exclusive-segment count moved 8 -> 10, and left "whether 10 is
+worse, better or immaterial" explicitly UNSCORED. It is now scored. **10 is much worse.** The
+prior expectation — that this would turn out to be the §7.49 class, a posterior sitting on a
+binarisation threshold and landing on the other side — is **wrong**, and the 26 s fixture is
+exactly what made it look plausible.
+
+#### 1. Root cause: OpenBLAS, isolated to a single shared object
+
+The two bases differ in both OpenBLAS (0.3.26 -> 0.3.32) and glibc (2.39 -> 2.43). speakrs is
+built `openblas-system`, so `libopenblas.so.0` is **dynamically linked from the runtime image** —
+which makes it swappable without recompiling anything.
+
+Probe: take the 26.04/arm64 image unchanged and overwrite only
+`/usr/lib/aarch64-linux-gnu/openblas-pthread/` with the same directory from the 24.04 image
+(`libopenblasp-r0.3.26.so`), then `ldconfig`. Base, glibc 2.43, the `diar-server` binary and the
+three ORT `.so`s are all untouched.
+
+| build | base | glibc | OpenBLAS | `4-end-to-end` |
+|---|---|---|---|---|
+| `diar-server:arm64-2404-probe` | 24.04 | 2.39 | 0.3.26 | 2 speakers, 7 segments, **8 exclusive** |
+| `diar-server:u2604-arm64` | 26.04 | 2.43 | 0.3.32 | 2 speakers, 7 segments, **10 exclusive** |
+| **`diar-probe:b18-2604base-blas0326`** | **26.04** | **2.43** | **0.3.26** | 2 speakers, 7 segments, **8 exclusive** |
+
+The swap image is not merely "8 again" — its `/diarize` response is **byte-identical to the 24.04
+image on every field** (segments, exclusive segments, centroids, RTTM). That also controls for
+code: identical bytes out means the two images' binaries agree, so nothing in the 12 hours of
+commits between them is implicated. **glibc 2.43 is ruled out as a cause.**
+
+The converse (24.04 + 0.3.32) **cannot be run**: 26.04's OpenBLAS is built against the newer libm
+and dies at load with ``version `GLIBC_2.43' not found``. It is not needed — the swap above already
+holds every other variable fixed.
+
+Every ONNX numeric smoke stage is identical across all three, including the exact-zero ones
+(`3b fused-vs-split 0.00e0`, `3c multimask-vs-tail 0.00e0`), as §7.42 and issue #18 reported.
+
+#### 2. Determinism control, taken first
+
+Same file, same container, three consecutive `/diarize` calls: **3/3 byte-identical**. The
+difference below is signal, not run-to-run noise. (Without this the whole comparison is worthless,
+and it is cheap.)
+
+#### 3. Why the smoke fixture understates it — and why centroids were the wrong tell
+
+On `fixtures/test.wav` (26 s) the 24.04 and 26.04 outputs are, under a single
+`SPEAKER_00`<->`SPEAKER_01` relabelling:
+
+- **centroids bit-identical** (cross-wise cosine exactly +1.000000, L2 norms equal to all digits);
+- **overlap-aware `segments` bit-identical** — all 7 boundaries agree to the last decimal;
+- exclusive segments differ by **1.35 s over 24.62 s of labelled speech (5.48%)**, confined
+  entirely to **one 2.04 s window (18.560-20.602 s)** which the overlap-aware output shows as a
+  two-speaker overlap.
+
+Clustering *label order* is arbitrary and DER is permutation-invariant, so on this clip the
+divergence really is cosmetic plus a handful of argmax flips. **This does not generalise.** The
+fixture has 2 speakers and one overlap region; it cannot exercise the part of clustering that
+actually breaks. Anyone reading only §7.42/issue #18's "8 vs 10" would conclude this is minor.
+
+#### 4. AMI-16: the real measurement
+
+`DIAR_MODE=cpu`, `models_folded`, collar 0.25, overlap included, UEM-cropped, one request per file
+with `file_id` held constant (per §7.49's artefact note).
+
+**Control — the 24.04 leg reproduces the recorded baselines**, all 16 files:
+
+| AMI-16, 24.04/0.3.26 | measured here | logged baseline | source |
+|---|---|---|---|
+| DER, full | **13.126%** | 13.102% | §2.2, §4.26 |
+| DER, exclusive | **17.834%** | 17.813% | §7.7 |
+
+Within 0.025 pp on both metrics, on a different architecture (aarch64 CPU vs the amd64 the
+baselines were taken on). The harness, refs, UEM handling and RTTM naming are therefore sound.
+
+**The comparison**, on the **10 files** completed in both legs (`EN2002a EN2002b EN2002d ES2004a
+IS1009a IS1009b IS1009c IS1009d TS3003a TS3003b`):
+
+| AMI-10, exclusive | DER | missed | false alarm | **confusion** |
+|---|---|---|---|---|
+| 24.04 / OpenBLAS 0.3.26 | **18.738%** | 15.285% | 1.433% | **2.020%** |
+| 26.04 / OpenBLAS 0.3.32 | **52.404%** | 15.285% | 1.433% | **35.686%** |
+
+| AMI-10, full (overlap-aware) | DER |
+|---|---|
+| 24.04 / OpenBLAS 0.3.26 | **13.781%** |
+| 26.04 / OpenBLAS 0.3.32 | **48.657%** |
+
+(The first 8 of those files alone: exclusive 17.776% -> 50.650%, full 13.335% -> 47.295%,
+confusion 2.118% -> 34.992%. The effect is stable as files are added, not carried by one outlier.)
+
+**`missed` and `false alarm` are identical to the digit in both legs.** Speech/non-speech detection
+— the ONNX segmentation stage — is completely unaffected. The entire **+33.7 pp is speaker
+confusion**. That is precisely the stage that runs through BLAS (PLDA scoring, VBx, AHC) rather
+than ORT, and it is the strongest corroboration in this section: the damage lands exactly where the
+changed library is used, and nowhere else.
+
+#### 5. What breaks: cluster count, not embeddings
+
+Per file, leg A vs leg B — speaker counts, whether the overlap-aware segment *boundaries* agree
+(label-agnostic), and each leg-A centroid's best cosine match among leg B's:
+
+| file | spk A | spk B | boundaries identical | best-cos of A's centroids in B |
+|---|---|---|---|---|
+| EN2002a | 4 | **7** | no | 0.9999 1.0000 1.0000 0.9973 |
+| EN2002b | 4 | **5** | no | 1.0000 1.0000 1.0000 0.9997 |
+| EN2002d | 4 | **5** | no | 1.0000 1.0000 1.0000 1.0000 |
+| ES2004a | 5 | **6** | no | 1.0000 1.0000 1.0000 1.0000 1.0000 |
+| IS1009a | 4 | 4 | no | 1.0000 1.0000 1.0000 1.0000 |
+| IS1009b | 5 | 5 | no | 1.0000 1.0000 1.0000 1.0000 0.9999 |
+| IS1009c | 4 | **6** | no | 1.0000 0.9994 1.0000 1.0000 |
+| IS1009d | 4 | **6** | no | 1.0000 0.9934 0.9999 1.0000 |
+| TS3003a | 4 | **3** | no | 1.0000 **0.6161** 1.0000 **0.8868** |
+| TS3003b | 4 | 4 | no | 1.0000 1.0000 1.0000 1.0000 |
+
+The **embeddings survive** — nearly every centroid finds a ~1.0000 cosine match in the other leg.
+What changes is **how many clusters they are grouped into**: 0.3.32 over-splits on 6 of 10 files
+(4->7, 4->6, 4->5, 5->6) and under-splits on TS3003a (4->3), where the two poor cosines
+(0.616, 0.887) are the signature of two reference speakers collapsed into one centroid. On
+IS1009a the *speech* is identical — same 608.0 s total, same 23.0-805.7 s span — and only the
+assignment differs.
+
+So the pipeline degrades in one specific place: embeddings in, clustering out.
+
+#### 6. Why aarch64 and not x86-64 (upstream corroboration, not proof)
+
+OpenBLAS 0.3.28 added forwarding of SGEMM/DGEMM calls with a 1xN or Mx1 matrix to the
+corresponding **GEMV** kernel, on **arm64, power and riscv64 — not x86-64**; 0.3.29 then "improved
+dimension criteria for forwarding from GEMM to GEMV kernels" (again arm64) and **rewrote arm64 CPU
+autodetection** to scan all cores and return the highest-performing type. 0.3.28-0.3.30 also add
+SVE small-matrix GEMM kernels and faster NCOPY packing. Routing the same call to a different
+kernel changes accumulation order on ARM while leaving x86 bit-identical — which is the observed
+architecture asymmetry (issue #18: amd64 gives 8 on both bases).
+
+**Stated plainly: no changelog entry in 0.3.27-0.3.32 claims changed numerical results,
+accumulation order or FMA behaviour on aarch64.** The mechanism is inferred; the swap experiment
+in §1 is the evidence.
+
+Whether 0.3.32 is *at fault* is a separate question this section does not answer. A pipeline whose
+DER moves 33 pp under a legal change of BLAS accumulation order is a pipeline with a fragile
+clustering stage; the honest reading is that **OpenBLAS exposed the fragility, not necessarily that
+it introduced a bug.** See "not settled" below.
+
+#### 7. Not settled
+
+- **The AMI regression is attributed to OpenBLAS by inference, not by direct measurement.** The
+  swap image (26.04 + 0.3.26) was proven byte-identical to 24.04 **on the 26 s fixture only**; it
+  was **not** run over AMI. The two AMI legs differ by the whole base image. What would settle it:
+  run `diar-probe:b18-2604base-blas0326` over the same 10 files and confirm it reproduces leg A's
+  18.738% / 2.020% confusion. ~20 min on the arm64 host, and it is the single highest-value
+  follow-up. It was blocked here by a scope decision, not by difficulty.
+- **10 of 16 AMI files**, not the full set, so these are not directly comparable to the 17.813 /
+  13.102 corpus numbers (leg A's own 16-file run, 17.834 / 13.126, is). The leg-B run was stopped
+  at 10 files.
+- **Root cause is the library, not the line of code.** Which BLAS call changes, and whether the
+  fragility is in PLDA scoring, VBx or AHC, is unknown. No bisect of OpenBLAS 0.3.27-0.3.31 was
+  done, so it is not known which release introduced it.
+- Not tested: whether pinning `OPENBLAS_CORETYPE` or `OPENBLAS_NUM_THREADS` in the 26.04 image
+  restores the 24.04 behaviour. If it does, the trigger is kernel dispatch or thread partitioning
+  and there may be a cheap runtime mitigation.
+- **Untested on amd64 with 0.3.32.** Issue #18 records amd64/26.04 giving 8 on the fixture, but no
+  amd64 DER was run against 0.3.32 here. The fixture is now known to understate this failure, so
+  "amd64 is unaffected" rests on the same weak evidence this section just discredited for arm64,
+  and deserves a DER check before the next base bump.
+
+#### 8. Disposition
+
+The shipped base stays **24.04** (`docker/Dockerfile.server-cpu`, `docker/Dockerfile.builder`), as
+`1bbba89` left it, and the published 0.3.0/0.3.1 images are on it — **nothing is shipping on the
+affected base**. The practical risk is a *future* base bump, and this section is the reason one must
+not be taken on trust: the smoke fixture passes on 26.04/arm64 with a plausible-looking 2 speakers
+and 7 segments while exclusive DER is ~52%.
+
+Consequences worth carrying forward:
+
+1. **`verify-models` cannot detect this.** It passes every stage on the broken build. A base bump
+   needs a DER check on a real corpus, on **each** published architecture, not a smoke pass.
+2. **The old release workflow could not have caught it either** — it built arm64 under QEMU and
+   never ran it, and OpenBLAS selects kernels by runtime CPU detection, so a QEMU run is not
+   evidence about native aarch64 anyway. `scripts/release.sh` (which replaced it) should be
+   held to the native-arm64 standard.
+3. Issue #18 stays **open**: the direct AMI control in §7 is outstanding, and the clustering
+   fragility it exposes is a real unanswered question independent of any base bump.
+
+#### Environment
+
+arm64 leg: Apple Silicon, Docker Desktop, aarch64 **native (no qemu)**, 12 CPUs, 15.6 GiB,
+`diar-server` 0.3.0 images, `DIAR_MODE=cpu`, `models_folded` (24 files, gender present).
+Scoring: `validation/score_der.py` + `pyannote.metrics` inside `opentranscribe-celery-worker`
+(amd64). Host load average ~14-29 of 48 cores throughout — irrelevant, no timing claim is made
+here and the determinism control in §2 was taken independently.
