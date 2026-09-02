@@ -16,12 +16,25 @@
 #     -t <tag> --push .
 # Build context: repo root (diar-native/).
 
-# PINNED to 24.04, NOT bumped to 26.04. The 26.04 bump was merged (#11) and then reverted:
-# it changes diarization output on linux/arm64 — exclusive segments 8 -> 10 on the same clip
-# and models, with amd64 unaffected and every ONNX numeric stage byte-identical. Isolated to
-# the base image alone (same code on 24.04/arm64 gives 8). Most likely OpenBLAS 0.3.26 ->
-# 0.3.32, since clustering runs through BLAS rather than ONNX Runtime. Whether 10 is worse,
-# better or immaterial is UNSCORED — see issue #18. Do not re-bump without DER numbers.
+# PINNED to 24.04, NOT bumped to 26.04. The 26.04 bump was merged (#11), reverted (1bbba89),
+# and has now been SCORED (RESULTS §7.52): on linux/arm64 it is a severe accuracy regression,
+# not the cosmetic 8 -> 10 exclusive-segment difference it looks like on the smoke fixture.
+# AMI-16 exclusive DER 18.7% -> 52.4%, full DER 13.8% -> 48.7%, with missed detection and
+# false alarm IDENTICAL TO THE DIGIT — the entire +33.7 pp is speaker confusion. Embeddings
+# survive (centroids match at ~1.0000 cosine); the clustering groups them into the wrong
+# number of speakers.
+#
+# Cause is OpenBLAS 0.3.26 -> 0.3.32, isolated to that one shared object: speakrs is built
+# openblas-system, so overwriting only openblas-pthread/ inside the unchanged 26.04 image with
+# 24.04's 0.3.26 makes the output byte-identical to the 24.04 image. glibc 2.43 is ruled out.
+# amd64 is unaffected on the fixture, matching OpenBLAS 0.3.28/0.3.29's arm64-only GEMM->GEMV
+# forwarding; but the fixture is now known to UNDERSTATE this failure, so amd64 has not really
+# been cleared either.
+#
+# DO NOT re-bump this base — and note that `verify-models` CANNOT catch this: it passes every
+# stage on the broken build, reporting a plausible 2 speakers / 7 segments while exclusive DER
+# is ~52%. A bump needs a real-corpus DER check on each published architecture, run NATIVELY
+# (OpenBLAS picks kernels by runtime CPU detection, so a QEMU run proves nothing). See #18.
 FROM ubuntu:24.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
