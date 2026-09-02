@@ -27,6 +27,15 @@ otherwise.
 | [INSTALL_NATIVE.md](INSTALL_NATIVE.md) | "How do I flip OpenTranscribe onto the native engine?" | Current. **Only** the `transcribe-app` procedure — generic deployment lives in DEPLOYMENT.md |
 | [DETAILED_SPECS.md](DETAILED_SPECS.md) | "What was the design of each numbered task, including the ones that failed?" | Current, with caveats. Valuable for its **negative results** written as design guidance — read §S-T9a (shared sessions) and §S-T11 (why `SPEAKRS_TRT` is dead). Its model/effort routing matrix is dead weight |
 
+## Not in this directory
+
+| where | what |
+|---|---|
+| [`validation/README.md`](../validation/README.md) | Index of the test and benchmark harnesses, by purpose and RESULTS section — including the ones that were removed, so a stale pointer lands on an explanation rather than a 404 |
+| [`validation/RESULTS.md`](../validation/RESULTS.md) | **Every measurement ever taken.** Append-only: never re-run a logged test, and retract a number explicitly rather than editing it |
+| [`validation/TESTPLAN.md`](../validation/TESTPLAN.md) | The test matrix and the G1-G5 gates |
+| [`../CHANGELOG.md`](../CHANGELOG.md) · [`../CONTRIBUTING.md`](../CONTRIBUTING.md) · [`../SECURITY.md`](../SECURITY.md) · [`../MODELS_SETS.md`](../MODELS_SETS.md) | Release history · contributing · vulnerability reporting · fast vs small model sets |
+
 ## Deep dives — read before touching the thing they describe
 
 | document | answers |

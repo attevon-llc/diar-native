@@ -130,14 +130,12 @@ diar-native/
 ├── docker-compose.gpu.yml     ← the NVIDIA device reservation, as a separate overlay
 ├── .github/                   ← CI, dependabot, PR template, setup-build-env action
 ├── docs/                      ← this directory; see the README's link table
-├── validation/
+├── validation/                ← see validation/README.md for the full harness index
 │   ├── TESTPLAN.md            ← test matrix, gates, methodology, reproduction commands
 │   ├── RESULTS.md             ← every measurement (append-only log; never re-run a logged test)
 │   ├── run_fork_baseline.py   ← Engine A runner (backend image, fork bind-mount, RTTM+timing out)
-│   ├── run_speakrs.sh         ← Engine B runner (diar-bench image, RTTM per file/run)
-│   ├── score_der.py           ← DER scorer (UEM-aware, aggregate + per-file, JSON out)
-│   ├── ort_cuda_microbench.py ← ORT CUDA EP folded-vs-unfolded-vs-eager microbench
-│   └── triton_bench.py        ← Triton gRPC latency/throughput bench
+│   ├── run_speakrs.sh         ← Engine B runner (RTTM per file/run)
+│   └── score_der.py           ← DER scorer (UEM-aware, aggregate + per-file, JSON out)
 ├── crates/
 │   ├── diar-core/             ← speakrs wrapper: shared-session engine handles (clone_shared),
 │   │                            centroids, embed_window, exclusive output, gender, media decode,
@@ -167,6 +165,17 @@ diar-native/
 ├── upstream-work/             ← [gitignored] upstream-tip clone holding the prepared PR branches
 └── results/                   ← RTTMs, timing JSONL, DER JSONs per run tag
 ```
+
+### Why `scripts/` and `validation/` stay separate
+
+Not tidiness — **their paths are effectively frozen**.
+[`validation/RESULTS.md`](../validation/RESULTS.md) is append-only by policy and cites both trees
+**by path**. Moving or merging either one would break a citation in a document that, by that same
+policy, can never be corrected. So they stay where they are, and this is written down once so
+nobody re-litigates it.
+
+[`validation/README.md`](../validation/README.md) indexes the harnesses by purpose and RESULTS
+section, and lists the removed ones so a stale pointer lands on an explanation rather than a 404.
 
 ### Crate responsibilities
 
