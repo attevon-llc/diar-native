@@ -41,17 +41,28 @@ beats the production Python fork it replaces:
 |---|---|---|
 | **13.101%** DER | **8.219%** DER | **4.847%** DER |
 
-Speed, warm engine on an RTX A6000: 66.5 minutes of audio diarized in **21.6 s — 184× realtime**.
-Measured against the two things it replaces, same clip, same hardware, accuracy preserved:
+Speed. One number, one unit: **× realtime** — how many seconds of audio are diarized per second
+of wall clock. Every multiplier below is relative to the PyAnnote fork, which is the baseline
+because it is what runs in production today.
 
-| compared with | speed-up | evidence |
+| | × realtime | vs the fork |
 |---|---|---|
-| the **PyAnnote fork** this replaces in production | **2.2×** faster (48.0 s → 21.6 s, 83× → 184× RT) | Karpathy 66.5 min, one A6000; DER 8.194% → 8.219%, +0.025 pp |
-| **stock `speakrs`**, which it is built on | **3.1×** faster (39.4 s → 12.9 s) | ES2004a 36.4 min, same session A/B; **RTTM byte-identical at every step** |
+| **PyAnnote fork** — the customized production engine | 80–83× | 1.0× *(baseline)* |
+| **stock `speakrs`** — unpatched, as adopted | 31–49× | **0.4–0.6× — slower** |
+| **diar-native** — speakrs + our patch set | **184×** | **2.2× faster** |
 
-The speakrs gain is our patch set — folded segmentation graphs, a multimask-batching fix, and an
-fbank session pool that removed a CPU bottleneck the GPU was never responsible for. Every step of
-it was verified output-identical, not merely faster.
+So the honest shape of this: adopting `speakrs` alone made diarization **slower** than the fork.
+What made it faster is the patch set — folded segmentation graphs, a multimask-batching fix, and
+an fbank session pool that removed a CPU bottleneck the GPU was never responsible for. On a
+same-session A/B that pool alone took ES2004a from 32.1 s to 12.9 s, **3.1× against stock, with
+the RTTM byte-identical at every rung of the ladder**.
+
+In wall-clock terms on the acceptance clip: 66.5 minutes of audio, one RTX A6000, warm engine —
+**48.0 s → 21.6 s**, with DER moving 8.194% → 8.219% (+0.025 pp, inside the gate).
+
+<sub>Measured on different corpora and cards, so the rows are comparisons against the fork, not a
+single chained multiplier: fork and diar-native on Karpathy 66.5 min / A6000 (RESULTS 2.3, 4.21);
+stock speakrs on AMI-16 (4.5); the fbank ladder on ES2004a / 3080 Ti (4.16).</sub>
 
 Concurrent requests share one engine's VRAM. A GPU is optional; the CPU path produces the same
 output, only slower. Conditions and the full record: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
