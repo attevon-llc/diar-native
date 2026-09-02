@@ -68,6 +68,33 @@ Concurrent requests share one engine's VRAM. A GPU is optional; the CPU path pro
 output, only slower. Conditions and the full record: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 and [validation/RESULTS.md](validation/RESULTS.md).
 
+## Models
+
+Nothing is bundled. The first run downloads the upstream weights with **your** HuggingFace token
+and exports them to ONNX + PLDA locally — **~484 MB, roughly two minutes, once.** Later starts
+find a provenance marker and skip it entirely, needing no token and no network.
+
+| model | source | licence | role |
+|---|---|---|---|
+| `segmentation-3.0` | [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1) | CC-BY-4.0, gated *(auto-approved)* | who is speaking when, per 10 s window |
+| `wespeaker-voxceleb-resnet34-LM` | same pipeline | CC-BY-4.0, gated | 256-d speaker embeddings |
+| PLDA + VBx parameters | same pipeline | CC-BY-4.0, gated | clustering embeddings into speakers |
+| `gender-wav2vec2` | [`prithivMLmods/Common-Voice-Gender-Detection`](https://huggingface.co/prithivMLmods/Common-Voice-Gender-Detection) | **not gated**, no token needed | optional per-speaker gender |
+
+The segmentation and embedding checkpoints come from the **community-1 pipeline itself**, not
+from the standalone `pyannote/segmentation-3.0` and `wespeaker-…-LM` repositories — those ship
+*different* weights, and using them would silently degrade accuracy.
+
+**Gender classification is opt-in per request** (`"gender": true`) and runs on the audio already
+decoded for diarization — no second fetch, no second decode. It costs 189 MB on disk and about
+252 MB of VRAM while active, and is bounded by `DIAR_GENDER_MAX_SECONDS` so it does not scale
+with file length. Skip it entirely with `provision-models --skip-gender`. If the model is absent
+diarization still works and gender is simply omitted from the response.
+
+One platform caveat: on **linux/arm64** the fp16 gender model needs an ONNX Runtime optimization
+cap to load at all — handled automatically, explained in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Diarization itself is unaffected.
+
 ## Use it
 
 Four routes: `POST /diarize`, `POST /embed_window`, `GET /healthz` (liveness — 200 whenever the
@@ -132,8 +159,15 @@ Three things worth knowing before you deploy, each of which cost someone real ti
 diar-native is **Apache-2.0** ([LICENSE](LICENSE)), as is the
 [`speakrs`](https://github.com/avencera/speakrs) engine it vendors.
 
-The models are derivatives of
+The diarization models are derivatives of
 [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
-(**CC-BY-4.0**, gated). They are **not redistributed here and cannot be** — every operator
+(**CC-BY-4.0**, gated); the gender classifier derives from
+[`prithivMLmods/Common-Voice-Gender-Detection`](https://huggingface.co/prithivMLmods/Common-Voice-Gender-Detection)
+(not gated). Neither is **redistributed here, and the gated one cannot be** — every operator
 obtains and exports their own copy locally with their own HuggingFace token, which is what the
 first run of `install.sh` is doing. Nothing gated is committed to this repository.
+
+The community-1 gate is an email-capture prompt whose own text states the pipeline "is released
+under the CC-BY-4.0 license and will always remain freely accessible" — it is auto-approved, not
+a licence negotiation. **CC-BY-4.0 requires attribution**: if you ship something built on this,
+credit pyannote.
