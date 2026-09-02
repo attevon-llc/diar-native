@@ -141,7 +141,6 @@ walkthrough of both paths: [`QUICKSTART.md`](QUICKSTART.md).
 ---
 
 [![CI](https://github.com/attevon-llc/diar-native/actions/workflows/ci.yml/badge.svg)](https://github.com/attevon-llc/diar-native/actions/workflows/ci.yml)
-[![Release](https://github.com/attevon-llc/diar-native/actions/workflows/release.yml/badge.svg)](https://github.com/attevon-llc/diar-native/actions/workflows/release.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Vulnerabilities:
@@ -425,7 +424,7 @@ architecture under it is the same thing (issue #20):
 
 **0.3.0 predates this.** Its images were all built and pushed by hand, so every 0.3.0 tag is
 single-platform: `:0.3.0-cpu` is amd64 and arm64 lives only at `:0.3.0-cpu-arm64`. The manifest
-lists start at the first release published by `.github/workflows/release.yml`. The table below
+lists start at the first release published by `scripts/release.sh`. The table below
 is 0.3.0 as actually published, verified by fresh pull.
 
 | tag | platform | size | contents |
@@ -461,30 +460,36 @@ the binary out of the image (see §6a) want the **amd64 CUDA** digest — that i
 
 ### Publishing
 
-- **`.github/workflows/release.yml` publishes four tags on a tag push** (`v*`), and they are
-  exactly the four the tag model above describes: `:<ver>-cpu` and `:<ver>-provision` as
-  multi-arch manifest lists, `:<ver>-cpu-arm64` and `:<ver>-provision-arm64` as single-platform
-  arm64 aliases. The provisioning images are built there rather than by hand because
-  `docker-compose.prod.yml` defaults its `provision` service to `:<ver>-provision`, and the
-  serving images carry no Python — a release that shipped serving images alone would leave the
-  documented no-clone install unable to export models at all.
-  - The job ends on a step that **asserts each tag's platform set** and fails the release if it
-    drifts. Issue #20 existed precisely because nothing checked: the workflow and the docs
-    disagreed about which tags were multi-arch for a whole release cycle without anyone noticing.
-  - **Dry run without publishing:**
-    `gh workflow run release.yml -f tag=<ver> -f push=false`. Every build still runs and still
-    pushes — to an ephemeral `registry:2` service inside the job — and the platform assertions
-    still run. Only the Docker Hub tag names are withheld. That is also why the provisioning
-    build works on a dry run at all: `docker/Dockerfile.provision` is `FROM ${BASE}`, and a
-    multi-platform build can only resolve that per-platform out of a registry.
-  - **Operator note:** `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` are not currently configured as
-    repository secrets, so a tag push stops at the credentials gate before building anything.
-    That is what happened to the `v0.3.0` tag. Set them before the next release.
-- **The CUDA image stays manual.** `:<ver>` and `:latest` are not built by CI: they need the
-  CUDA ONNX Runtime distribution and should execute a real CUDA session on a GPU host before
-  reaching a registry. Build with `docker build -f docker/Dockerfile.server -t diar-server:<ver> .`,
-  smoke-test, `trivy image --severity HIGH,CRITICAL` clean (or documented as accepted), then
-  `docker tag` / `docker push`. The workflow prints this reminder when it finishes.
+Releases are built and pushed **locally**, by `scripts/release.sh`, not by CI.
+
+```
+./scripts/release.sh 0.3.1                 # build + scan, push nothing
+./scripts/release.sh 0.3.1 --push          # ... and publish
+./scripts/release.sh 0.3.1 --push --latest # ... and move :latest to this version
+```
+
+**Why not GitHub Actions.** Hosted runners give ~14 GB of disk; the CUDA image alone is ~3 GB
+before build artifacts, and a release is five images across two architectures. A publish
+workflow existed and was removed — the one time it ran, on the `v0.3.0` tag push, it failed at
+its credentials gate before it could discover the disk problem, and every 0.3.0 image was built
+and pushed by hand anyway.
+
+The script does what that workflow tried to, plus the checks a workflow could not:
+
+- Refuses a **dirty tree**, so the images match a commit someone can check out.
+- Refuses if **`vendor/speakrs` has drifted from `patches/0001-*.patch`**. This is the check
+  that matters most and the one a developer cannot perform by eye: the patch set lives as an
+  uncommitted diff in the working tree, so the machine that makes a vendored change is the one
+  machine that cannot see a broken bootstrap. `main` shipped unbuildable exactly this way.
+- Asserts each image's **architecture matches its tag name**, that the **binary reports the
+  version being released** (catching an un-bumped crate version), and that the image **does not
+  run as root**.
+- Fails the release on any **HIGH/CRITICAL** trivy finding, across all five images.
+- Verifies the published digests **against the registry**, not the local daemon — a local tag
+  proves nothing about what a stranger will pull.
+
+Publishing takes an explicit `--push`: a tag someone has already pulled cannot be un-pulled.
+
 - **Non-developers / prod:** pull the published tag — no Rust toolchain, no clone of this repo,
   no local build. The whole deployment is `docker-compose.prod.yml` + `.env`; see "Run it" at
   the top of this file.
