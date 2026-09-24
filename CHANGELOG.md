@@ -18,6 +18,22 @@ Measurements referenced here are recorded in
 
 ---
 
+## [0.3.2] — 2026-09-24
+
+Speakrs perf update. No change to diarization behaviour: engine, models, accuracy gates
+identical to 0.3.1.
+
+### Changed
+
+- Ported upstream `avencera/speakrs` PR #30's fbank session pool worker restructuring onto
+  `attevon-llc/speakrs` `master` (`94e7b8c`, which now carries the full 0.3.1 production patch
+  set for the first time — previously only present on the `attevon/production-0.3.1` branch):
+  each pool worker locks its ORT session once and reuses one waveform buffer across its whole
+  chunk slice, instead of re-locking and re-allocating per chunk; a new routing guard avoids
+  silently falling back to the slower per-chunk pooled path when the pool has only one session
+  and a full batch is available. Output identity verified against a reference-session run to
+  1e-6.
+
 ## [0.3.1] — 2026-09-02
 
 Deployment and correctness. No change to diarization behaviour: the engine, the models and the
