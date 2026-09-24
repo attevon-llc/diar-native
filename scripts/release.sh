@@ -175,10 +175,14 @@ step "Vulnerability scan"
 if [[ $SKIP_SCAN -eq 1 ]]; then
   printf '  \033[33mSKIPPED\033[0m — record why in the release notes\n'
 else
+  TRIVY_IGNOREFILE_ARGS=()
+  if [[ -f "${REPO_ROOT}/.trivyignore" ]]; then
+    TRIVY_IGNOREFILE_ARGS=(--ignorefile "${REPO_ROOT}/.trivyignore")
+  fi
   for t in "${VERSION}" "${VERSION}-cpu" "${VERSION}-cpu-arm64" "${VERSION}-provision" "${VERSION}-provision-arm64"; do
-    n="$(trivy image --quiet --severity HIGH,CRITICAL --format json "rel:${t}" 2>/dev/null \
+    n="$(trivy image --quiet "${TRIVY_IGNOREFILE_ARGS[@]}" --severity HIGH,CRITICAL --format json "rel:${t}" 2>/dev/null \
       | python3 -c 'import json,sys; print(sum(len(r.get("Vulnerabilities") or []) for r in (json.load(sys.stdin).get("Results") or [])))')"
-    [[ "$n" == "0" ]] || die "rel:${t} has ${n} HIGH/CRITICAL findings — fix or accept explicitly"
+    [[ "$n" == "0" ]] || die "rel:${t} has ${n} HIGH/CRITICAL findings — fix or accept explicitly (add to .trivyignore with a reason if it's a confirmed false positive)"
     ok "rel:${t}: 0 HIGH/CRITICAL"
   done
 fi

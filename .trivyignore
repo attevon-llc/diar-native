@@ -1,0 +1,8 @@
+# CVE-2026-58659 (pytorch-lightning RCE via malicious checkpoint _instantiator hyperparameters)
+# was fixed upstream in lightning 2.6.6 (commit d710d68). Our provisioning images pin exactly
+# 2.6.6, but trivy's advisory DB carries a broken "Fixed Version: 2022.6.15" mapping for this
+# CVE and still flags 2.6.6 as vulnerable — a confirmed, reported false positive, not specific
+# to our build: https://github.com/Lightning-AI/pytorch-lightning/issues/21970
+# Re-check this line whenever bumping the `lightning` pin in docker/Dockerfile.provision, and
+# drop it once trivy's DB is corrected upstream.
+CVE-2026-58659
