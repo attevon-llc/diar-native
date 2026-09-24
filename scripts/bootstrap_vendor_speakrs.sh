@@ -2,8 +2,9 @@
 # Populates vendor/speakrs from our fork at a pinned commit AND applies our patch set, so a
 # clean clone can build. Idempotent: safe to re-run.
 #
-# Fork:     https://github.com/attevon-llc/speakrs, branch attevon/production-0.3.1
-# Pin:      5517abc — the production patch set as ONE COMMIT on top of upstream b0756b1.
+# Fork:     https://github.com/attevon-llc/speakrs, branch perf/fbank-pool-worker-reuse
+# Pin:      6b8127f — supersedes 5517abc: adds the ported upstream PR #30 fbank pool
+#           worker lock/buffer reuse + routing guard, ONE COMMIT on top of upstream b0756b1.
 #
 # WHY A FORK COMMIT AND NOT base+patch. This used to check out upstream b0756b1 and apply
 # patches/0001-*.patch on top. That has one failure mode, and we hit it: the pin and the patch
@@ -27,7 +28,7 @@
 set -euo pipefail
 
 SPEAKRS_FORK_URL="https://github.com/attevon-llc/speakrs.git"
-SPEAKRS_FORK_COMMIT="5517abce1274fdaa03bdb9c0a53defc48cf2b03a"
+SPEAKRS_FORK_COMMIT="6b8127f0c0a52a5b6f9fadb7d97d17d6154953b7"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="${REPO_ROOT}/vendor/speakrs"
 PATCH_FILE="${REPO_ROOT}/patches/0001-cuda-performance-patch-set.patch"
