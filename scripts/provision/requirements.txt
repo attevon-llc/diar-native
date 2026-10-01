@@ -16,7 +16,7 @@
 
 torch==2.13.0
 torchaudio==2.11.0
-numpy==2.5.2
+numpy==2.5.3
 onnx==1.22.0
 onnxruntime==1.29.0
 pyannote.audio==4.0.7
