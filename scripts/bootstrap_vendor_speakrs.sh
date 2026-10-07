@@ -3,10 +3,10 @@
 # clean clone can build. Idempotent: safe to re-run.
 #
 # Fork:     https://github.com/attevon-llc/speakrs, branch master
-# Pin:      94e7b8c — master merge of 6b8127f (which superseded 5517abc: adds the ported
-#           upstream PR #30 fbank pool worker lock/buffer reuse + routing guard) into master,
-#           bringing master up to the full 0.3.1 production patch set for the first time.
-#           Content-identical to 6b8127f (verified: git diff 6b8127f..94e7b8c is empty).
+# Pin:      a5f3f39 — master merge of 0b21d89 (one shared cuda_provider() for every CUDA
+#           session, with SPEAKRS_CUDA_MEM_LIMIT_MB / SPEAKRS_CUDA_CONV_SEARCH /
+#           SPEAKRS_CUDA_CONV_MAX_WORKSPACE overrides; defaults unchanged) onto 94e7b8c.
+#           Content-identical to 0b21d89 (verified: git diff 0b21d89..a5f3f39 is empty).
 #
 # WHY A FORK COMMIT AND NOT base+patch. This used to check out upstream b0756b1 and apply
 # patches/0001-*.patch on top. That has one failure mode, and we hit it: the pin and the patch
@@ -30,7 +30,7 @@
 set -euo pipefail
 
 SPEAKRS_FORK_URL="https://github.com/attevon-llc/speakrs.git"
-SPEAKRS_FORK_COMMIT="94e7b8c95a81936ce69209c41e989c4960219a1b"
+SPEAKRS_FORK_COMMIT="a5f3f39188d97c6498b8bc6406e7d3d477028942"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="${REPO_ROOT}/vendor/speakrs"
 PATCH_FILE="${REPO_ROOT}/patches/0001-cuda-performance-patch-set.patch"
