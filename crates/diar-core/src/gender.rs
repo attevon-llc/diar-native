@@ -76,10 +76,15 @@ impl GenderModel {
         let builder =
             Session::builder().map_err(|e| anyhow::anyhow!("gender session builder: {e}"))?;
         let builder = if cuda {
-            // Same provider the rest of the engine uses; CPU stays the fallback so a box
-            // without a working CUDA EP still classifies rather than failing the request.
+            // Same provider (and SPEAKRS_CUDA_* memory knobs) the rest of the engine uses: a bare
+            // `CUDA::default()` grows its arena by powers of two with no cap. CPU stays the
+            // fallback so a box without a working CUDA EP still classifies rather than failing.
+            #[cfg(feature = "cuda")]
+            let provider = speakrs::inference::cuda_provider();
+            #[cfg(not(feature = "cuda"))]
+            let provider = ort::ep::CUDA::default();
             builder
-                .with_execution_providers([ort::ep::CUDA::default().build()])
+                .with_execution_providers([provider.build()])
                 .map_err(|e| anyhow::anyhow!("gender CUDA provider: {e}"))?
         } else {
             builder

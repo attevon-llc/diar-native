@@ -18,6 +18,33 @@ Measurements referenced here are recorded in
 
 ---
 
+## [0.3.3] — 2026-10-07
+
+CUDA memory controls. No change to diarization behaviour with defaults: engine, models and
+accuracy identical to 0.3.2.
+
+### Added
+
+- `SPEAKRS_CUDA_MEM_LIMIT_MB`, `SPEAKRS_CUDA_CONV_SEARCH` (`exhaustive` | `heuristic`) and
+  `SPEAKRS_CUDA_CONV_MAX_WORKSPACE` (`1` | `0`), read by one shared CUDA provider that now builds
+  every CUDA session (speakrs fork `a5f3f39`). Defaults reproduce 0.3.2 exactly.
+
+### Fixed
+
+- The gender model's CUDA session used a bare `CUDA::default()` (power-of-two arena growth, no
+  cap) instead of the engine's provider; it now uses the shared one and honours the same knobs.
+
+### Why
+
+On an NVIDIA L4 (sm_89) a co-located `diar-server` was measured holding ~21 GB of device memory
+under concurrent requests, starving the other process on the card; the same build on Ampere
+(A10G, A6000, 3080 Ti) holds ~4.5 GB. Exhaustive cuDNN search with max workspace sizes conv
+workspaces off *free* memory, which the arena then keeps. The knobs let a deployment bound it.
+Measured on an RTX A6000 (5 settings × 8 AMI meetings, concurrency 2): peak 4,546 MiB, 33–36 s
+wall and identical speaker counts for every setting — no regression on Ampere.
+
+---
+
 ## [0.3.2] — 2026-09-24
 
 Speakrs perf update. No change to diarization behaviour: engine, models, accuracy gates
