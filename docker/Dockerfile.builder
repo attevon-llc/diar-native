@@ -23,7 +23,7 @@
 # Build context: repo root. Only rust-toolchain.toml is copied in, so this layer caches until
 # the toolchain actually moves.
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

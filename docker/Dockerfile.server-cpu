@@ -35,7 +35,7 @@
 # stage on the broken build, reporting a plausible 2 speakers / 7 segments while exclusive DER
 # is ~52%. A bump needs a real-corpus DER check on each published architecture, run NATIVELY
 # (OpenBLAS picks kernels by runtime CPU detection, so a QEMU run proves nothing). See #18.
-FROM ubuntu:24.04 AS base
+FROM ubuntu:26.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config cmake ca-certificates curl git \
@@ -86,7 +86,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=diar-server-cpu-cargo-reg
 # Shared by the serving image and the `cli` target so the two never diverge and the second
 # image costs only its own binary. The serving image remains the LAST stage, so a plain
 # `docker build -f docker/Dockerfile.server-cpu .` still produces exactly what it used to.
-FROM ubuntu:24.04 AS runtime-base
+FROM ubuntu:26.04 AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive
 # APT_REFRESH (release.sh passes the UTC date) busts this layer's cache daily, so a cached
 # upgrade from before a security fix was published can't ship stale openssl/gnupg.
