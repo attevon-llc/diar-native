@@ -39,6 +39,9 @@ ARM64_BUILDER="${ARM64_BUILDER:-opentranscribe-multiarch}"
 # builder because the provisioning image is FROM a locally-built base, which the
 # container-driver builder cannot see.
 ARM64_CONTEXT="${ARM64_CONTEXT:-remote-arm64}"
+# Busts the runtime `apt-get upgrade` layer once per day (Dockerfile.server*), so a release
+# never ships a cached upgrade that predates a published security fix.
+APT_REFRESH="${APT_REFRESH:-$(date -u +%F)}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -119,16 +122,17 @@ fi
 # ---------------------------------------------------------------------------------------
 step "Building ${VERSION} (this takes a while — the CUDA image is ~3 GB)"
 
-docker build -f docker/Dockerfile.server     -t "rel:${VERSION}"      . >/dev/null
+docker build -f docker/Dockerfile.server     --build-arg "APT_REFRESH=${APT_REFRESH}" -t "rel:${VERSION}"      . >/dev/null
 ok "amd64 CUDA superset  $(docker image inspect "rel:${VERSION}" --format '{{.Size}}' | numfmt --to=iec)"
 
-docker build -f docker/Dockerfile.server-cpu -t "rel:${VERSION}-cpu"  . >/dev/null
+docker build -f docker/Dockerfile.server-cpu --build-arg "APT_REFRESH=${APT_REFRESH}" -t "rel:${VERSION}-cpu"  . >/dev/null
 ok "amd64 CPU            $(docker image inspect "rel:${VERSION}-cpu" --format '{{.Size}}' | numfmt --to=iec)"
 
 # --load puts it in the LOCAL daemon; the provisioning build below needs it in the REMOTE
 # arm64 daemon too, where `FROM` can resolve it without a registry round-trip.
 docker buildx build --builder "$ARM64_BUILDER" --platform linux/arm64 \
-  -f docker/Dockerfile.server-cpu -t "rel:${VERSION}-cpu-arm64" --load . >/dev/null
+  -f docker/Dockerfile.server-cpu --build-arg "APT_REFRESH=${APT_REFRESH}" \
+  -t "rel:${VERSION}-cpu-arm64" --load . >/dev/null
 docker save "rel:${VERSION}-cpu-arm64" | docker --context "$ARM64_CONTEXT" load >/dev/null
 ok "arm64 CPU            $(docker image inspect "rel:${VERSION}-cpu-arm64" --format '{{.Size}}' | numfmt --to=iec)"
 

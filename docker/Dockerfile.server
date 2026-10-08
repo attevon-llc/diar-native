@@ -68,7 +68,10 @@ FROM nvidia/cuda:12.8.2-base-ubuntu24.04 AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive
 # upgrade first: patches HIGH-severity CVEs in base-image packages (gnupg family,
 # openssl) that aren't touched by our own install list but ship preinstalled.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# APT_REFRESH (release.sh passes the UTC date) busts this layer's cache daily, so a cached
+# upgrade from before a security fix was published can't ship stale openssl/gnupg.
+ARG APT_REFRESH=unset
+RUN echo "apt refresh: ${APT_REFRESH}" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl libcublas-12-8 libcufft-12-8 libcurand-12-8 libcudnn9-cuda-12 libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ort-download /opt/ort-libs/ /usr/local/lib/
